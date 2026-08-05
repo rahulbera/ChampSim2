@@ -157,7 +157,7 @@ TEST_CASE("initialize and terminate reach the tenant")
 {
   host_type uut;
   uut.initialize();
-  uut.finish();
+  uut.finish(0);
 
   const auto& c = uut.tenant().calls;
   REQUIRE(std::size(c) == 2);

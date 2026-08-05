@@ -137,6 +137,10 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 
   champsim::plain_printer{std::cout}.print(phase_stats);
 
+  for (O3_CPU& cpu : gen_environment.cpu_view()) {
+    cpu.impl_branch_predictor_final_stats();
+  }
+
   for (CACHE& cache : gen_environment.cache_view()) {
     cache.impl_prefetcher_final_stats();
   }

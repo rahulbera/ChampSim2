@@ -81,6 +81,14 @@ class host
   std::unique_ptr<call_log_writer> log_{writer_from_env()};
   bool reported_{false};
 
+  // ChampSim's headline MPKI counts a miss when the BTB target is wrong OR the
+  // direction is wrong, across every branch type (src/ooo_cpu.cc:151-153), so it
+  // conflates the BTB and the direction predictor. CBP6's BrMisPKI counts
+  // conditional-direction misses only, with perfect indirect prediction. These
+  // count what the tenant is actually responsible for.
+  uint64_t roi_conditional_{0};
+  uint64_t roi_direction_misses_{0};
+
   void note(call_kind kind, int brtype, bool pred_dir, bool resolve_dir, uint64_t seq_no, uint64_t pc, uint64_t next_pc)
   {
     if (checker_ == nullptr && log_ == nullptr) {
@@ -134,9 +142,19 @@ public:
     std::fflush(stdout);
   }
 
-  void finish()
+  // Called from ChampSim's branch-predictor final-stats hook.
+  void finish(uint64_t roi_instructions)
   {
     tenant_.terminate();
+
+    const double per_ki = (roi_instructions > 0) ? 1000.0 * static_cast<double>(roi_direction_misses_) / static_cast<double>(roi_instructions) : 0.0;
+    const double rate = (roi_conditional_ > 0) ? 100.0 * static_cast<double>(roi_direction_misses_) / static_cast<double>(roi_conditional_) : 0.0;
+
+    fmt::print("\n*** CBP6 conditional-direction only (excludes BTB/RAS target misses)\n");
+    fmt::print("    conditional branches: {}\n", roi_conditional_);
+    fmt::print("    direction mispredicts: {}  ({:.4g}% of conditionals)\n", roi_direction_misses_, rate);
+    fmt::print("    direction MPKI: {:.4g}\n", per_ki);
+
     report_protocol_check();
   }
 
@@ -163,10 +181,19 @@ public:
   // wrong for a not-taken branch, where it is zero -- tenants test `nextPC < PC`
   // to detect backward (loop) branches, so zero makes every not-taken
   // conditional look like a loop.
-  void resolve(champsim::address ip, bool taken, uint8_t branch_type, champsim::address next_pc)
+  // `in_roi` excludes the warmup phase, so the counters match the window
+  // ChampSim reports its own statistics over.
+  void resolve(champsim::address ip, bool taken, uint8_t branch_type, champsim::address next_pc, bool in_roi = true)
   {
     if (!is_branch(branch_type)) {
       return;
+    }
+
+    if (in_roi && is_direction_predicted(branch_type)) {
+      ++roi_conditional_;
+      if (last_prediction_ != taken) {
+        ++roi_direction_misses_;
+      }
     }
 
     const auto pc = ip.to<uint64_t>();

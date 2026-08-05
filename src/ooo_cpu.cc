@@ -716,6 +716,8 @@ long O3_CPU::retire_rob()
 
 void O3_CPU::impl_initialize_branch_predictor() const { branch_module_pimpl->impl_initialize_branch_predictor(); }
 
+void O3_CPU::impl_branch_predictor_final_stats() const { branch_module_pimpl->impl_branch_predictor_final_stats(); }
+
 void O3_CPU::impl_last_branch_result(champsim::address ip, champsim::address target, bool taken, uint8_t branch_type) const
 {
   branch_module_pimpl->impl_last_branch_result(ip, target, taken, branch_type);

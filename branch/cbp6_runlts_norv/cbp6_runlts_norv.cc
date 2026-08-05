@@ -111,5 +111,13 @@ void cbp6_runlts_norv::last_branch_result(champsim::address ip, champsim::addres
     next_pc = std::next(std::begin(intern_->input_queue))->ip;
   }
 
-  shared_host().resolve(ip, taken, branch_type, next_pc);
+  shared_host().resolve(ip, taken, branch_type, next_pc, intern_ == nullptr || !intern_->warmup);
+}
+
+void cbp6_runlts_norv::branch_predictor_final_stats()
+{
+  // ROI instruction count, so the reported MPKI matches the window ChampSim
+  // reports its own statistics over.
+  const auto roi_instructions = (intern_ != nullptr) ? intern_->roi_stats.instrs() : 0ULL;
+  shared_host().finish(static_cast<uint64_t>(roi_instructions));
 }

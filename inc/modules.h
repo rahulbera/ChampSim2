@@ -62,7 +62,15 @@ struct branch_predictor : public bound_to<O3_CPU> {
   static auto predict_branch_member_impl(long) -> std::false_type;
 
   template <typename T, typename... Args>
+  static auto final_stats_member_impl(int) -> decltype(std::declval<T>().branch_predictor_final_stats(std::declval<Args>()...), std::true_type{});
+  template <typename, typename...>
+  static auto final_stats_member_impl(long) -> std::false_type;
+
+  template <typename T, typename... Args>
   constexpr static bool has_initialize = decltype(initialize_member_impl<T, Args...>(0))::value;
+
+  template <typename T, typename... Args>
+  constexpr static bool has_final_stats = decltype(final_stats_member_impl<T, Args...>(0))::value;
 
   template <typename T, typename... Args>
   constexpr static bool has_last_branch_result = decltype(last_branch_result_member_impl<T, Args...>(0))::value;
