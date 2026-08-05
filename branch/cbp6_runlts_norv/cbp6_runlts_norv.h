@@ -22,6 +22,13 @@
  * Measured cost of the missing channel, in CBP6's own simulator over 18 traces:
  * +6.33% MPKI, +0.84% CycWpPKI. See the design doc, section 2.1.
  *
+ * Known defect in the submission, deliberately left as-is:
+ * CBP2025_RUNLTS::TrackOtherInst forwards pred_dir and resolve_dir to the
+ * implementation in swapped order. It is inert in both this adapter and the CBP6
+ * framework because that path only ever carries unconditional branches, where
+ * both are true. The protocol checker asserts that precondition rather than the
+ * vendored source being patched.
+ *
  * SINGLE CORE ONLY, as with the other CBP6 tenants: predictor state lives in
  * namespace-scope globals shared by every instance.
  */

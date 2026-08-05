@@ -20,8 +20,11 @@
 // copies nested inside the anonymous namespace below become no-ops via their
 // own include guards. Without this, <iostream> and friends would be pulled into
 // the namespace.
+#include <algorithm>
 #include <array>
 #include <assert.h>
+#include <functional>
+#include <memory>
 #include <inttypes.h>
 #include <iostream>
 #include <math.h>

@@ -99,6 +99,13 @@ public:
       if ((rec.brtype & BRTYPE_COND) != 0) {
         fail("TrackOtherInst used for a conditional branch at pc=" + std::to_string(rec.pc));
       }
+      // RUNLTS's CBP2025_RUNLTS::TrackOtherInst forwards pred_dir and
+      // resolve_dir to its implementation in swapped order. That is inert only
+      // because this path carries an unconditional branch, where both are true.
+      // If either ever arrives false the swap becomes observable, so pin it.
+      if (!rec.pred_dir || !rec.resolve_dir) {
+        fail("TrackOtherInst at pc=" + std::to_string(rec.pc) + " has pred_dir/resolve_dir not both true; a tenant that swaps them would now diverge");
+      }
       ++other_;
       break;
     }

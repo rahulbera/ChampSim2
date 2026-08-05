@@ -880,7 +880,11 @@ struct PredRelatedVariables {
 };
 
 class RUNLTS {
-    int NewlyDecay, NewlyUseful = 4;
+    // CHAMPSIM DEVIATION: '= 0' added on NewlyDecay. Only the last declarator in
+    // `int NewlyDecay, NewlyUseful = 4;` was initialized, so NewlyDecay was
+    // indeterminate under make_shared, and it is read at update() (allocation
+    // throttling: `NewlyDecay <= NewlyUseful * 2`) before its first write.
+    int NewlyDecay = 0, NewlyUseful = 4;
 
 public:
     cbp_hist_t active_hist; // running history always updated accurately

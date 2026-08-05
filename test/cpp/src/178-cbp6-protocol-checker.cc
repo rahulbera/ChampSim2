@@ -141,3 +141,13 @@ TEST_CASE("The checker reports how much it saw")
   REQUIRE(uut.other_branches() == 1);
   REQUIRE(uut.records() == 13);
 }
+
+TEST_CASE("TrackOtherInst must carry pred_dir and resolve_dir both true")
+{
+  // RUNLTS's wrapper forwards these two swapped. That is invisible only while
+  // both are true, which holds because the path is unconditional branches.
+  protocol_checker uut;
+  uut.observe({call_kind::track_other, champsim::cbp6::BRTYPE_RETURN, true, false, 0, 0x400, 0x900});
+
+  REQUIRE_FALSE(uut.finish());
+}
