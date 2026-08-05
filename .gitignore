@@ -30,3 +30,6 @@ compile_commands.json
 
 .vscode/
 **/.DS_Store
+
+# standalone tool binary
+tools/cbp6_replay/cbp6_replay

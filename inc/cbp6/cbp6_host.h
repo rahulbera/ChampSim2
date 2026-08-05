@@ -15,6 +15,15 @@
  *                 bool pred_dir, uint64_t next_pc)
  *     void terminate()
  *
+ * STORAGE REQUIREMENT: a host must have static storage duration. CBP6 tenants
+ * routinely rely on zero-initialization that their own constructors do not
+ * perform -- CBP2016 TAGE-SC-L's cbp_hist_t initializes only two of its members
+ * and leaves IMLIcount indeterminate, and because its constructor is
+ * user-provided, value-initialising the host with {} does not zero it either.
+ * Static storage is zero-initialized before constructors run; an automatic or
+ * heap-allocated host is undefined behaviour and crashes on the first
+ * prediction. Tenant modules should hold their host in a function-local static.
+ *
  * Timing note: CBP6 splits the update in two -- speculative history right after
  * the prediction (spec_update, cbp2025/lib/bp.cc:112) and the non-speculative
  * table update at the branch's execute cycle, out of program order
@@ -33,7 +42,12 @@
 #include <stdexcept>
 #include <string>
 
+#include <cstdio>
+
+#include <fmt/core.h>
+
 #include "address.h"
+#include "cbp6/cbp6_protocol.h"
 #include "cbp6/cbp6_types.h"
 
 namespace champsim::cbp6
@@ -61,12 +75,70 @@ class host
   uint64_t seq_no_{0};
   bool last_prediction_{false};
 
+  // Validates the CBP6 call protocol over a whole run. Null unless
+  // CBP6_PROTOCOL_CHECK is set; see cbp6_protocol.h.
+  std::unique_ptr<protocol_checker> checker_{checker_from_env()};
+  std::unique_ptr<call_log_writer> log_{writer_from_env()};
+  bool reported_{false};
+
+  void note(call_kind kind, int brtype, bool pred_dir, bool resolve_dir, uint64_t seq_no, uint64_t pc, uint64_t next_pc)
+  {
+    if (checker_ == nullptr && log_ == nullptr) {
+      return;
+    }
+    const call_record rec{kind, brtype, pred_dir, resolve_dir, seq_no, pc, next_pc};
+    if (checker_ != nullptr) {
+      checker_->observe(rec);
+    }
+    if (log_ != nullptr) {
+      log_->write(rec);
+    }
+  }
+
 public:
   [[nodiscard]] Tenant& tenant() { return tenant_; }
   [[nodiscard]] const Tenant& tenant() const { return tenant_; }
 
   void initialize() { tenant_.setup(); }
-  void finish() { tenant_.terminate(); }
+  // ChampSim has no final-stats hook for branch modules, so nothing calls
+  // finish() today (see the design doc: that hook is Milestone 4). Report from
+  // the destructor as well, so a validation run always prints its verdict --
+  // silence would otherwise be indistinguishable from a clean run.
+  ~host() { report_protocol_check(); }
+
+  host() = default;
+  host(const host&) = delete;
+  host& operator=(const host&) = delete;
+  host(host&&) = delete;
+  host& operator=(host&&) = delete;
+
+  void report_protocol_check()
+  {
+    if (checker_ == nullptr || reported_) {
+      return;
+    }
+    reported_ = true;
+
+    const bool ok = checker_->finish();
+    fmt::print("\n*** CBP6 protocol check: {} records, {} conditional branches, {} other branches -> {}\n", checker_->records(),
+               checker_->conditional_branches(), checker_->other_branches(), ok ? "OK" : "VIOLATIONS");
+    // Only the first few matter; a broken protocol repeats its mistake.
+    std::size_t shown = 0;
+    for (const auto& v : checker_->violations()) {
+      fmt::print("    violation: {}\n", v);
+      if (++shown >= 10) {
+        fmt::print("    ... and {} more\n", std::size(checker_->violations()) - shown);
+        break;
+      }
+    }
+    std::fflush(stdout);
+  }
+
+  void finish()
+  {
+    tenant_.terminate();
+    report_protocol_check();
+  }
 
   // Returns the direction to report to ChampSim.
   bool predict(champsim::address ip, uint8_t branch_type)
@@ -82,6 +154,7 @@ public:
 
     ++seq_no_;
     last_prediction_ = tenant_.predict(seq_no_, 0, ip.to<uint64_t>());
+    note(call_kind::predict, BRTYPE_COND, last_prediction_, false, seq_no_, ip.to<uint64_t>(), 0);
     return last_prediction_;
   }
 
@@ -102,9 +175,12 @@ public:
 
     if (is_direction_predicted(branch_type)) {
       tenant_.history_update(seq_no_, 0, pc, brtype, last_prediction_, taken, npc);
+      note(call_kind::history_update, brtype, last_prediction_, taken, seq_no_, pc, npc);
       tenant_.update(seq_no_, 0, pc, taken, last_prediction_, npc);
+      note(call_kind::update, brtype, last_prediction_, taken, seq_no_, pc, npc);
     } else {
       tenant_.TrackOtherInst(pc, brtype, true, taken, npc);
+      note(call_kind::track_other, brtype, true, taken, 0, pc, npc);
     }
   }
 };
