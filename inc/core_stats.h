@@ -15,6 +15,12 @@ struct cpu_stats {
   long long end_cycles = 0;
   uint64_t total_rob_occupancy_at_branch_mispredict = 0;
 
+  // Cycles fetch spent frozen after a misprediction, i.e. cycles that produced
+  // no useful work. ChampSim does not fetch a wrong path, so this is the
+  // equivalent of CBP2025's CycWP: the interval between detecting the
+  // misprediction and fetch restarting, penalty included.
+  uint64_t cycles_on_wrong_path = 0;
+
   champsim::stats::event_counter<branch_type> total_branch_types = {};
   champsim::stats::event_counter<branch_type> branch_type_misses = {};
 

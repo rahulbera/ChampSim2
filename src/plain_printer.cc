@@ -56,6 +56,13 @@ std::vector<std::string> champsim::plain_printer::format(O3_CPU::stats_type stat
                               ::print_ratio(std::kilo::num * total_mispredictions, stats.instrs()),
                               ::print_ratio(stats.total_rob_occupancy_at_branch_mispredict, total_mispredictions)));
 
+  // Cycles fetch spent frozen after a misprediction -- CBP2025's CycWP -- and
+  // the same figure per 1K instructions. MPKI counts mispredictions; this
+  // counts what they cost.
+  lines.push_back(fmt::format("{} Cycles on wrong path: {} CycWPKI: {} Average cycles per mispredict: {}", stats.name, stats.cycles_on_wrong_path,
+                              ::print_ratio(std::kilo::num * stats.cycles_on_wrong_path, stats.instrs()),
+                              ::print_ratio(stats.cycles_on_wrong_path, total_mispredictions)));
+
   lines.emplace_back("Branch type MPKI");
   for (auto idx : types) {
     lines.push_back(fmt::format("{}: {}", branch_type_names.at(champsim::to_underlying(idx)),

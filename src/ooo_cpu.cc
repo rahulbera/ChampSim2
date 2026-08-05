@@ -157,6 +157,13 @@ bool O3_CPU::do_predict_branch(ooo_model_instr& arch_instr)
         fetch_resume_time = champsim::chrono::clock::time_point::max();
         stop_fetch = true;
         arch_instr.branch_mispredicted = true;
+
+        // Only the first freeze starts the clock: a second misprediction can be
+        // detected while fetch is already frozen, and the lost cycles overlap.
+        if (!fetch_stalled_on_mispredict) {
+          fetch_stalled_on_mispredict = true;
+          fetch_stall_begin = current_time;
+        }
       }
     } else {
       stop_fetch = arch_instr.branch_taken; // if correctly predicted taken, then we can't fetch anymore instructions this cycle
@@ -355,7 +362,7 @@ long O3_CPU::decode_instruction()
         // clear the branch_mispredicted bit so we don't attempt to resume fetch again at execute
         db_entry.branch_mispredicted = 0;
         // pay misprediction penalty
-        this->fetch_resume_time = this->current_time + BRANCH_MISPREDICT_PENALTY;
+        this->resume_fetch_after_mispredict();
       }
     }
     // Add to dispatch
@@ -628,7 +635,19 @@ void O3_CPU::do_complete_execution(ooo_model_instr& instr)
   }
 
   if (instr.branch_mispredicted) {
-    fetch_resume_time = current_time + BRANCH_MISPREDICT_PENALTY;
+    resume_fetch_after_mispredict();
+  }
+}
+
+// Restart fetch after a misprediction and charge the frozen interval, penalty
+// included, to cycles_on_wrong_path.
+void O3_CPU::resume_fetch_after_mispredict()
+{
+  fetch_resume_time = current_time + BRANCH_MISPREDICT_PENALTY;
+
+  if (fetch_stalled_on_mispredict) {
+    sim_stats.cycles_on_wrong_path += static_cast<uint64_t>((fetch_resume_time - fetch_stall_begin) / clock_period);
+    fetch_stalled_on_mispredict = false;
   }
 }
 

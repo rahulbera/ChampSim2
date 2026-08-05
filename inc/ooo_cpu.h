@@ -139,6 +139,12 @@ public:
   // branch
   champsim::chrono::clock::time_point fetch_resume_time{};
 
+  // When fetch froze on a misprediction, and whether it is frozen now. Used to
+  // charge the stall to cycles_on_wrong_path when fetch restarts.
+  champsim::chrono::clock::time_point fetch_stall_begin{};
+  bool fetch_stalled_on_mispredict = false;
+  void resume_fetch_after_mispredict();
+
   const long IN_QUEUE_SIZE;
   std::deque<ooo_model_instr> input_queue;
 
