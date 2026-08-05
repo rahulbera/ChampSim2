@@ -74,6 +74,28 @@ bit, and correspondingly little budget freed by dropping it.
 The v2 load-value path buys 2.3 points of MPKI and ~zero cycles for real plumbing; full values
 would require re-tracing every workload for a component worth <1% of wrong-path cycles.
 
+> **Update (Milestone 0, measured): the v2 traces cannot be used for branch-predictor
+> evaluation at all yet, for an unrelated reason.** The v2 tracer never emits the flags
+> register: `REG_FLAGS` (25) appears **zero** times in 5M records of
+> `723.llvm_r-codegen-232B`, in either the source or destination register fields, while the v1
+> control (`400.perlbench`) has 853,522 source and 1,313,249 destination occurrences.
+>
+> ChampSim *infers* branch type from register usage (`inc/instruction.h:154-191`), and a
+> conditional branch that reads no flags matches the first arm — `!reads_sp && !reads_flags &&
+> writes_ip && !reads_other` — so it is classified `BRANCH_DIRECT_JUMP` and its `branch_taken`
+> is then overwritten to `true` (`:157`). The proof is the taken rate of that bucket: **49.17%
+> on v2 versus 100.00% on v1**. A genuine unconditional jump is always taken, so roughly half
+> of v2's "direct jumps" are not-taken conditionals.
+>
+> Consequently ChampSim sees **zero conditional branches** on the v2 trace, `predict_branch`
+> is never consulted, and all four stock predictors return byte-identical results
+> (89.63% accuracy, 21.93 MPKI — 87% of which is `BRANCH_DIRECT_JUMP`). That number measures
+> the BTB, not the direction predictor.
+>
+> **Until the v2 tracer emits the flags register, evaluate on v1 traces.** This also defers the
+> load-value question entirely: there is no point wiring `execute_notify` to a trace on which
+> no predictor can be measured.
+
 ### 2.2 Scope
 
 Adapter + RUNLTS (no-RV) + the bundled CBP2016 TAGE-SC-L at 64KB and 192KB. The TAGE-SC-L port
@@ -278,7 +300,10 @@ branch classification to work at all.
 
 | Risk | Detail | Mitigation |
 |---|---|---|
-| `BRANCH_OTHER` bypass | `basic_btb` returns `always_taken` for any non-CONDITIONAL entry (`basic_btb.cc:27`), with `BRANCH_OTHER` defaulting to `ALWAYS_TAKEN` (`direct_predictor.cc:12-19`), and `predict_branch(...) \|\| always_taken` (`ooo_cpu.cc:138`) overrides the predictor. Those branches never reach RUNLTS, *and* are excluded from printed aggregates (`plain_printer.cc:43-44`) though counted internally. | Milestone 0 measures the share before anything is trusted |
+| ~~`BRANCH_OTHER` bypass~~ **CLOSED** | Measured at Milestone 0: **0.000%** of classified branches on both `400.perlbench` (v1) and `723.llvm_r` (v2). The classifier also reconciles exactly — (classified − trace `is_branch`) equals calls + returns with zero residual on both traces, because Pin's `INS_IsBranch` excludes calls/returns. The upstream `WriteToSet` tracer overflow also shows zero signature hits. | No action needed |
+| **v2 traces carry no flags register** | Every conditional branch is misclassified as an always-taken `BRANCH_DIRECT_JUMP`; no predictor is ever consulted. See the boxed update in §2.1. | **Blocks all v2 evaluation.** Tracer fix required; use v1 meanwhile |
+| Modules cannot include `ooo_cpu.h` | `SET_ASIDE_CHAMPSIM_MODULE` is not re-entrant: `ooo_cpu.h` sets it aside, then the nested `address.h` re-defines `CHAMPSIM_MODULE` on its way out, so `util/lru_table.h`'s `#error` fires (it sits outside that header's include guard). No shipped branch/BTB module includes `ooo_cpu.h`, so the path is untested upstream. | Set aside at the outermost level in the module `.cc`; a proper fix would make the flag re-entrant |
+| Vendored `.h` files are force-included | `config/instantiation_file.py:284-300` includes **every `.h`** in a selected module's tree into one shared TU compiled without the module flags, in nondeterministic order. A vendored predictor header would be compiled a second time at global scope, duplicating its external-linkage globals. | Name vendored headers `.hpp`; the extension match is exact |
 | Silent no-RV misreporting | Nothing asserts that the register channel is dead | Self-labelling module, banner, 0% activation stat (§6) |
 | Update-timing bias | Collapse makes the port look better than its CBP number | Milestone 4 quantifies it; knob defaults to ChampSim semantics |
 | Multi-core corruption | `RBias`, `WR`, `RegFileState`, `bias_components`, `IMLI_components`, `bim_pred/bim_hyst` are namespace-scope, outside `class RUNLTS`; ChampSim builds one module per core | Milestone 5; single-core is safe until then |
