@@ -67,7 +67,7 @@ TEST_CASE("A zstd-compressed stream of v2 records can be read")
 
 TEST_CASE("get_tracereader reads a .zst file of v2 records end to end")
 {
-  const std::string path{"champsim-test-v2.champsimtrace.zst"};
+  const std::string path{"champsim-test-v2.champsim2.zst"};
   {
     std::ofstream out{path, std::ios::binary};
     auto compressed = zstd_compress(raw_bytes(sample_program()));
@@ -129,4 +129,18 @@ TEST_CASE("get_tracereader still defaults to the v1 record format")
   }
 
   std::remove(path.c_str());
+}
+
+TEST_CASE("get_tracereader refuses to read a v1-named trace as v2")
+{
+  // The mirror of the champsim2 guard. A v1 file read as v2 consumes eight
+  // 64-byte records per 512-byte read and is just as silently wrong.
+  REQUIRE_THROWS_AS(get_tracereader("traces/400.perlbench.champsimtrace.xz", 0, false, false, 2), std::invalid_argument);
+}
+
+TEST_CASE("The naming guard looks at the file name, not the directory")
+{
+  // A v1 trace stored under a directory called champsim2-traces must not trip
+  // the v2 guard.
+  REQUIRE_NOTHROW(get_tracereader("champsim2-traces/400.perlbench.champsimtrace.xz", 0, false, false, 1));
 }

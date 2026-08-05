@@ -67,8 +67,19 @@ champsim::tracereader get_tracereader(const std::string& fname, uint8_t cpu, boo
   // 512 is a multiple of 64. Fall back on the naming convention to catch the
   // likely mistake. This is a convention check, not a format check: a v2 trace
   // named otherwise will still be misread if the version is wrong.
-  if (fname.find("champsim2") != std::string::npos && trace_version != 2) {
+  // Match on the basename: a v1 trace living under a directory called
+  // "champsim2-traces" must not trip the v2 guard.
+  const auto slash = fname.find_last_of('/');
+  const std::string basename = (slash == std::string::npos) ? fname : fname.substr(slash + 1);
+
+  if (basename.find("champsim2") != std::string::npos && trace_version != 2) {
     throw std::invalid_argument{"Trace '" + fname + "' is named as a v2 trace but --trace-version is " + std::to_string(trace_version)};
+  }
+
+  // The mirror case: a v1-named trace read as v2 consumes eight 64-byte records
+  // per 512-byte read and is just as silently wrong.
+  if (basename.find("champsim2") == std::string::npos && basename.find("champsimtrace") != std::string::npos && trace_version == 2) {
+    throw std::invalid_argument{"Trace '" + fname + "' is named as a v1 trace but --trace-version is 2"};
   }
 
   if (trace_version == 2) {

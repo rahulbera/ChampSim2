@@ -242,6 +242,15 @@ struct zstd_tag_t {
     inflate_state_type state{new state_type};
     state->dctx = ::ZSTD_createDCtx();
     assert(state->dctx != nullptr);
+
+    // A bare DCtx refuses frames whose window exceeds ZSTD_WINDOWLOG_LIMIT_DEFAULT
+    // (27), which any trace compressed with --long or --ultra will. Raise the
+    // limit to whatever this build of zstd allows. ZSTD_WINDOWLOG_MAX itself is
+    // behind ZSTD_STATIC_LINKING_ONLY, so query the bound instead.
+    const auto bounds = ::ZSTD_dParam_getBounds(ZSTD_d_windowLogMax);
+    if (::ZSTD_isError(bounds.error) == 0U) {
+      ::ZSTD_DCtx_setParameter(state->dctx, ZSTD_d_windowLogMax, bounds.upperBound);
+    }
     return state;
   }
 };

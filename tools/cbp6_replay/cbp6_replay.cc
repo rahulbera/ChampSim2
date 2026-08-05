@@ -1,14 +1,12 @@
 /*
  * Replays a dumped CBP6 call log into a bare tenant predictor, outside ChampSim.
  *
- * Two things are checked:
+ * What it checks: driving a fresh tenant with exactly the dumped call sequence
+ * reproduces every prediction the in-simulator tenant made, bit for bit. It does
+ * NOT re-run the protocol checker -- that runs live in the simulator, behind
+ * CBP6_PROTOCOL_CHECK.
  *
- *   1. The call stream obeys the CBP6 protocol (the same rules the live checker
- *      applies, re-run offline).
- *   2. Driving a fresh tenant with exactly that call sequence reproduces every
- *      prediction the in-simulator tenant made, bit for bit.
- *
- * (2) is the point. It establishes that the tenant's output is a pure function
+ * That establishes that the tenant's output is a pure function
  * of the adapter's call sequence -- that nothing leaks in from ChampSim state,
  * and that a dumped log is a complete description of a run. That makes the log a
  * regression oracle: refactor the adapter, replay an old log, and any behavioural
@@ -119,6 +117,18 @@ int main(int argc, char** argv)
   }
 
   std::printf("replayed %zu records, %zu predictions\n", records, predictions);
+
+  // An empty or truncated log must not report success: a green exit on a log
+  // containing nothing is worse than no oracle at all.
+  if (predictions == 0) {
+    std::printf("RESULT: FAIL -- the log contained no predictions (empty, truncated, or capped dump?)\n");
+    return 1;
+  }
+  if (!in.eof()) {
+    std::printf("RESULT: FAIL -- the log ends with a partial record; it was truncated mid-write\n");
+    return 1;
+  }
+
   if (mismatches == 0) {
     std::printf("RESULT: OK -- every replayed prediction matched the simulator\n");
     return 0;

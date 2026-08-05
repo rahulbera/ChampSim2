@@ -147,10 +147,11 @@ public:
   [[nodiscard]] const Tenant& tenant() const { return tenant_; }
 
   void initialize() { tenant_.setup(); }
-  // ChampSim has no final-stats hook for branch modules, so nothing calls
-  // finish() today (see the design doc: that hook is Milestone 4). Report from
-  // the destructor as well, so a validation run always prints its verdict --
-  // silence would otherwise be indistinguishable from a clean run.
+  // finish() is normally driven by ChampSim's branch-predictor final-stats hook
+  // (src/main.cc). Reporting from the destructor as well covers the paths that
+  // hook does not reach -- an early exit, or a unit test -- so a validation run
+  // always prints its verdict. Silence would otherwise be indistinguishable
+  // from a clean run. report_protocol_check() is idempotent.
   ~host() { report_protocol_check(); }
 
   host() = default;
@@ -180,6 +181,8 @@ public:
     }
     std::fflush(stdout);
   }
+
+  [[nodiscard]] bool delayed_update() const { return delayed_; }
 
   // Called when a branch completes execution, out of program order. Only does
   // anything in delayed mode.
@@ -212,6 +215,9 @@ public:
     if (!in_flight_.empty()) {
       fmt::print("    WARNING: {} branches still in flight at end of run\n", std::size(in_flight_));
     }
+    if (log_ != nullptr && log_->exhausted()) {
+      fmt::print("    WARNING: call log hit CBP6_CALL_DUMP_MAX and is TRUNCATED; a replay of it proves nothing about the rest of the run\n");
+    }
 
     report_protocol_check();
   }
@@ -241,8 +247,6 @@ public:
   // conditional look like a loop.
   // `in_roi` excludes the warmup phase, so the counters match the window
   // ChampSim reports its own statistics over.
-  [[nodiscard]] bool delayed_update() const { return delayed_; }
-
   void resolve(champsim::address ip, bool taken, uint8_t branch_type, champsim::address next_pc, bool in_roi = true, uint64_t instr_id = 0)
   {
     if (!is_branch(branch_type)) {

@@ -5,6 +5,17 @@
 
 #include "instruction.h"
 
+// The v2 payload is opt-in (see inc/trace_instruction.h): carrying it costs
+// roughly 2x wall-clock and nothing reads it yet. These cases therefore only
+// build when it is enabled:
+//
+//     CPPFLAGS=-DCHAMPSIM_TRACE_MEMORY_VALUES=1 make test
+//
+// The macro must be the same for the whole build -- ChampSim shares core object
+// files between the test binary and the simulator binaries, so varying a
+// struct-layout macro per target is an ODR violation.
+#if CHAMPSIM_TRACE_MEMORY_VALUES
+
 namespace
 {
 // A v2 record whose source memory operands sit in slots 0 and 2, leaving slot 1
@@ -28,10 +39,13 @@ input_instr_v2 gappy_record()
   rec.source_memory_size[2] = 4;
   rec.source_memory_value[2][0] = 0xc3;
 
-  rec.destination_memory[0] = 0xdddd0000;
-  rec.destination_memory_pa[0] = 0x44440000;
-  rec.destination_memory_size[0] = 2;
-  rec.destination_memory_value[0][0] = 0xd4;
+  // Slot 0 deliberately empty, so the destination half has a gap too. With the
+  // operand in slot 0 the compacted index equals the raw slot index and the
+  // compaction is not actually under test.
+  rec.destination_memory[1] = 0xdddd0000;
+  rec.destination_memory_pa[1] = 0x44440000;
+  rec.destination_memory_size[1] = 2;
+  rec.destination_memory_value[1][0] = 0xd4;
 
   rec.privilege = 1;
   rec.instr_type = 2;
@@ -95,3 +109,4 @@ TEST_CASE("A v1 instruction leaves the v2 payload zeroed")
   REQUIRE(uut.privilege == 0);
   REQUIRE(uut.instr_type == 0);
 }
+#endif // CHAMPSIM_TRACE_MEMORY_VALUES

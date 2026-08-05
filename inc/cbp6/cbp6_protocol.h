@@ -159,6 +159,8 @@ public:
     --remaining_;
   }
 
+  // A truncated log replays clean and reports OK, which reads as a pass. Callers
+  // must surface this rather than let a partial log look like a full one.
   [[nodiscard]] bool exhausted() const { return remaining_ == 0; }
 };
 
@@ -175,7 +177,12 @@ inline std::unique_ptr<call_log_writer> writer_from_env()
   std::size_t cap = 4000000;
   // NOLINTNEXTLINE(concurrency-mt-unsafe): called once, during initialization
   if (const char* cap_str = std::getenv("CBP6_CALL_DUMP_MAX"); cap_str != nullptr && *cap_str != '\0') {
-    cap = static_cast<std::size_t>(std::strtoull(cap_str, nullptr, 10));
+    char* end = nullptr;
+    const auto parsed = std::strtoull(cap_str, &end, 10);
+    if (end == nullptr || *end != '\0' || parsed == 0) {
+      throw std::invalid_argument{std::string{"CBP6_CALL_DUMP_MAX is not a positive integer: "} + cap_str};
+    }
+    cap = static_cast<std::size_t>(parsed);
   }
   return std::make_unique<call_log_writer>(path, cap);
 }

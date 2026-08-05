@@ -1771,4 +1771,10 @@ class CBP2016_TAGE_SC_L
 #undef UINT64
 
 #endif
-static CBP2016_TAGE_SC_L cbp2016_tage_sc_l;
+// CHAMPSIM DEVIATION: disabled. The CBP2016 harness instantiated the predictor
+// here for its own interface file; ChampSim's adapter owns its own instance in a
+// function-local static, so this one is never referenced. Left enabled it is
+// still constructed at static-init time in EVERY simulator binary -- ChampSim
+// links every module into every binary -- running init_histories() and leaking
+// its new[] tables, in builds that select a completely different predictor.
+// static CBP2016_TAGE_SC_L cbp2016_tage_sc_l;

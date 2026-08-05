@@ -78,6 +78,22 @@ A branch predictor module may implement three functions.
 
    This function is called when a branch is resolved. The parameters are the same as in the previous hook, except that the last three are guaranteed to be correct.
 
+.. cpp:function:: void branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type)
+
+   This function is called when a branch completes execution, which happens out of program order and later than ``last_branch_result``.
+   It is intended for predictors that separate speculative history update from the non-speculative table update, as the CBP2025 interface does.
+   Most predictors do not need it.
+
+   :param instr_id: the unique identifier of the dynamic instruction, so a prediction made earlier can be matched to this resolution
+   :param ip: The instruction pointer of the branch
+   :param branch_target: The correct target of the branch, or a default-constructed address if the branch was not taken
+   :param taken: A boolean value. This parameter will be nonzero if the branch was taken.
+   :param branch_type: One of the branch types listed above
+
+.. cpp:function:: void branch_predictor_final_stats()
+
+   This function is called at the end of the simulation and can be used to print statistics.
+
 -----------------------------------
 Branch Target Buffers
 -----------------------------------

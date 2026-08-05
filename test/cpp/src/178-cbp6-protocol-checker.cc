@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include <catch2/matchers/catch_matchers_string.hpp>
+
 #include "cbp6/cbp6_protocol.h"
 #include "instruction.h"
 
@@ -71,8 +73,10 @@ TEST_CASE("An update whose sequence number does not match its predict is caught"
   uut.observe(predict_of(1, 0x400, true));
   uut.observe(hist_of(1, 0x400, true, true, 0x500));
   uut.observe(update_of(2, 0x400, true, true, 0x500)); // wrong seq_no
+  uut.observe(update_of(1, 0x400, true, true, 0x500)); // drain, so the leak rule cannot be what fails
 
   REQUIRE_FALSE(uut.finish());
+  REQUIRE_THAT(uut.violations().at(0), Catch::Matchers::ContainsSubstring("no matching predict"));
 }
 
 TEST_CASE("An update for a different PC than its predict is caught")
@@ -80,8 +84,10 @@ TEST_CASE("An update for a different PC than its predict is caught")
   protocol_checker uut;
   uut.observe(predict_of(1, 0x400, true));
   uut.observe(hist_of(1, 0x408, true, true, 0x500)); // wrong pc
+  uut.observe(update_of(1, 0x400, true, true, 0x500));
 
   REQUIRE_FALSE(uut.finish());
+  REQUIRE_THAT(uut.violations().at(0), Catch::Matchers::ContainsSubstring("pc mismatch"));
 }
 
 TEST_CASE("A predicted direction that changes between predict and update is caught")
@@ -91,8 +97,10 @@ TEST_CASE("A predicted direction that changes between predict and update is caug
   protocol_checker uut;
   uut.observe(predict_of(1, 0x400, true));
   uut.observe(hist_of(1, 0x400, false, true, 0x500)); // pred_dir flipped
+  uut.observe(update_of(1, 0x400, true, true, 0x500));
 
   REQUIRE_FALSE(uut.finish());
+  REQUIRE_THAT(uut.violations().at(0), Catch::Matchers::ContainsSubstring("predicted direction changed"));
 }
 
 TEST_CASE("Sequence numbers must strictly increase")
@@ -114,8 +122,10 @@ TEST_CASE("A not-taken conditional branch must carry a real fall-through address
   protocol_checker uut;
   uut.observe(predict_of(1, 0x400, false));
   uut.observe(hist_of(1, 0x400, false, false, 0)); // next_pc == 0
+  uut.observe(update_of(1, 0x400, false, false, 0x404));
 
   REQUIRE_FALSE(uut.finish());
+  REQUIRE_THAT(uut.violations().at(0), Catch::Matchers::ContainsSubstring("next_pc == 0"));
 }
 
 TEST_CASE("TrackOtherInst must not be used for conditional branches")
