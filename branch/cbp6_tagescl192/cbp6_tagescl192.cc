@@ -14,7 +14,7 @@
 #include "ooo_cpu.h"
 #define CHAMPSIM_MODULE
 
-#include "cbp6_tagescl64.h"
+#include "cbp6_tagescl192.h"
 
 // Every include the vendored header uses, hoisted to global scope so that the
 // copies nested inside the anonymous namespace below become no-ops via their
@@ -40,7 +40,7 @@ namespace
 {
 // The vendored predictor declares its tables as namespace-scope globals with
 // external linkage (Bias, GGEHLA, ...) and uses the include guard
-// _TAGE_PREDICTOR_H_, which its 192KB sibling also uses. Wrapping it in an
+// _TAGE_PREDICTOR_H_, which its 64KB sibling also uses. Wrapping it in an
 // anonymous namespace gives every one of those symbols internal linkage, so
 // several CBP6 predictors can be linked into one binary -- which ChampSim does
 // by default, since config.sh compiles every module it finds.
@@ -56,7 +56,7 @@ namespace
 #pragma GCC diagnostic ignored "-Wunused-function"
 #pragma GCC diagnostic ignored "-Wreorder"
 #pragma GCC diagnostic ignored "-Wparentheses"
-#include "vendor/cbp2016_tage_sc_l.hpp"
+#include "vendor/cbp2016_tage_sc_l_192kb.hpp"
 #pragma GCC diagnostic pop
 
 champsim::cbp6::host<CBP2016_TAGE_SC_L>& shared_host()
@@ -67,22 +67,22 @@ champsim::cbp6::host<CBP2016_TAGE_SC_L>& shared_host()
 
 } // namespace
 
-void cbp6_tagescl64::initialize_branch_predictor()
+void cbp6_tagescl192::initialize_branch_predictor()
 {
   // intern_ is null in unit tests, which construct the module without a core.
   if (intern_ != nullptr) {
-    champsim::cbp6::require_single_core(intern_->cpu, "cbp6_tagescl64");
+    champsim::cbp6::require_single_core(intern_->cpu, "cbp6_tagescl192");
   }
 
   shared_host().initialize();
 }
 
-bool cbp6_tagescl64::predict_branch(champsim::address ip, champsim::address /*predicted_target*/, bool /*always_taken*/, uint8_t branch_type)
+bool cbp6_tagescl192::predict_branch(champsim::address ip, champsim::address /*predicted_target*/, bool /*always_taken*/, uint8_t branch_type)
 {
   return shared_host().predict(ip, branch_type);
 }
 
-void cbp6_tagescl64::last_branch_result(champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type)
+void cbp6_tagescl192::last_branch_result(champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type)
 {
   // The tenant needs the architectural next PC. ChampSim's branch_target is the
   // successor's IP for a taken branch but zero for a not-taken one
