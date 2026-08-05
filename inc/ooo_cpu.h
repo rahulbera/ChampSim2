@@ -201,6 +201,8 @@ public:
     virtual bool impl_predict_branch(champsim::address ip, champsim::address predicted_target, bool always_taken, uint8_t branch_type) = 0;
     virtual void impl_branch_predictor_final_stats() = 0;
     virtual void impl_branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type) = 0;
+    virtual void impl_branch_decode_notify(uint64_t instr_id, uint8_t arch_dst_reg) = 0;
+    virtual void impl_branch_execute_notify(uint64_t instr_id, bool has_value, uint64_t value) = 0;
   };
 
   struct btb_module_concept {
@@ -221,6 +223,8 @@ public:
     [[nodiscard]] bool impl_predict_branch(champsim::address ip, champsim::address predicted_target, bool always_taken, uint8_t branch_type) final;
     void impl_branch_predictor_final_stats() final;
     void impl_branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type) final;
+    void impl_branch_decode_notify(uint64_t instr_id, uint8_t arch_dst_reg) final;
+    void impl_branch_execute_notify(uint64_t instr_id, bool has_value, uint64_t value) final;
   };
 
   template <typename... Ts>
@@ -242,6 +246,8 @@ public:
   [[nodiscard]] bool impl_predict_branch(champsim::address ip, champsim::address predicted_target, bool always_taken, uint8_t branch_type) const;
   void impl_branch_predictor_final_stats() const;
   void impl_branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type) const;
+  void impl_branch_decode_notify(uint64_t instr_id, uint8_t arch_dst_reg) const;
+  void impl_branch_execute_notify(uint64_t instr_id, bool has_value, uint64_t value) const;
 
   void impl_initialize_btb() const;
   void impl_update_btb(champsim::address ip, champsim::address predicted_target, bool taken, uint8_t branch_type) const;
@@ -285,6 +291,32 @@ void O3_CPU::branch_module_model<Bs...>::impl_branch_execute_resolve(uint64_t in
     using namespace champsim::modules;
     if constexpr (branch_predictor::has_execute_resolve<decltype(b), uint64_t, champsim::address, champsim::address, bool, uint8_t>) {
       b.branch_execute_resolve(instr_id, ip, branch_target, taken, branch_type);
+    }
+  };
+
+  std::apply([&](auto&... b) { (..., process_one(b)); }, intern_);
+}
+
+template <typename... Bs>
+void O3_CPU::branch_module_model<Bs...>::impl_branch_decode_notify(uint64_t instr_id, uint8_t arch_dst_reg)
+{
+  auto process_one = [&](auto& b) {
+    using namespace champsim::modules;
+    if constexpr (branch_predictor::has_decode_notify<decltype(b), uint64_t, uint8_t>) {
+      b.branch_decode_notify(instr_id, arch_dst_reg);
+    }
+  };
+
+  std::apply([&](auto&... b) { (..., process_one(b)); }, intern_);
+}
+
+template <typename... Bs>
+void O3_CPU::branch_module_model<Bs...>::impl_branch_execute_notify(uint64_t instr_id, bool has_value, uint64_t value)
+{
+  auto process_one = [&](auto& b) {
+    using namespace champsim::modules;
+    if constexpr (branch_predictor::has_execute_notify<decltype(b), uint64_t, bool, uint64_t>) {
+      b.branch_execute_notify(instr_id, has_value, value);
     }
   };
 

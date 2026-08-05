@@ -127,3 +127,7 @@ void cbp6_runlts_norv::branch_execute_resolve(uint64_t instr_id, champsim::addre
 {
   shared_host().execute_resolve(instr_id);
 }
+
+void cbp6_runlts_norv::branch_decode_notify(uint64_t instr_id, uint8_t arch_dst_reg) { shared_host().decode_notify(instr_id, arch_dst_reg); }
+
+void cbp6_runlts_norv::branch_execute_notify(uint64_t instr_id, bool has_value, uint64_t value) { shared_host().execute_notify(instr_id, has_value, value); }

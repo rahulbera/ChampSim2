@@ -72,6 +72,16 @@ struct branch_predictor : public bound_to<O3_CPU> {
   static auto execute_resolve_member_impl(long) -> std::false_type;
 
   template <typename T, typename... Args>
+  static auto decode_notify_member_impl(int) -> decltype(std::declval<T>().branch_decode_notify(std::declval<Args>()...), std::true_type{});
+  template <typename, typename...>
+  static auto decode_notify_member_impl(long) -> std::false_type;
+
+  template <typename T, typename... Args>
+  static auto execute_notify_member_impl(int) -> decltype(std::declval<T>().branch_execute_notify(std::declval<Args>()...), std::true_type{});
+  template <typename, typename...>
+  static auto execute_notify_member_impl(long) -> std::false_type;
+
+  template <typename T, typename... Args>
   constexpr static bool has_initialize = decltype(initialize_member_impl<T, Args...>(0))::value;
 
   template <typename T, typename... Args>
@@ -82,6 +92,16 @@ struct branch_predictor : public bound_to<O3_CPU> {
   // otherwise resolves everything at fetch.
   template <typename T, typename... Args>
   constexpr static bool has_execute_resolve = decltype(execute_resolve_member_impl<T, Args...>(0))::value;
+
+  // Fired at decode for each architectural destination register, and at execute
+  // completion with the value that register received, if one is known. CBP2025
+  // predictors that correlate on register values need both: the first marks the
+  // register's value unknown, the second supplies it.
+  template <typename T, typename... Args>
+  constexpr static bool has_decode_notify = decltype(decode_notify_member_impl<T, Args...>(0))::value;
+
+  template <typename T, typename... Args>
+  constexpr static bool has_execute_notify = decltype(execute_notify_member_impl<T, Args...>(0))::value;
 
   template <typename T, typename... Args>
   constexpr static bool has_last_branch_result = decltype(last_branch_result_member_impl<T, Args...>(0))::value;

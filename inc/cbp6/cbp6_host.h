@@ -42,6 +42,8 @@
 #include <cstdlib>
 #include <stdexcept>
 #include <unordered_map>
+
+#include "util/detect.h"
 #include <string>
 
 #include <cstdio>
@@ -50,6 +52,7 @@
 
 #include "address.h"
 #include "cbp6/cbp6_protocol.h"
+#include "cbp6/cbp6_register_map.h"
 #include "cbp6/cbp6_types.h"
 
 namespace champsim::cbp6
@@ -116,6 +119,22 @@ class host
     uint64_t next_pc;
   };
   std::unordered_map<uint64_t, pending_update> in_flight_;
+
+  // RUNLTS and its relatives correlate on the values recently written to
+  // architectural registers. ChampSim supplies them in two steps: a decode
+  // notification marks a register's value unknown, and an execute notification
+  // delivers it when knowable. The architectural register number has to be
+  // remembered between the two, because dispatch rewrites
+  // ooo_model_instr::destination_registers with physical IDs in place
+  // (src/ooo_cpu.cc:450) before execute is reached.
+  std::unordered_map<uint64_t, unsigned> pending_reg_;
+  uint64_t registers_marked_{0};
+  uint64_t values_delivered_{0};
+
+  template <typename U>
+  using tenant_takes_decode_notify = decltype(std::declval<U>().decode_notify(uint64_t{}, uint8_t{}, uint64_t{}));
+  template <typename U>
+  using tenant_takes_execute_notify = decltype(std::declval<U>().execute_notify(uint64_t{}, uint8_t{}, uint64_t{}, uint64_t{}));
   bool delayed_{delayed_update_from_env()};
 
   struct checker_mode_init {
@@ -184,6 +203,42 @@ public:
 
   [[nodiscard]] bool delayed_update() const { return delayed_; }
 
+  [[nodiscard]] std::size_t pending_register_writes() const { return std::size(pending_reg_); }
+
+  // Called at decode for each architectural destination register.
+  void decode_notify(uint64_t instr_id, uint8_t arch_dst_reg)
+  {
+    if constexpr (champsim::is_detected_v<tenant_takes_decode_notify, Tenant>) {
+      const auto slot = cbp6_register(arch_dst_reg);
+      if (!slot.has_value()) {
+        return; // not a data register, or a number the mapping does not know
+      }
+
+      tenant_.decode_notify(instr_id, 0, *slot);
+      pending_reg_.insert_or_assign(instr_id, *slot);
+      ++registers_marked_;
+    }
+  }
+
+  // Called at execute completion. `has_value` is false whenever the value is not
+  // in the trace -- an ALU result, for instance -- in which case the register
+  // simply stays marked unknown from the decode notification.
+  void execute_notify(uint64_t instr_id, bool has_value, uint64_t value)
+  {
+    if constexpr (champsim::is_detected_v<tenant_takes_execute_notify, Tenant>) {
+      auto found = pending_reg_.find(instr_id);
+      if (found == std::end(pending_reg_)) {
+        return;
+      }
+
+      if (has_value) {
+        tenant_.execute_notify(instr_id, 0, found->second, value);
+        ++values_delivered_;
+      }
+      pending_reg_.erase(found);
+    }
+  }
+
   // Called when a branch completes execution, out of program order. Only does
   // anything in delayed mode.
   void execute_resolve(uint64_t instr_id)
@@ -212,6 +267,16 @@ public:
     fmt::print("    direction mispredicts: {}  ({:.4g}% of conditionals)\n", roi_direction_misses_, rate);
     fmt::print("    direction MPKI: {:.4g}\n", per_ki);
     fmt::print("    update timing: {}\n", delayed_ ? "delayed to execute (CBP6-like)" : "immediate at fetch (ChampSim default)");
+
+    // Whether the register-value channel was actually live. A dead channel is
+    // otherwise invisible: the predictor keeps working and silently stops using
+    // the feature it was built around.
+    if (registers_marked_ > 0) {
+      fmt::print("    register-value channel: {} register writes seen, {} values delivered ({:.4g}%)\n", registers_marked_, values_delivered_,
+                 100.0 * static_cast<double>(values_delivered_) / static_cast<double>(registers_marked_));
+    } else {
+      fmt::print("    register-value channel: INERT (no register writes reported; predictor is running without it)\n");
+    }
     if (!in_flight_.empty()) {
       fmt::print("    WARNING: {} branches still in flight at end of run\n", std::size(in_flight_));
     }

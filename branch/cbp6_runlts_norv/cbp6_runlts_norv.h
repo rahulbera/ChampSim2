@@ -51,6 +51,13 @@ public:
   void last_branch_result(champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type);
   void branch_predictor_final_stats();
   void branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type);
+
+  // The register-value channel. Live only when ChampSim is built with
+  // CPPFLAGS=-DCHAMPSIM_TRACE_MEMORY_VALUES=1 and the trace carries memory
+  // values; otherwise every execute notification reports "no value" and the
+  // predictor runs exactly as it did before. The final-stats line says which.
+  void branch_decode_notify(uint64_t instr_id, uint8_t arch_dst_reg);
+  void branch_execute_notify(uint64_t instr_id, bool has_value, uint64_t value);
 };
 
 #endif

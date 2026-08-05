@@ -29,6 +29,8 @@
 #include "deadlock.h"
 #include "event_listeners.h"
 #include "instruction.h"
+#include <cstring>
+
 #include "util/span.h"
 
 long O3_CPU::operate()
@@ -354,6 +356,13 @@ long O3_CPU::decode_instruction()
   auto do_decode = [&, this](auto& db_entry) {
     this->do_dib_update(db_entry);
 
+    // Report each architectural destination register while the numbers are
+    // still architectural: rename_dest_register() overwrites this vector with
+    // physical IDs at dispatch, so by execute the original is gone.
+    for (auto dreg : db_entry.destination_registers) {
+      this->impl_branch_decode_notify(db_entry.instr_id, static_cast<uint8_t>(dreg));
+    }
+
     // Resume fetch
     if (db_entry.branch_mispredicted) {
       // These branches detect the misprediction at decode
@@ -634,6 +643,28 @@ void O3_CPU::do_complete_execution(ooo_model_instr& instr)
     impl_branch_execute_resolve(instr.instr_id, instr.ip, instr.branch_target, instr.branch_taken, instr.branch);
   }
 
+  // Deliver the value this instruction's destination register received, where
+  // it is knowable. Only a load is unambiguous: its destination register takes
+  // the data it read, so require exactly one destination register and at least
+  // one source memory operand. Everything else reports "no value", which leaves
+  // the register marked unknown by the decode notification -- the correct
+  // outcome, since an ALU result is not in the trace.
+  //
+  // This fires at execute, not fetch, deliberately. Handing a register value to
+  // a predictor at fetch would leak the branch outcome: the flags at an x86 jcc
+  // determine its direction outright.
+  if (!std::empty(instr.destination_registers)) {
+    bool has_value = false;
+    uint64_t value = 0;
+#if CHAMPSIM_TRACE_MEMORY_VALUES
+    if (std::size(instr.destination_registers) == 1 && !std::empty(instr.source_memory)) {
+      std::memcpy(&value, std::data(instr.source_memory_value.at(0)), sizeof(value));
+      has_value = true;
+    }
+#endif
+    impl_branch_execute_notify(instr.instr_id, has_value, value);
+  }
+
   if (instr.branch_mispredicted) {
     resume_fetch_after_mispredict();
   }
@@ -747,6 +778,16 @@ void O3_CPU::impl_branch_predictor_final_stats() const { branch_module_pimpl->im
 void O3_CPU::impl_branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type) const
 {
   branch_module_pimpl->impl_branch_execute_resolve(instr_id, ip, branch_target, taken, branch_type);
+}
+
+void O3_CPU::impl_branch_decode_notify(uint64_t instr_id, uint8_t arch_dst_reg) const
+{
+  branch_module_pimpl->impl_branch_decode_notify(instr_id, arch_dst_reg);
+}
+
+void O3_CPU::impl_branch_execute_notify(uint64_t instr_id, bool has_value, uint64_t value) const
+{
+  branch_module_pimpl->impl_branch_execute_notify(instr_id, has_value, value);
 }
 
 void O3_CPU::impl_last_branch_result(champsim::address ip, champsim::address target, bool taken, uint8_t branch_type) const
