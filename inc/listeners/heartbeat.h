@@ -19,7 +19,10 @@ public:
 
   static constexpr auto cli_key = "Heartbeat";
 
-  uint64_t cycles_between_printouts = 10000000;
+  // Instructions retired between heartbeat lines -- NOT cycles, despite what
+  // the old name said. Settable from the command line with
+  // --heartbeat-frequency; 10M is the historical default.
+  uint64_t instructions_between_printouts = 10000000;
   std::vector<uint64_t> num_retired_last_printout;
   std::vector<uint64_t> cycles_last_printout;
   std::vector<uint64_t> num_retired;
@@ -76,7 +79,7 @@ inline void handle_event<Event::RETIRE>(Heartbeat* hb, uint32_t& cpu, std::deque
     hb->cycles_start_phase[cpu] = current_cycles;
   }
 
-  if (hb->num_retired[cpu] >= hb->num_retired_last_printout[cpu] + hb->cycles_between_printouts) {
+  if (hb->num_retired[cpu] >= hb->num_retired_last_printout[cpu] + hb->instructions_between_printouts) {
 
     auto heartbeat_instr = static_cast<double>(hb->num_retired[cpu] - hb->num_retired_last_printout[cpu]);
     auto heartbeat_cycle = static_cast<double>(current_cycles - hb->cycles_last_printout[cpu]);
@@ -87,6 +90,12 @@ inline void handle_event<Event::RETIRE>(Heartbeat* hb, uint32_t& cpu, std::deque
     fmt::print(*(hb->std_out),
                "Heartbeat CPU {} instructions: {} cycles: {} heartbeat IPC: {:.4} cumulative IPC: {:.4} (Simulation time: {:%H hr %M min %S sec})\n", cpu,
                hb->num_retired[cpu], current_cycles, heartbeat_instr / heartbeat_cycle, phase_instr / phase_cycle, elapsed_time());
+
+    // Flush explicitly. A heartbeat exists to show the run is alive, and stdout
+    // is block-buffered when redirected to a file -- which is how long runs are
+    // actually launched -- so without this the lines appear only in 4 KiB
+    // batches, or not at all until the run ends.
+    hb->std_out->flush();
 
     hb->num_retired_last_printout[cpu] = hb->num_retired[cpu];
     hb->cycles_last_printout[cpu] = current_cycles;

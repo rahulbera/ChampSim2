@@ -1,4 +1,5 @@
 #include <catch.hpp>
+#include <algorithm>
 #include <typeinfo>
 #include <iostream>
 
@@ -128,4 +129,51 @@ TEST_CASE("The heartbeat listener prints correctly with multiple CPUs") {
     REQUIRE(rest.length() < 2);
 }
 
+}
+TEST_CASE("The heartbeat interval is configurable")
+{
+    // The default is 10M instructions, which is far too coarse to tell a long
+    // run from a stuck one. --heartbeat-frequency sets this.
+    std::ostringstream stdout{};
+    Heartbeat uut{&stdout};
+    uut.instructions_between_printouts = 1000000;
+
+    bool in_warmup = false;
+    uut.handle_event<Event::BEGIN_PHASE>(in_warmup);
+
+    // 1.5M retire events of 2 instructions each => 3M instructions retired.
+    for (int i = 0; i < 1500000; ++i) {
+        std::deque<ooo_model_instr> fake_instructions{{ooo_model_instr(0, input_instr()), ooo_model_instr(0, input_instr())}};
+        uint32_t cpu = 0;
+        uint64_t curr_cycles = i;
+        auto cb = std::cbegin(fake_instructions);
+        auto ce = std::cend(fake_instructions);
+        uut.handle_event<Event::RETIRE>(cpu, cb, ce, curr_cycles);
+    }
+
+    const std::string res = stdout.str();
+    REQUIRE(std::count(std::begin(res), std::end(res), '\n') == 3);
+}
+
+TEST_CASE("The heartbeat counts instructions retired, not cycles")
+{
+    // The field was called cycles_between_printouts but is compared against
+    // num_retired. Drive many cycles but few instructions: nothing should print.
+    std::ostringstream stdout{};
+    Heartbeat uut{&stdout};
+    uut.instructions_between_printouts = 1000;
+
+    bool in_warmup = false;
+    uut.handle_event<Event::BEGIN_PHASE>(in_warmup);
+
+    for (int i = 0; i < 100; ++i) {
+        std::deque<ooo_model_instr> fake_instructions{{ooo_model_instr(0, input_instr())}};
+        uint32_t cpu = 0;
+        uint64_t curr_cycles = static_cast<uint64_t>(i) * 1000000; // huge cycle counts
+        auto cb = std::cbegin(fake_instructions);
+        auto ce = std::cend(fake_instructions);
+        uut.handle_event<Event::RETIRE>(cpu, cb, ce, curr_cycles);
+    }
+
+    REQUIRE(std::empty(stdout.str())); // only 100 instructions retired
 }
