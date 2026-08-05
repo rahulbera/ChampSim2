@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -36,11 +37,18 @@ class protocol_checker
   std::size_t conditional_{0};
   std::size_t other_{0};
 
-  // The conditional branch currently between predict() and update().
-  bool outstanding_{false};
-  uint64_t out_seq_{0};
-  uint64_t out_pc_{0};
-  bool out_pred_{false};
+  // Conditional branches between predict() and update(). With ChampSim's
+  // default fetch-time resolution there is at most one; with the update
+  // deferred to execute there is a genuine in-flight window, so this is a map
+  // rather than a single slot.
+  struct outstanding {
+    uint64_t pc;
+    bool pred_dir;
+  };
+  std::map<uint64_t, outstanding> outstanding_;
+
+  // In delayed mode a run legitimately ends with branches still in flight.
+  bool delayed_{false};
 
   uint64_t last_seq_{0};
   bool seen_seq_{false};
@@ -54,34 +62,31 @@ public:
 
     switch (rec.kind) {
     case call_kind::predict:
-      if (outstanding_) {
-        // The previous branch's checkpoint was never released by update().
-        fail("predict at pc=" + std::to_string(rec.pc) + " while seq=" + std::to_string(out_seq_) + " is still outstanding (checkpoint leak)");
+      if (!delayed_ && !outstanding_.empty()) {
+        // With fetch-time resolution the previous branch must already have been
+        // released by update(); if it has not, its checkpoint has leaked.
+        fail("predict at pc=" + std::to_string(rec.pc) + " while seq=" + std::to_string(std::begin(outstanding_)->first)
+             + " is still outstanding (checkpoint leak)");
       }
       if (seen_seq_ && rec.seq_no <= last_seq_) {
         fail("sequence number " + std::to_string(rec.seq_no) + " did not increase past " + std::to_string(last_seq_));
       }
       last_seq_ = rec.seq_no;
       seen_seq_ = true;
-      outstanding_ = true;
-      out_seq_ = rec.seq_no;
-      out_pc_ = rec.pc;
-      out_pred_ = rec.pred_dir;
+      outstanding_.emplace(rec.seq_no, outstanding{rec.pc, rec.pred_dir});
       break;
 
     case call_kind::history_update:
-    case call_kind::update:
-      if (!outstanding_) {
+    case call_kind::update: {
+      auto found = outstanding_.find(rec.seq_no);
+      if (found == std::end(outstanding_)) {
         fail("update-class call for seq=" + std::to_string(rec.seq_no) + " with no matching predict");
         break;
       }
-      if (rec.seq_no != out_seq_) {
-        fail("seq mismatch: predict was " + std::to_string(out_seq_) + ", update is " + std::to_string(rec.seq_no));
-      }
-      if (rec.pc != out_pc_) {
+      if (rec.pc != found->second.pc) {
         fail("pc mismatch for seq=" + std::to_string(rec.seq_no));
       }
-      if (rec.pred_dir != out_pred_) {
+      if (rec.pred_dir != found->second.pred_dir) {
         fail("predicted direction changed between predict and update for seq=" + std::to_string(rec.seq_no));
       }
       // A not-taken conditional must carry a real fall-through: tenants test
@@ -90,10 +95,11 @@ public:
         fail("not-taken conditional at pc=" + std::to_string(rec.pc) + " has next_pc == 0");
       }
       if (rec.kind == call_kind::update) {
-        outstanding_ = false; // the tenant releases its checkpoint here
+        outstanding_.erase(found); // the tenant releases its checkpoint here
         ++conditional_;
       }
       break;
+    }
 
     case call_kind::track_other:
       if ((rec.brtype & BRTYPE_COND) != 0) {
@@ -112,12 +118,18 @@ public:
   }
 
   // Returns true if the whole stream was well formed.
+  // In delayed mode a run ends with the branches still in the pipeline
+  // unresolved, which is expected rather than a leak.
+  void set_delayed(bool delayed) { delayed_ = delayed; }
+
+  [[nodiscard]] std::size_t still_outstanding() const { return std::size(outstanding_); }
+
   bool finish()
   {
-    if (outstanding_) {
-      fail("run ended with seq=" + std::to_string(out_seq_) + " still outstanding (checkpoint leak)");
-      outstanding_ = false;
+    if (!delayed_ && !outstanding_.empty()) {
+      fail("run ended with " + std::to_string(std::size(outstanding_)) + " branch(es) still outstanding (checkpoint leak)");
     }
+    outstanding_.clear();
     return violations_.empty();
   }
 

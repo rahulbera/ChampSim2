@@ -620,6 +620,13 @@ void O3_CPU::do_complete_execution(ooo_model_instr& instr)
 
   instr.completed = true;
 
+  // A branch has now resolved, out of program order. This is the structural
+  // analogue of CBP6's execute-time update (cbp2025/lib/uarchsim.cc:352);
+  // ChampSim's own last_branch_result already fired for it back at fetch.
+  if (instr.is_branch) {
+    impl_branch_execute_resolve(instr.instr_id, instr.ip, instr.branch_target, instr.branch_taken, instr.branch);
+  }
+
   if (instr.branch_mispredicted) {
     fetch_resume_time = current_time + BRANCH_MISPREDICT_PENALTY;
   }
@@ -717,6 +724,11 @@ long O3_CPU::retire_rob()
 void O3_CPU::impl_initialize_branch_predictor() const { branch_module_pimpl->impl_initialize_branch_predictor(); }
 
 void O3_CPU::impl_branch_predictor_final_stats() const { branch_module_pimpl->impl_branch_predictor_final_stats(); }
+
+void O3_CPU::impl_branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type) const
+{
+  branch_module_pimpl->impl_branch_execute_resolve(instr_id, ip, branch_target, taken, branch_type);
+}
 
 void O3_CPU::impl_last_branch_result(champsim::address ip, champsim::address target, bool taken, uint8_t branch_type) const
 {

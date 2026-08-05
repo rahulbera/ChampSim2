@@ -1,6 +1,7 @@
 #include <catch.hpp>
 
 #include <cstdint>
+#include <vector>
 
 #include "instr.h"
 #include "mocks.hpp"
@@ -63,4 +64,91 @@ TEST_CASE("The final-stats trait detects the hook")
 {
   STATIC_REQUIRE(champsim::modules::branch_predictor::has_final_stats<counting_branch_predictor>);
   STATIC_REQUIRE_FALSE(champsim::modules::branch_predictor::has_final_stats<silent_branch_predictor>);
+}
+
+namespace
+{
+// CBP6 splits the update in two: speculative history right after the
+// prediction, and the non-speculative table update at the branch's execute
+// cycle, out of program order. ChampSim resolves everything at fetch, so
+// without an execute-time hook the two collapse and every branch predicts
+// against tables its immediate predecessor already updated.
+struct resolve_recording_predictor : champsim::modules::branch_predictor {
+  using branch_predictor::branch_predictor;
+
+  struct record {
+    uint64_t instr_id;
+    uint64_t ip;
+    bool taken;
+    uint8_t branch_type;
+  };
+
+  static inline std::vector<record> resolved; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+  static void reset() { resolved.clear(); }
+
+  bool predict_branch(champsim::address /*ip*/) { return false; }
+
+  void branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address /*target*/, bool taken, uint8_t branch_type)
+  {
+    resolved.push_back({instr_id, ip.to<uint64_t>(), taken, branch_type});
+  }
+};
+} // namespace
+
+TEST_CASE("A branch predictor is notified when a branch completes execution")
+{
+  resolve_recording_predictor::reset();
+
+  do_nothing_MRC mock_L1I, mock_L1D;
+  O3_CPU uut{champsim::core_builder{}
+                 .rob_size(16)
+                 .fetch_queues(&mock_L1I.queues)
+                 .data_queues(&mock_L1D.queues)
+                 .branch_predictor<resolve_recording_predictor>()};
+
+  auto instr = champsim::test::instruction_with_ip(0x4000);
+  instr.instr_id = 42;
+  instr.is_branch = true;
+  instr.branch = BRANCH_CONDITIONAL;
+  instr.branch_taken = true;
+  instr.executed = true;
+  instr.completed = false;
+  instr.ready_time = champsim::chrono::clock::time_point{};
+  uut.ROB.push_back(instr);
+
+  for (auto op : std::array<champsim::operable*, 3>{{&uut, &mock_L1I, &mock_L1D}}) {
+    op->_operate();
+  }
+
+  REQUIRE(std::size(resolve_recording_predictor::resolved) == 1);
+  REQUIRE(resolve_recording_predictor::resolved.at(0).instr_id == 42);
+  REQUIRE(resolve_recording_predictor::resolved.at(0).ip == 0x4000);
+  REQUIRE(resolve_recording_predictor::resolved.at(0).taken);
+  REQUIRE(resolve_recording_predictor::resolved.at(0).branch_type == BRANCH_CONDITIONAL);
+}
+
+TEST_CASE("A non-branch instruction does not trigger the execute-resolve hook")
+{
+  resolve_recording_predictor::reset();
+
+  do_nothing_MRC mock_L1I, mock_L1D;
+  O3_CPU uut{champsim::core_builder{}
+                 .rob_size(16)
+                 .fetch_queues(&mock_L1I.queues)
+                 .data_queues(&mock_L1D.queues)
+                 .branch_predictor<resolve_recording_predictor>()};
+
+  auto instr = champsim::test::instruction_with_ip(0x5000);
+  instr.is_branch = false;
+  instr.branch = NOT_BRANCH;
+  instr.executed = true;
+  instr.completed = false;
+  instr.ready_time = champsim::chrono::clock::time_point{};
+  uut.ROB.push_back(instr);
+
+  for (auto op : std::array<champsim::operable*, 3>{{&uut, &mock_L1I, &mock_L1D}}) {
+    op->_operate();
+  }
+
+  REQUIRE(std::empty(resolve_recording_predictor::resolved));
 }

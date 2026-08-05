@@ -39,7 +39,9 @@
 #define CBP6_HOST_H
 
 #include <cstdint>
+#include <cstdlib>
 #include <stdexcept>
+#include <unordered_map>
 #include <string>
 
 #include <cstdio>
@@ -56,6 +58,15 @@ namespace champsim::cbp6
 // the predictor object, so every core's module instance would share one set of
 // tables. ChampSim builds one module per core and would report silently wrong
 // numbers; refuse instead. Call with the owning core's index.
+// Deferring the table update to execute is a fidelity experiment, not a
+// production setting, so it is opt-in and reported in the final stats.
+inline bool delayed_update_from_env()
+{
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): called once, during initialization
+  const char* v = std::getenv("CBP6_DELAYED_UPDATE");
+  return v != nullptr && *v != '\0' && *v != '0';
+}
+
 inline void require_single_core(uint32_t cpu_index, const char* predictor_name)
 {
   if (cpu_index != 0) {
@@ -88,6 +99,34 @@ class host
   // count what the tenant is actually responsible for.
   uint64_t roi_conditional_{0};
   uint64_t roi_direction_misses_{0};
+
+  // CBP6 performs the non-speculative table update at the branch's execute
+  // cycle, out of program order (cbp2025/lib/uarchsim.cc:352); ChampSim resolves
+  // at fetch, so by default the two collapse into one in-order call and every
+  // branch predicts against tables its predecessor already updated -- more
+  // favourable than the environment the tenant was tuned in. With
+  // CBP6_DELAYED_UPDATE=1 the update is deferred to the execute-resolve hook,
+  // restoring both the delay and the out-of-orderness. Off by default so the
+  // other ChampSim predictors remain comparable.
+  struct pending_update {
+    uint64_t seq_no;
+    uint64_t pc;
+    bool pred_dir;
+    bool resolve_dir;
+    uint64_t next_pc;
+  };
+  std::unordered_map<uint64_t, pending_update> in_flight_;
+  bool delayed_{delayed_update_from_env()};
+
+  struct checker_mode_init {
+    explicit checker_mode_init(protocol_checker* c, bool delayed)
+    {
+      if (c != nullptr) {
+        c->set_delayed(delayed);
+      }
+    }
+  };
+  checker_mode_init checker_mode_{checker_.get(), delayed_};
 
   void note(call_kind kind, int brtype, bool pred_dir, bool resolve_dir, uint64_t seq_no, uint64_t pc, uint64_t next_pc)
   {
@@ -142,6 +181,21 @@ public:
     std::fflush(stdout);
   }
 
+  // Called when a branch completes execution, out of program order. Only does
+  // anything in delayed mode.
+  void execute_resolve(uint64_t instr_id)
+  {
+    auto found = in_flight_.find(instr_id);
+    if (found == std::end(in_flight_)) {
+      return; // not a conditional branch, or not in delayed mode
+    }
+
+    const auto& p = found->second;
+    tenant_.update(p.seq_no, 0, p.pc, p.resolve_dir, p.pred_dir, p.next_pc);
+    note(call_kind::update, BRTYPE_COND, p.pred_dir, p.resolve_dir, p.seq_no, p.pc, p.next_pc);
+    in_flight_.erase(found);
+  }
+
   // Called from ChampSim's branch-predictor final-stats hook.
   void finish(uint64_t roi_instructions)
   {
@@ -154,6 +208,10 @@ public:
     fmt::print("    conditional branches: {}\n", roi_conditional_);
     fmt::print("    direction mispredicts: {}  ({:.4g}% of conditionals)\n", roi_direction_misses_, rate);
     fmt::print("    direction MPKI: {:.4g}\n", per_ki);
+    fmt::print("    update timing: {}\n", delayed_ ? "delayed to execute (CBP6-like)" : "immediate at fetch (ChampSim default)");
+    if (!in_flight_.empty()) {
+      fmt::print("    WARNING: {} branches still in flight at end of run\n", std::size(in_flight_));
+    }
 
     report_protocol_check();
   }
@@ -183,7 +241,9 @@ public:
   // conditional look like a loop.
   // `in_roi` excludes the warmup phase, so the counters match the window
   // ChampSim reports its own statistics over.
-  void resolve(champsim::address ip, bool taken, uint8_t branch_type, champsim::address next_pc, bool in_roi = true)
+  [[nodiscard]] bool delayed_update() const { return delayed_; }
+
+  void resolve(champsim::address ip, bool taken, uint8_t branch_type, champsim::address next_pc, bool in_roi = true, uint64_t instr_id = 0)
   {
     if (!is_branch(branch_type)) {
       return;
@@ -201,10 +261,16 @@ public:
     const int brtype = brtype_of(branch_type);
 
     if (is_direction_predicted(branch_type)) {
+      // Speculative history always happens here, matching CBP6's spec_update.
       tenant_.history_update(seq_no_, 0, pc, brtype, last_prediction_, taken, npc);
       note(call_kind::history_update, brtype, last_prediction_, taken, seq_no_, pc, npc);
-      tenant_.update(seq_no_, 0, pc, taken, last_prediction_, npc);
-      note(call_kind::update, brtype, last_prediction_, taken, seq_no_, pc, npc);
+
+      if (delayed_) {
+        in_flight_.emplace(instr_id, pending_update{seq_no_, pc, last_prediction_, taken, npc});
+      } else {
+        tenant_.update(seq_no_, 0, pc, taken, last_prediction_, npc);
+        note(call_kind::update, brtype, last_prediction_, taken, seq_no_, pc, npc);
+      }
     } else {
       tenant_.TrackOtherInst(pc, brtype, true, taken, npc);
       note(call_kind::track_other, brtype, true, taken, 0, pc, npc);

@@ -67,10 +67,21 @@ struct branch_predictor : public bound_to<O3_CPU> {
   static auto final_stats_member_impl(long) -> std::false_type;
 
   template <typename T, typename... Args>
+  static auto execute_resolve_member_impl(int) -> decltype(std::declval<T>().branch_execute_resolve(std::declval<Args>()...), std::true_type{});
+  template <typename, typename...>
+  static auto execute_resolve_member_impl(long) -> std::false_type;
+
+  template <typename T, typename... Args>
   constexpr static bool has_initialize = decltype(initialize_member_impl<T, Args...>(0))::value;
 
   template <typename T, typename... Args>
   constexpr static bool has_final_stats = decltype(final_stats_member_impl<T, Args...>(0))::value;
+
+  // Fired when a branch completes execution, out of program order. CBP6
+  // predictors perform their non-speculative table update here; ChampSim
+  // otherwise resolves everything at fetch.
+  template <typename T, typename... Args>
+  constexpr static bool has_execute_resolve = decltype(execute_resolve_member_impl<T, Args...>(0))::value;
 
   template <typename T, typename... Args>
   constexpr static bool has_last_branch_result = decltype(last_branch_result_member_impl<T, Args...>(0))::value;

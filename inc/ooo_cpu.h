@@ -194,6 +194,7 @@ public:
     virtual void impl_last_branch_result(champsim::address ip, champsim::address target, bool taken, uint8_t branch_type) = 0;
     virtual bool impl_predict_branch(champsim::address ip, champsim::address predicted_target, bool always_taken, uint8_t branch_type) = 0;
     virtual void impl_branch_predictor_final_stats() = 0;
+    virtual void impl_branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type) = 0;
   };
 
   struct btb_module_concept {
@@ -213,6 +214,7 @@ public:
     void impl_last_branch_result(champsim::address ip, champsim::address target, bool taken, uint8_t branch_type) final;
     [[nodiscard]] bool impl_predict_branch(champsim::address ip, champsim::address predicted_target, bool always_taken, uint8_t branch_type) final;
     void impl_branch_predictor_final_stats() final;
+    void impl_branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type) final;
   };
 
   template <typename... Ts>
@@ -233,6 +235,7 @@ public:
   void impl_last_branch_result(champsim::address ip, champsim::address target, bool taken, uint8_t branch_type) const;
   [[nodiscard]] bool impl_predict_branch(champsim::address ip, champsim::address predicted_target, bool always_taken, uint8_t branch_type) const;
   void impl_branch_predictor_final_stats() const;
+  void impl_branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type) const;
 
   void impl_initialize_btb() const;
   void impl_update_btb(champsim::address ip, champsim::address predicted_target, bool taken, uint8_t branch_type) const;
@@ -264,6 +267,19 @@ void O3_CPU::branch_module_model<Bs...>::impl_initialize_branch_predictor()
     using namespace champsim::modules;
     if constexpr (branch_predictor::has_initialize<decltype(b)>)
       b.initialize_branch_predictor();
+  };
+
+  std::apply([&](auto&... b) { (..., process_one(b)); }, intern_);
+}
+
+template <typename... Bs>
+void O3_CPU::branch_module_model<Bs...>::impl_branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type)
+{
+  auto process_one = [&](auto& b) {
+    using namespace champsim::modules;
+    if constexpr (branch_predictor::has_execute_resolve<decltype(b), uint64_t, champsim::address, champsim::address, bool, uint8_t>) {
+      b.branch_execute_resolve(instr_id, ip, branch_target, taken, branch_type);
+    }
   };
 
   std::apply([&](auto&... b) { (..., process_one(b)); }, intern_);

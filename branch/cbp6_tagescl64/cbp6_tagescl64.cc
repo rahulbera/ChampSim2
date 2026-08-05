@@ -108,7 +108,8 @@ void cbp6_tagescl64::last_branch_result(champsim::address ip, champsim::address 
     next_pc = std::next(std::begin(intern_->input_queue))->ip;
   }
 
-  shared_host().resolve(ip, taken, branch_type, next_pc, intern_ == nullptr || !intern_->warmup);
+  const auto instr_id = (intern_ != nullptr && !std::empty(intern_->input_queue)) ? intern_->input_queue.front().instr_id : 0;
+  shared_host().resolve(ip, taken, branch_type, next_pc, intern_ == nullptr || !intern_->warmup, instr_id);
 }
 
 void cbp6_tagescl64::branch_predictor_final_stats()
@@ -117,4 +118,9 @@ void cbp6_tagescl64::branch_predictor_final_stats()
   // reports its own statistics over.
   const auto roi_instructions = (intern_ != nullptr) ? intern_->roi_stats.instrs() : 0ULL;
   shared_host().finish(static_cast<uint64_t>(roi_instructions));
+}
+
+void cbp6_tagescl64::branch_execute_resolve(uint64_t instr_id, champsim::address /*ip*/, champsim::address /*branch_target*/, bool /*taken*/, uint8_t /*branch_type*/)
+{
+  shared_host().execute_resolve(instr_id);
 }
