@@ -193,6 +193,9 @@ private:
 
 public:
   ooo_model_instr(uint8_t cpu, input_instr instr) : ooo_model_instr(instr, {cpu, cpu}) {}
+  // A v2 record names every field the shared constructor reads, so classification
+  // and operand extraction are identical to v1 by construction.
+  ooo_model_instr(uint8_t cpu, input_instr_v2 instr) : ooo_model_instr(instr, {cpu, cpu}) {}
   ooo_model_instr(uint8_t /*cpu*/, cloudsuite_instr instr) : ooo_model_instr(instr, {instr.asid[0], instr.asid[1]}) {}
 
   [[nodiscard]] std::size_t num_mem_ops() const { return std::size(destination_memory) + std::size(source_memory); }
