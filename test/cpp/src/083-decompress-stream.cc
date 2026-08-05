@@ -67,6 +67,23 @@ const std::string bz2_cyphertext{
      '\x4a', '\x33', '\xac', '\x19', '\x9b', '\xb7', '\x23', '\xc7', '\xab', '\x96', '\xc4', '\xe5', '\x28', '\xf9', '\x03', '\x18', '\x44', '\xf3',
      '\xa0', '\xb6', '\x81', '\x50', '\x31', '\x78', '\x3f', '\x8b', '\xb9', '\x22', '\x9c', '\x28', '\x48', '\x4f', '\xa1', '\x99', '\x56', '\x80'}};
 
+const std::string zstd_cyphertext{
+    {'\x28', '\xb5', '\x2f', '\xfd', '\x04', '\x68', '\x75', '\x08', '\x00', '\x66', '\x57', '\x39', '\x17', '\x90', '\xa9', '\x39', '\x00', '\x89', '\xec',
+     '\x46', '\x4d', '\x64', '\xe3', '\xd8', '\xc7', '\x24', '\x01', '\x73', '\x4e', '\x96', '\x1e', '\xb6', '\xba', '\xf3', '\x5f', '\x39', '\x31', '\x00',
+     '\x32', '\x00', '\x33', '\x00', '\xa6', '\x98', '\x45', '\xcb', '\xf2', '\x72', '\x62', '\x2f', '\xba', '\xe3', '\x18', '\x5b', '\xee', '\xa4', '\xbc',
+     '\x7b', '\xa5', '\xc5', '\xa9', '\x06', '\xde', '\xb8', '\x07', '\x3b', '\x49', '\x3f', '\x5e', '\xaa', '\x28', '\xd1', '\x48', '\x9c', '\xec', '\x48',
+     '\x0d', '\xf4', '\xa9', '\xe2', '\x53', '\xd1', '\x99', '\x2b', '\x3d', '\x99', '\x8e', '\xf7', '\x18', '\xdd', '\x20', '\x5d', '\xb8', '\xc7', '\x31',
+     '\xfb', '\x74', '\x6b', '\xfa', '\x91', '\x53', '\xc6', '\x64', '\xed', '\x8e', '\x85', '\x27', '\xc8', '\x0b', '\xb7', '\x24', '\xc2', '\x74', '\xd6',
+     '\xf4', '\x4c', '\xd4', '\x38', '\x75', '\xb3', '\xe2', '\xa7', '\xa5', '\x7a', '\x6e', '\x2e', '\x12', '\x0a', '\xa8', '\x4c', '\xdc', '\x54', '\xcb',
+     '\x0e', '\x75', '\x6a', '\x74', '\x8d', '\xae', '\x50', '\x01', '\x0b', '\x41', '\x01', '\x28', '\xb1', '\x8e', '\xea', '\xa8', '\x15', '\xeb', '\x87',
+     '\x34', '\x34', '\x5d', '\x1b', '\x73', '\x52', '\xa7', '\xe4', '\x2a', '\x6a', '\x2c', '\x3c', '\xd2', '\x9c', '\xa2', '\xf6', '\xe2', '\x91', '\x8b',
+     '\x19', '\x61', '\x74', '\x18', '\xd5', '\x6e', '\x94', '\xe8', '\x35', '\x66', '\x05', '\x0a', '\xc0', '\xca', '\xc4', '\x95', '\x3b', '\xe7', '\x48',
+     '\xcb', '\x01', '\x80', '\x93', '\xc9', '\x2d', '\xef', '\xb9', '\x95', '\xb9', '\x53', '\xb4', '\x44', '\x4e', '\x2e', '\xad', '\x93', '\x1b', '\x0c',
+     '\xd7', '\x67', '\xa2', '\x75', '\x98', '\x24', '\x96', '\xa9', '\x06', '\x9a', '\xcb', '\x0f', '\x1d', '\xb5', '\xb3', '\x62', '\x61', '\x95', '\x1f',
+     '\x49', '\x8a', '\x45', '\x5c', '\x84', '\x5c', '\xd1', '\x9e', '\x8a', '\xd2', '\x78', '\x98', '\x04', '\x0d', '\x08', '\x10', '\x70', '\xb4', '\x3c',
+     '\x5b', '\x0b', '\xa9', '\x30', '\x3b', '\xc7', '\x23', '\x88', '\x62', '\xf9', '\x25', '\x0b', '\xdd', '\xb6', '\x76', '\x6f', '\x03', '\x39', '\x0d',
+     '\xe2', '\x5f', '\x56', '\x8c', '\xd2', '\x85', '\x25', '\x16', '\xd9', '\xf4', '\x62', '\x88', '\x02', '\x30', '\x56', '\x76', '\x43'}};
+
 TEST_CASE("An inf_stream can inflate a gzip-compressed text")
 {
   // Initialize a inflation/deflation buffer
@@ -99,6 +116,20 @@ TEST_CASE("An inf_stream can inflate a bz2-compressed text")
 {
   // Initialize a inflation/deflation buffer
   champsim::inf_istream<champsim::decomp_tags::bzip2_tag_t, std::istringstream> comp_stream{std::istringstream{bz2_cyphertext}};
+
+  STATIC_REQUIRE(std::is_move_constructible<decltype(comp_stream)>::value);
+  STATIC_REQUIRE(std::is_move_assignable<decltype(comp_stream)>::value);
+  STATIC_REQUIRE(std::is_swappable<decltype(comp_stream)>::value);
+
+  char inflated[1000] = {};
+  comp_stream.read(inflated, static_cast<std::streamsize>(std::size(plaintext)));
+  REQUIRE_THAT(std::string{inflated}, Catch::Matchers::Equals(plaintext));
+}
+
+TEST_CASE("An inf_stream can inflate a zstd-compressed text")
+{
+  // Initialize a inflation/deflation buffer
+  champsim::inf_istream<champsim::decomp_tags::zstd_tag_t, std::istringstream> comp_stream{std::istringstream{zstd_cyphertext}};
 
   STATIC_REQUIRE(std::is_move_constructible<decltype(comp_stream)>::value);
   STATIC_REQUIRE(std::is_move_assignable<decltype(comp_stream)>::value);

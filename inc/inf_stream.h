@@ -19,10 +19,12 @@
 
 #include <bzlib.h>
 #include <cassert>
+#include <cstddef>
 #include <iostream>
 #include <lzma.h>
 #include <memory>
 #include <zlib.h>
+#include <zstd.h>
 
 namespace champsim
 {
@@ -177,6 +179,69 @@ struct lzma_tag_t {
     *state = LZMA_STREAM_INIT;
     auto ret = ::lzma_stream_decoder(state.get(), std::numeric_limits<uint64_t>::max(), flags);
     assert(ret == LZMA_OK);
+    return state;
+  }
+};
+// zstd's streaming API does not expose a zlib-shaped state object, so this tag
+// supplies one: inf_streambuf drives decompression purely through the
+// next_in/avail_in/next_out/avail_out/total_out members, which are translated
+// into ZSTD_inBuffer/ZSTD_outBuffer on each call.
+//
+// Only the inflate direction is implemented, since nothing in the tree
+// compresses. Concatenated frames are handled for free: ZSTD_decompressStream
+// reports a frame boundary with 0 and begins the next frame on the following
+// call, so no explicit reset is required.
+struct zstd_tag_t {
+  using in_char_type = unsigned char;
+  using out_char_type = unsigned char;
+
+  struct state_type {
+    const in_char_type* next_in = nullptr;
+    std::size_t avail_in = 0;
+    out_char_type* next_out = nullptr;
+    std::size_t avail_out = 0;
+    std::size_t total_out = 0;
+    ::ZSTD_DCtx* dctx = nullptr;
+  };
+
+  struct state_deleter {
+    void operator()(state_type* s) const
+    {
+      if (s != nullptr) {
+        ::ZSTD_freeDCtx(s->dctx);
+        delete s; // NOLINT(cppcoreguidelines-owning-memory)
+      }
+    }
+  };
+
+  using inflate_state_type = std::unique_ptr<state_type, state_deleter>;
+  using status_type = status_t;
+
+  static status_type inflate(inflate_state_type& x)
+  {
+    ::ZSTD_inBuffer in{x->next_in, x->avail_in, 0};
+    ::ZSTD_outBuffer out{x->next_out, x->avail_out, 0};
+
+    const std::size_t ret = ::ZSTD_decompressStream(x->dctx, &out, &in);
+
+    x->next_in += in.pos;
+    x->avail_in -= in.pos;
+    x->next_out += out.pos;
+    x->avail_out -= out.pos;
+    x->total_out += out.pos;
+
+    if (::ZSTD_isError(ret) != 0U) {
+      return status_type::ERROR;
+    }
+    // A return of zero means the frame completed cleanly.
+    return (ret == 0) ? status_type::END : status_type::CAN_CONTINUE;
+  }
+
+  static inflate_state_type new_inflate_state()
+  {
+    inflate_state_type state{new state_type};
+    state->dctx = ::ZSTD_createDCtx();
+    assert(state->dctx != nullptr);
     return state;
   }
 };
