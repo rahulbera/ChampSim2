@@ -85,8 +85,15 @@ void cbp6_tagescl64::last_branch_result(champsim::address ip, champsim::address 
   // The tenant needs the architectural next PC. ChampSim's branch_target is the
   // successor's IP for a taken branch but zero for a not-taken one
   // (src/tracereader.cc:31), and TAGE-SC-L tests `nextPC < PC` to detect
-  // backward branches, so zero would make every not-taken conditional look like
-  // a loop and corrupt IMLI.
+  // backward branches unconditionally -- not gated on taken -- so passing zero
+  // makes every not-taken conditional look like a loop.
+  //
+  // Measured impact is small: on 400.perlbench (50M instr) passing branch_target
+  // straight through gives 1.862 MPKI versus 1.863 here, which is noise. That is
+  // consistent with the vendored header's own annotation that IMLI is worth
+  // ~0.2% (`#define IMLI // 0.2 %`). This is kept because it is the semantically
+  // correct value and costs nothing, not because it moves the number -- and a
+  // tenant that leans harder on nextPC would care more.
   //
   // The successor's IP is the correct next PC in both cases. During this hook
   // the branch itself is still input_queue.front() -- it is popped only after
