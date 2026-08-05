@@ -88,11 +88,6 @@ class bulk_tracereader
   constexpr static std::size_t refresh_thresh = 1;
   std::deque<ooo_model_instr> instr_buffer;
 
-  // One-shot: inspect the first record for the explicit-branch-type feature bit
-  // and say so if it is absent. Checked once per trace file, not per
-  // instruction. See warn_if_inferring_branch_types().
-  bool features_checked = false;
-  void warn_if_inferring_branch_types(const T& first);
 
 public:
   ooo_model_instr operator()();
@@ -111,29 +106,6 @@ void set_branch_targets(It begin, It end)
   std::reverse_iterator rbegin{end};
   std::reverse_iterator rend{begin};
   std::adjacent_difference(rbegin, rend, rbegin, apply_branch_target);
-}
-
-// Branch types inferred from register usage are silently wrong on any trace
-// whose producer did not record the flags register: every conditional branch
-// then looks like an always-taken direct jump, the direction predictor is never
-// consulted, and unrelated predictors report identical MPKI that looks
-// plausible. That failure has already happened once and cost weeks. It is
-// cheap to detect and must never be quiet, so say it loudly, once per trace.
-template <typename T, typename F>
-void bulk_tracereader<T, F>::warn_if_inferring_branch_types(const T& first)
-{
-  if constexpr (champsim::is_detected_v<champsim::has_trace_reserved, T>) {
-    if (!champsim::has_explicit_branch_type(first)) {
-      fmt::print(stderr,
-                 "\n*** WARNING: this trace carries no explicit branch type ***\n"
-                 "  Branch types will be INFERRED from register usage. If the trace was\n"
-                 "  produced by a tracer that does not record the flags register, every\n"
-                 "  conditional branch is misclassified as an always-taken direct jump and\n"
-                 "  the direction predictor is never consulted -- all branch predictors will\n"
-                 "  report identical, meaningless MPKI.\n"
-                 "  Check with: trace_sanity_check -i <trace> -f v2 --check\n\n");
-    }
-  }
 }
 
 template <typename T, typename F>
@@ -168,6 +140,11 @@ ooo_model_instr bulk_tracereader<T, F>::operator()()
 }
 
 std::string get_fptr_cmd(std::string_view fname);
+
+// True when the first record of this v2 trace declares an explicit branch type
+// (or when the file cannot be read far enough to tell). See the definition in
+// tracereader.cc for why this is not a member of bulk_tracereader.
+bool v2_trace_declares_branch_type(const std::string& fname);
 } // namespace champsim
 
 champsim::tracereader get_tracereader(const std::string& fname, uint8_t cpu, bool is_cloudsuite, bool repeat, unsigned trace_version = 1);

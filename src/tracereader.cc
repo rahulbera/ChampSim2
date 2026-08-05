@@ -54,6 +54,45 @@ champsim::tracereader get_tracereader_for_type(std::string fname, uint8_t cpu)
 
   return champsim::tracereader{R<T, std::ifstream>(cpu, fname)};
 }
+
+// Read the first record of a v2 trace and report whether it declares an explicit
+// branch type.
+//
+// Deliberately NOT done inside bulk_tracereader: champsim::repeatable
+// reconstructs that object every time the trace wraps around (repeatable.h:41),
+// which re-arms any per-object one-shot. Since main.cc enables repeat whenever
+// -i/--simulation-instructions is given -- i.e. on every production run -- a
+// per-object flag re-emits the banner once per lap, hundreds of times. This
+// runs from get_tracereader(), which is called exactly once per trace file.
+//
+// Returns true (i.e. "stay quiet") when the file cannot be read or is shorter
+// than one record: that is a different problem, reported elsewhere, and a
+// second confusing banner would not help.
+bool v2_trace_declares_branch_type(const std::string& fname)
+{
+  auto probe = [](auto stream) {
+    input_instr_v2 first{};
+    stream.read(reinterpret_cast<char*>(&first), sizeof(first)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+    if (stream.gcount() < static_cast<std::streamsize>(sizeof(first))) {
+      return true;
+    }
+    return champsim::has_explicit_branch_type(first);
+  };
+
+  if (fname.size() >= 2 && fname.substr(std::size(fname) - 2) == "gz") {
+    return probe(champsim::inf_istream<champsim::decomp_tags::gzip_tag_t<>>{fname});
+  }
+  if (fname.size() >= 2 && fname.substr(std::size(fname) - 2) == "xz") {
+    return probe(champsim::inf_istream<champsim::decomp_tags::lzma_tag_t<>>{fname});
+  }
+  if (fname.size() >= 3 && fname.substr(std::size(fname) - 3) == "bz2") {
+    return probe(champsim::inf_istream<champsim::decomp_tags::bzip2_tag_t>{fname});
+  }
+  if (fname.size() >= 3 && fname.substr(std::size(fname) - 3) == "zst") {
+    return probe(champsim::inf_istream<champsim::decomp_tags::zstd_tag_t>{fname});
+  }
+  return probe(std::ifstream{fname, std::ios::binary});
+}
 } // namespace champsim
 
 template <typename T, typename S>
@@ -87,6 +126,24 @@ champsim::tracereader get_tracereader(const std::string& fname, uint8_t cpu, boo
     // produce plausible-looking garbage rather than an error, so refuse.
     if (is_cloudsuite) {
       throw std::invalid_argument{"The cloudsuite trace format has no version 2"};
+    }
+
+    // Branch types inferred from register usage are silently wrong on any trace
+    // whose producer did not record the flags register: every conditional
+    // branch then looks like an always-taken direct jump, the direction
+    // predictor is never consulted, and unrelated predictors report identical,
+    // plausible-looking MPKI. That has already happened once. Say so, loudly,
+    // once per trace file.
+    if (!champsim::v2_trace_declares_branch_type(fname)) {
+      fmt::print(stderr,
+                 "\n*** WARNING: '{}' carries no explicit branch type ***\n"
+                 "  Branch types will be INFERRED from register usage. If this trace was\n"
+                 "  produced by a tracer that does not record the flags register, every\n"
+                 "  conditional branch is misclassified as an always-taken direct jump, the\n"
+                 "  direction predictor is never consulted, and all branch predictors report\n"
+                 "  identical, meaningless MPKI.\n"
+                 "  Check with: trace_sanity_check -i <trace> -f v2 --check\n\n",
+                 fname);
     }
 
     if (repeat) {
