@@ -29,6 +29,7 @@
 #include "champsim.h"
 #include "chrono.h"
 #include "trace_instruction.h"
+#include "util/detect.h"
 
 // branch types
 enum branch_type {
@@ -125,15 +126,66 @@ struct ooo_model_instr : champsim::program_ordered<ooo_model_instr> {
   std::vector<champsim::address> destination_memory = {};
   std::vector<champsim::address> source_memory = {};
 
+  // v2 trace payload. Zeroed when the instruction came from a v1 record.
+  //
+  // These are indexed to match the compacted destination_memory / source_memory
+  // vectors above -- NOT the raw trace slots. A v2 record may leave gaps (an
+  // operand in slot 0 and slot 2, none in slot 1); the vectors above drop those
+  // gaps, so the payload is compacted identically. Reading these by raw slot
+  // index would silently attribute one operand's data to another.
+  std::array<champsim::address, NUM_INSTR_DESTINATIONS> destination_memory_pa = {};
+  std::array<champsim::address, NUM_INSTR_SOURCES> source_memory_pa = {};
+  std::array<uint8_t, NUM_INSTR_DESTINATIONS> destination_memory_size = {};
+  std::array<uint8_t, NUM_INSTR_SOURCES> source_memory_size = {};
+  std::array<std::array<uint8_t, MAX_MEM_VALUE_SIZE>, NUM_INSTR_DESTINATIONS> destination_memory_value = {};
+  std::array<std::array<uint8_t, MAX_MEM_VALUE_SIZE>, NUM_INSTR_SOURCES> source_memory_value = {};
+
+  uint8_t privilege = 0;  // 0 = user, 1 = kernel
+  uint8_t instr_type = 0; // 0 = int, 1 = fp, 2 = simd
+
   // these are indices of instructions in the ROB that depend on me
   std::vector<std::reference_wrapper<ooo_model_instr>> registers_instrs_depend_on_me;
 
 private:
+  // Distinguishes a v2 trace record from a v1 one: only v2 carries memory values.
+  template <typename U>
+  using has_v2_payload = decltype(std::declval<U>().source_memory_value);
+
   template <typename T>
   ooo_model_instr(T instr, std::array<uint8_t, 2> local_asid) : ip(instr.ip), is_branch(instr.is_branch), branch_taken(instr.branch_taken), asid(local_asid)
   {
     std::remove_copy(std::begin(instr.destination_registers), std::end(instr.destination_registers), std::back_inserter(this->destination_registers), 0);
     std::remove_copy(std::begin(instr.source_registers), std::end(instr.source_registers), std::back_inserter(this->source_registers), 0);
+
+    // Extract the v2 payload BEFORE the std::remove calls below: those compact
+    // instr's operand arrays in place, destroying the slot indices the payload
+    // is addressed by. Compacting here in the same order keeps payload index i
+    // aligned with source_memory[i] / destination_memory[i].
+    if constexpr (champsim::is_detected_v<has_v2_payload, T>) {
+      std::size_t compacted = 0;
+      for (std::size_t slot = 0; slot < NUM_INSTR_SOURCES; ++slot) {
+        if (instr.source_memory[slot] != 0) {
+          source_memory_pa.at(compacted) = champsim::address{instr.source_memory_pa[slot]};
+          source_memory_size.at(compacted) = instr.source_memory_size[slot];
+          std::copy(std::begin(instr.source_memory_value[slot]), std::end(instr.source_memory_value[slot]), std::begin(source_memory_value.at(compacted)));
+          ++compacted;
+        }
+      }
+
+      compacted = 0;
+      for (std::size_t slot = 0; slot < NUM_INSTR_DESTINATIONS; ++slot) {
+        if (instr.destination_memory[slot] != 0) {
+          destination_memory_pa.at(compacted) = champsim::address{instr.destination_memory_pa[slot]};
+          destination_memory_size.at(compacted) = instr.destination_memory_size[slot];
+          std::copy(std::begin(instr.destination_memory_value[slot]), std::end(instr.destination_memory_value[slot]),
+                    std::begin(destination_memory_value.at(compacted)));
+          ++compacted;
+        }
+      }
+
+      privilege = instr.privilege;
+      instr_type = instr.instr_type;
+    }
 
     auto dmem_end = std::remove(std::begin(instr.destination_memory), std::end(instr.destination_memory), uint64_t{0});
     std::transform(std::begin(instr.destination_memory), dmem_end, std::back_inserter(this->destination_memory), [](auto x) { return champsim::address{x}; });
