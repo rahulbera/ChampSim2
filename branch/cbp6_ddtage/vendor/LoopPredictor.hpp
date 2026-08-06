@@ -150,7 +150,19 @@ private:
   static const int CTR_MAX = (1 << CTR_WIDTH) - 1;
   static const int AGE_HALF = (1 << (AGE_WIDTH - 1)) - 1;
   static const int AGE_MAX = (1 << AGE_WIDTH) - 1;
-  static const uint8_t CONF_MAX = 7;
+  // ChampSim deviation 4 of 4: `const` -> `constexpr`.
+  //
+  // CONF_MAX is passed to std::min, which takes its arguments BY REFERENCE and
+  // therefore odr-uses it, so a `static const` member declared in-class needs an
+  // out-of-class definition that the submission never provides. It links anyway
+  // at -O3, where std::min is inlined and the reference never materialises, and
+  // fails to link at lower optimisation levels -- which is how ChampSim's test
+  // binary found it while the simulator binaries built cleanly.
+  //
+  // `static constexpr` is implicitly inline in C++17, so this supplies the
+  // definition without adding one. Same type, same value, no behaviour change:
+  // verified by rebuilding and reproducing the sweep numbers bit-identically.
+  static constexpr uint8_t CONF_MAX = 7;
   
   struct Entry {
     uint16_t tag = 0;         // TAG_WIDTH bits
