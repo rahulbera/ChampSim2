@@ -191,12 +191,16 @@ public:
   // simulator actually stores is a simulation artifact and is excluded. 47 bits
   // is measured, not assumed: the widest instruction address observed across
   // 723.llvm_r.sp1, 714.cpython_r.sp0 and swe_agent_w00001 is 0x7ffff7fdc84e.
-  static constexpr int target_bits = 47;
+  static constexpr int target_bits = 48;
   static constexpr int entry_bits = target_bits + CFG::CWIDTH + CFG::TBITS + CFG::UWIDTH;
   static constexpr long storage_bits = static_cast<long>(CFG::NHIST + 1) * (1L << CFG::LOGG) * entry_bits;
   static constexpr double storage_kb = storage_bits / 8.0 / 1024.0;
 
-  void initialize() { predictor.reinit(); }
+  // Deliberately does NOT call predictor.reinit(): the vendored constructor
+  // already calls it (ittage.hpp), and reinit() does `itable[i] = new ientry[..]`
+  // for every table, so calling it a second time leaks the constructor's
+  // allocation (96 KB / 192 KB depending on configuration, ASan-confirmed).
+  void initialize() {}
 
   // Verification surface, not a functional interface. The adapter's contract
   // with the predictor -- notably that it forwards the ARCHITECTURAL next PC
@@ -225,7 +229,21 @@ public:
       // Failure mode 1: never let an unseeded entry's sentinel escape as a real
       // target. Reporting "no prediction" takes the misprediction honestly.
       if (target == unseeded_target_sentinel || target == 0) {
-        return {champsim::address{}, false};
+        // always_taken must be TRUE here, matching basic_btb's indirect path
+        // (btb/basic_btb/indirect_predictor.cc:7) and perfect_indirect.
+        //
+        // It is not part of the target prediction: ChampSim computes
+        // `branch_prediction = impl_predict_branch(...) || always_taken`
+        // (src/ooo_cpu.cc:140), so the flag OVERRIDES the direction predictor.
+        // Returning false here looked harmless -- for a genuine indirect branch
+        // the cbp6 host already answers true -- but the direct BTB indexes AND
+        // tags on ip>>2 (btb/basic_btb/direct_predictor.h:30,35), so two branches
+        // within 3 bytes share an entry. A CONDITIONAL aliased into an
+        // INDIRECT-typed entry then reached this path, and returning false let
+        // TAGE-SC-L's correct not-taken stand where basic_btb was forced taken.
+        // That handed ITTAGE ~4470 conditional mispredicts per 10M instructions
+        // that the baseline ate -- a measurement artifact, not a prediction win.
+        return {champsim::address{}, true};
       }
       return {champsim::address{target}, true};
     }
@@ -244,6 +262,19 @@ public:
     }
 
     if ((branch_type == BRANCH_INDIRECT) || (branch_type == BRANCH_INDIRECT_CALL)) {
+      // UpdatePredictor consumes seven members that ONLY GetPrediction writes
+      // (HitBank, AltBank, GI[], GTAG[], LongestMatchPred, alt_target,
+      // tage_target). prediction() calls GetPrediction only when the direct BTB
+      // hits and types the PC as indirect, but this arm runs for EVERY indirect
+      // branch -- so on a direct-BTB miss the update would allocate, decrement
+      // and overwrite entries indexed and tagged for the PREVIOUS indirect
+      // branch, using this branch's target. Seznec's own driver always pairs
+      // them (cbp2025/lib/bp.cc:151-157).
+      //
+      // Re-calling here is idempotent: GetPrediction only reads the tables and
+      // recomputes those members, and nothing mutates predictor history between
+      // ChampSim's prediction and update hooks for the same instruction.
+      (void)predictor.GetPrediction(ip.to<uint64_t>());
       predictor.UpdatePredictor(ip.to<uint64_t>(), branch_target.to<uint64_t>());
     } else {
       // History only. Omitting this costs most of the paper's section 2.1

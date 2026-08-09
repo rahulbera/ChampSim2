@@ -38,6 +38,7 @@
 
 #include "address.h"
 #include "direct_predictor.h"
+#include "indirect_predictor.h"
 #include "modules.h"
 #include "return_stack.h"
 
@@ -45,6 +46,9 @@ class perfect_indirect : champsim::modules::btb
 {
   perfect_indirect_impl::return_stack ras{};
   perfect_indirect_impl::direct_predictor direct{};
+  // basic_btb's real predictor, used for branches that are NOT actually
+  // indirect but alias into an INDIRECT-typed BTB entry. See the .cc.
+  perfect_indirect_impl::indirect_predictor aliased{};
 
 public:
   using btb::btb;

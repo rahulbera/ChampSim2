@@ -6,7 +6,7 @@
  * all the failure-mode guards live. The predictor itself is Seznec's, vendored
  * once at inc/ittage/ittage.hpp.
  *
- * Storage: 63.0 KB by the accounting in inc/ittage/ittage_btb.h (47-bit target +
+ * Storage: 64.0 KB by the accounting in inc/ittage/ittage_btb.h (48-bit target +
  * tag + confidence + useful bit per entry; the simulator's uint64_t is an
  * artifact and excluded). Asserted at compile time in the .cc.
  */

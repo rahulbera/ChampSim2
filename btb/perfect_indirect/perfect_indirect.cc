@@ -25,14 +25,26 @@ std::pair<champsim::address, bool> perfect_indirect::btb_prediction(champsim::ad
   }
 
   if (btb_entry->type == perfect_indirect_impl::direct_predictor::branch_info::INDIRECT) {
+    // Only a GENUINE indirect branch gets the oracle answer. The direct BTB
+    // indexes and tags on ip>>2 (direct_predictor.h), so two branches within 3
+    // bytes share an entry -- and an earlier version of this module handed the
+    // true target to whatever aliased in, including direct jumps. Measured, that
+    // cut SPEC direct-jump MPKI from 0.1496 to 0.0909 (710.omnetpp_r.sp2: 0.8163
+    // -> 0.0176), inflating the very headroom denominator this oracle exists to
+    // define, and biasing it AGAINST the predictor under test.
+    //
     // The instruction under prediction is input_queue.front() -- see
-    // branch/perfect_branch/perfect_branch.h for why that holds. always_taken is
-    // reported true exactly as basic_btb's indirect predictor does, so this
-    // module is safe underneath any direction predictor.
+    // branch/perfect_branch/perfect_branch.h for why that holds.
     if (intern_ != nullptr && !std::empty(intern_->input_queue)) {
-      return {intern_->input_queue.front().branch_target, true};
+      const auto& instr = intern_->input_queue.front();
+      if (instr.branch == BRANCH_INDIRECT || instr.branch == BRANCH_INDIRECT_CALL) {
+        return {instr.branch_target, true};
+      }
     }
-    return {champsim::address{}, true};
+    // Aliased non-indirect branch: behave exactly as basic_btb would, so this
+    // module remains a faithful overlay that differs ONLY on real indirect
+    // branches.
+    return aliased.prediction(ip);
   }
 
   return {btb_entry->target, btb_entry->type != perfect_indirect_impl::direct_predictor::branch_info::CONDITIONAL};
@@ -44,7 +56,14 @@ void perfect_indirect::update_btb(champsim::address ip, champsim::address branch
     ras.push(ip);
   }
 
-  // No indirect-target update: the oracle needs no training.
+  // The oracle needs no training, but the aliased-branch fallback is basic_btb's
+  // real predictor and must be trained exactly as basic_btb trains it.
+  if ((branch_type == BRANCH_INDIRECT) || (branch_type == BRANCH_INDIRECT_CALL)) {
+    aliased.update_target(ip, branch_target);
+  }
+  if (branch_type == BRANCH_CONDITIONAL) {
+    aliased.update_direction(taken);
+  }
 
   if (branch_type == BRANCH_RETURN) {
     ras.calibrate_call_size(branch_target);

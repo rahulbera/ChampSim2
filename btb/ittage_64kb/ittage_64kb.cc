@@ -7,6 +7,7 @@
 
 #include <iterator>
 
+#include "cbp6/cbp6_host.h"
 #include "ittage/ittage_btb.h"
 #include "ittage_64kb.h"
 
@@ -28,8 +29,8 @@ using impl_type = champsim::ittage::btb_impl<config>;
 
 // Compile-time budget check, so a configuration edit cannot silently move the
 // storage this module is supposed to represent.
-static_assert(impl_type::entry_bits == 63, "entry layout changed; revisit the storage accounting");
-static_assert(impl_type::storage_bits == static_cast<long>(7 + 1) * (1L << 10) * 63, "storage budget drifted");
+static_assert(impl_type::entry_bits == 64, "entry layout changed; revisit the storage accounting");
+static_assert(impl_type::storage_bits == static_cast<long>(7 + 1) * (1L << 10) * 64, "storage budget drifted");
 
 // Static storage duration, as with the CBP6 tenants: the vendored predictor's
 // initialisation is not guaranteed to write every member, and static storage is
@@ -41,7 +42,17 @@ impl_type& shared()
 }
 } // namespace
 
-void ittage_64kb::initialize_btb() { shared().initialize(); }
+void ittage_64kb::initialize_btb()
+{
+  // The predictor, direct BTB and RAS live in one function-local static shared
+  // by every instance, so a multi-core configuration would silently share one
+  // predictor where basic_btb gives each core its own. intern_ is null in unit
+  // tests, which construct the module without a core.
+  if (intern_ != nullptr) {
+    champsim::cbp6::require_single_core(intern_->cpu, "ittage_64kb");
+  }
+  shared().initialize();
+}
 
 std::pair<champsim::address, bool> ittage_64kb::btb_prediction(champsim::address ip) { return shared().prediction(ip); }
 

@@ -1,12 +1,12 @@
 /*
- * ITTAGE indirect target predictor, ~iso-storage with basic_btb's 23.5 KB target cache.
+ * ITTAGE indirect target predictor, iso-ENTRY-COUNT with basic_btb's 4096-entry target cache (24.0 KB); 33% more storage.
  *
  * A configuration shell: it names the storage parameters and forwards to the
  * shared adapter in inc/ittage/ittage_btb.h, which is where all the logic and
  * all the failure-mode guards live. The predictor itself is Seznec's, vendored
  * once at inc/ittage/ittage.hpp.
  *
- * Storage: 31.5 KB by the accounting in inc/ittage/ittage_btb.h (47-bit target +
+ * Storage: 32.0 KB by the accounting in inc/ittage/ittage_btb.h (48-bit target +
  * tag + confidence + useful bit per entry; the simulator's uint64_t is an
  * artifact and excluded). Asserted at compile time in the .cc.
  */
