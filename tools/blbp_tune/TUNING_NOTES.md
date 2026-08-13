@@ -109,6 +109,20 @@ claim, so treat as a NEW config, not a resume:
 6. **Login-node timing lies** — `blbp_eval` over 40 streams took >4 min there
    vs ~7 min for a full compute-node task; always time on a compute node.
 
+## Local Arm Outcome (2026-08-13)
+
+The local-machine exploration arm (tuner_local.py, 4 chains x 24 workers, 36
+generations on the 32-core dev box) finished at **1,925,333** -- 0.2% better
+than the frozen 1,929,199, then eight consecutive stalled generations. That is
+BELOW the 1% v2 bar, so the frozen generation-35 configuration stands and no
+v2 shell was minted. Its best config is preserved at
+`blbp_tune_local/local_best.json` on the dev machine.
+
+Read together with the cluster arm's tight 8-chain agreement, this is decent
+evidence the frozen config sits at a genuine local optimum of THIS search
+space. Further gains need a widened space (see the exclusions above), not more
+polishing.
+
 ## Interaction With The Frozen Evaluation
 
 The generation-35 config is committed and its full-run validation + one-shot
