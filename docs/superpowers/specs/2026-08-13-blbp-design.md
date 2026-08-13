@@ -45,7 +45,7 @@ State (paper values in the 64 KB config):
 
 | Component | Geometry |
 |---|---|
-| `W[N][M][K]` | N=8 sub-predictors × **M=947** rows × K=12 bits, 4-bit sign/magnitude (±7) |
+| `W[N][M][K]` | N=8 sub-predictors × **M=952** rows × K=12 bits, 4-bit sign/magnitude (±7) |
 | GHIST | 630-bit shift register of conditional outcomes |
 | Local histories | 256 × 10-bit, per branch PC, recording bit 3 of targets |
 | IBTB | 64 sets × 64 ways; 8-bit partial tag, 7-bit region ptr, 20-bit offset, 2-bit RRIP |
