@@ -1,4 +1,6 @@
 #include <catch.hpp>
+// NB: expected sequences include the "Branch type executed" block added by
+// commit 4f492ab4; this test asserts exact output and must track the printer.
 
 #include "core_stats.h"
 #include "stats_printer.h"
@@ -17,7 +19,14 @@ TEST_CASE("An empty core stats prints zero")
                                     "BRANCH_CONDITIONAL: -",
                                     "BRANCH_DIRECT_CALL: -",
                                     "BRANCH_INDIRECT_CALL: -",
-                                    "BRANCH_RETURN: -"};
+                                    "BRANCH_RETURN: -",
+                                    "Branch type executed",
+                                    "BRANCH_DIRECT_JUMP: 0",
+                                    "BRANCH_INDIRECT: 0",
+                                    "BRANCH_CONDITIONAL: 0",
+                                    "BRANCH_DIRECT_CALL: 0",
+                                    "BRANCH_INDIRECT_CALL: 0",
+                                    "BRANCH_RETURN: 0"};
 
   REQUIRE_THAT(champsim::plain_printer::format(given), Catch::Matchers::RangeEquals(expected));
 }
@@ -35,6 +44,13 @@ TEST_CASE("The number of instructions and cycles modifies the IPC")
                                     "test_cpu Branch Prediction Accuracy: -% MPKI: 0 Average ROB Occupancy at Mispredict: -",
                                     "test_cpu Cycles on wrong path: 0 CycWPKI: 0 Average cycles per mispredict: -",
                                     "Branch type MPKI",
+                                    "BRANCH_DIRECT_JUMP: 0",
+                                    "BRANCH_INDIRECT: 0",
+                                    "BRANCH_CONDITIONAL: 0",
+                                    "BRANCH_DIRECT_CALL: 0",
+                                    "BRANCH_INDIRECT_CALL: 0",
+                                    "BRANCH_RETURN: 0",
+                                    "Branch type executed",
                                     "BRANCH_DIRECT_JUMP: 0",
                                     "BRANCH_INDIRECT: 0",
                                     "BRANCH_CONDITIONAL: 0",
@@ -72,8 +88,23 @@ TEST_CASE("The number of mispredictions modifies the MPKI")
                                     "BRANCH_CONDITIONAL: 0",
                                     "BRANCH_DIRECT_CALL: 0",
                                     "BRANCH_INDIRECT_CALL: 0",
+                                    "BRANCH_RETURN: 0",
+                                    "Branch type executed",
+                                    "BRANCH_DIRECT_JUMP: 0",
+                                    "BRANCH_INDIRECT: 0",
+                                    "BRANCH_CONDITIONAL: 0",
+                                    "BRANCH_DIRECT_CALL: 0",
+                                    "BRANCH_INDIRECT_CALL: 0",
                                     "BRANCH_RETURN: 0"};
   expected.at(line_index) = expected_line;
+  // The executed-counts block mirrors the MPKI block 7 lines below it
+  // ("Branch type executed" header + same type order); this case sets
+  // total_branch_types to 2*num_misses, so the same type's executed line
+  // must read 510.
+  {
+    const auto type_name = expected_line.substr(0, expected_line.find(':'));
+    expected.at(line_index + 7) = type_name + ": 510";
+  }
 
   REQUIRE_THAT(champsim::plain_printer::format(given), Catch::Matchers::RangeEquals(expected));
 }
@@ -97,6 +128,13 @@ TEST_CASE("The ROB occupancy modifies the flush penalty")
                                     "test_cpu Cycles on wrong path: 0 CycWPKI: 0 Average cycles per mispredict: 0",
                                     "Branch type MPKI",
                                     "BRANCH_DIRECT_JUMP: 100",
+                                    "BRANCH_INDIRECT: 0",
+                                    "BRANCH_CONDITIONAL: 0",
+                                    "BRANCH_DIRECT_CALL: 0",
+                                    "BRANCH_INDIRECT_CALL: 0",
+                                    "BRANCH_RETURN: 0",
+                                    "Branch type executed",
+                                    "BRANCH_DIRECT_JUMP: 200",
                                     "BRANCH_INDIRECT: 0",
                                     "BRANCH_CONDITIONAL: 0",
                                     "BRANCH_DIRECT_CALL: 0",
