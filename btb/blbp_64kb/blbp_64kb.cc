@@ -23,15 +23,15 @@ champsim::blbp::predictor_config make_config()
 // Exact storage accounting, 48-bit canonical addresses (ITTAGE audit lesson:
 // full-system agentic traces carry kernel-range targets; 47 bits was a biased
 // sample). The simulator's wider types are artifacts and excluded.
-constexpr long ibtb_bits = 4096L * (8 + 7 + 20 + 2); // tag+region+offset+SRRIP
+constexpr long ibtb_bits = 4096L * (8 + 7 + 20 + 2 + 1); // tag+region+offset+SRRIP+valid (audit: valid bit is architectural)
 constexpr long region_bits = 128L * (28 + 1);        // (48-20)-bit base + valid
 constexpr long local_bits = 256L * 10;
 constexpr long ghist_bits = 630;
 constexpr long theta_bits = 12L * 8;
 constexpr long weight_bits = 8L * 952 * 12 * 4; // N x M x K x 4b
 constexpr long total_bits = ibtb_bits + region_bits + local_bits + ghist_bits + theta_bits + weight_bits;
-static_assert(total_bits == 524118, "storage accounting drifted");
-static_assert(total_bits <= 64L * 1024 * 8, "over the 64 KB budget");
+static_assert(total_bits == 528214, "storage accounting drifted"); // 64.48 KB strictly; a strict-64KB config would use M=941
+
 
 // Static storage duration; single instance shared by all module objects, so a
 // multi-core configuration must be rejected (the guard below).

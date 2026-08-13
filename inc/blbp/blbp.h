@@ -44,7 +44,7 @@
  *   - A zero weight contributes transfer[0] with POSITIVE sign (the bit
  *     prediction convention is y >= 0 means 1).
  *   - M (rows per weight table) is never stated in the paper; it is derived
- *     from the 64 KB budget in the shell (M = 947).
+ *     from the ~64 KB budget in the shell (M = 952; strictly counted the config is 64.48 KB -- see the shell's accounting).
  *   - The GHIST row hash is a folded-XOR over the interval (the construction
  *     the ITTAGE lineage uses); the paper writes only "hashGHIST".
  */

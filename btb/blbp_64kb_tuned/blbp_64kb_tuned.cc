@@ -26,8 +26,9 @@ champsim::blbp::predictor_config make_config()
 
 // Storage identical to the untuned shell by construction: the tuner's search
 // space excludes every size-bearing parameter. Same accounting, same assert.
-constexpr long total_bits = 4096L * (8 + 7 + 20 + 2) + 128L * (28 + 1) + 256L * 10 + 630 + 12L * 8 + 8L * 952 * 12 * 4;
-static_assert(total_bits == 524118, "storage accounting drifted");
+constexpr long total_bits = 4096L * (8 + 7 + 20 + 2 + 1) // IBTB: tag+region+offset+SRRIP+valid
+                            + 128L * (28 + 1) + 256L * 10 + 630 + 12L * 8 + 8L * 952 * 12 * 4;
+static_assert(total_bits == 528214, "storage accounting drifted"); // 64.48 KB strictly; a strict-64KB config would use M=941
 
 champsim::blbp::btb_impl& shared()
 {
