@@ -39,7 +39,7 @@ import subprocess
 import time
 
 CHAINS = 8
-MUTATIONS_PER_CHAIN = 160
+MUTATIONS_PER_CHAIN = 124  # 8 chains x 124 = 992, under Slurm MaxArraySize=1001
 RESTART_PERIOD = 5
 STOP_AFTER = 3
 MAX_GENERATIONS = 40
