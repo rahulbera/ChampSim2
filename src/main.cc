@@ -66,6 +66,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   long long simulation_instructions = std::numeric_limits<long long>::max();
   std::string json_file_name;
   std::string toml_file_name;
+  bool toml_sim_stats{false};
   std::vector<std::string> requested_listeners;
   std::vector<std::string> trace_names;
 
@@ -95,6 +96,9 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 
   auto* toml_option =
       app.add_option("--toml", toml_file_name, "The name of the file to receive TOML output. If no name is specified, stdout will be used")->expected(0, 1);
+
+  app.add_flag("--toml-sim-stats", toml_sim_stats,
+               "Also write the whole-run statistics to the TOML output. Off by default: with a single region of interest they merely repeat it");
 
   app.add_option("--listeners", requested_listeners, "A list of the listeners to be attached to the run");
 
@@ -181,10 +185,10 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   // silently, but it is unreachable at run time: --json is rejected above.
   if (toml_option->count() > 0) {
     if (toml_file_name.empty()) {
-      champsim::toml_printer{std::cout}.print(phase_stats);
+      champsim::toml_printer{std::cout, toml_sim_stats}.print(phase_stats);
     } else {
       std::ofstream toml_file{toml_file_name};
-      champsim::toml_printer{toml_file}.print(phase_stats);
+      champsim::toml_printer{toml_file, toml_sim_stats}.print(phase_stats);
       toml_file.flush();
 
       // A full disk here would otherwise discard the run's only

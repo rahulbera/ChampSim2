@@ -201,6 +201,11 @@ success. The format differs from the old JSON in ways that matter to a parser:
 - **No arrays.** Every key holds a single scalar; what were per-CPU arrays are
   now per-CPU tables (`…roi.cache.cpu0_l1d.cpu0`), so key names do not change
   with the core count. The document root is `[meta]` plus `[phase.<name>]`.
+- **Only the region of interest is emitted by default.** With a single ROI the
+  whole-run section is a byte-identical copy of it, so `sim` is opt-in via
+  `--toml-sim-stats`; `[meta].sim_stats` records which, so its absence is never
+  ambiguous. (This is *not* `plain_printer`'s rule, which keys the same
+  decision on `NUM_CPUS > 1`.)
 - **Every ratio is rounded to two decimals, and the exact integer operands are
   emitted next to it** (`total_miss_latency_cycles` beside `miss_latency`,
   `total_branches`/`total_mispredicts` beside `mpki`), so rounding never loses

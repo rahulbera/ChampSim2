@@ -269,7 +269,7 @@ std::vector<std::string> champsim::toml_printer::format(DRAM_CHANNEL::stats_type
   return lines;
 }
 
-std::vector<std::string> champsim::toml_printer::format(champsim::phase_stats& stats)
+std::vector<std::string> champsim::toml_printer::format(champsim::phase_stats& stats, bool include_sim)
 {
   const auto root = fmt::format("phase.{}", key(to_lower(stats.name)));
 
@@ -282,9 +282,11 @@ std::vector<std::string> champsim::toml_printer::format(champsim::phase_stats& s
   }
   emit_table(lines, fmt::format("{}.trace", root), traces);
 
-  // Both sections are always written. The plain printer only prints the
-  // whole-run block when NUM_CPUS > 1, which makes a script's parse depend on
-  // how the binary was configured; here the shape never varies.
+  // The region of interest is always written. The whole-run section is a copy
+  // of it whenever the run has a single region of interest -- the usual case --
+  // so it is written only on request; [meta].sim_stats records which, so its
+  // absence is never ambiguous. Note this is NOT the plain printer's rule,
+  // which keys the same decision on NUM_CPUS > 1.
   const auto emit_section = [&lines, &root](std::string_view section, auto& cores, auto& caches, auto& channels) {
     for (std::size_t i = 0; i < std::size(cores); ++i) {
       append_block(lines, format(cores.at(i), fmt::format("{}.{}.core.cpu{}", root, section, i)));
@@ -299,20 +301,21 @@ std::vector<std::string> champsim::toml_printer::format(champsim::phase_stats& s
   };
 
   emit_section("roi", stats.roi_cpu_stats, stats.roi_cache_stats, stats.roi_dram_stats);
-  emit_section("sim", stats.sim_cpu_stats, stats.sim_cache_stats, stats.sim_dram_stats);
+  if (include_sim) {
+    emit_section("sim", stats.sim_cpu_stats, stats.sim_cache_stats, stats.sim_dram_stats);
+  }
 
   return lines;
 }
 
-std::vector<std::string> champsim::toml_printer::format(std::vector<phase_stats>& stats)
+std::vector<std::string> champsim::toml_printer::format(std::vector<phase_stats>& stats, bool include_sim)
 {
   std::vector<std::string> lines{"# ChampSim statistics. Ratios are rounded to two decimals; the exact",
-                                 "# operands of every ratio are emitted alongside it. An undefined ratio",
-                                 "# is `nan` rather than a missing key, so the schema never varies."};
-  emit_table(lines, "meta", {{"schema_version", "1"}, {"num_cpus", fmt::format("{}", NUM_CPUS)}});
+                                 "# operands of every ratio are emitted alongside it. An undefined ratio", "# is `nan` rather than a missing key."};
+  emit_table(lines, "meta", {{"schema_version", "1"}, {"num_cpus", fmt::format("{}", NUM_CPUS)}, {"sim_stats", include_sim ? "true" : "false"}});
 
   for (auto& phase : stats) {
-    append_block(lines, format(phase));
+    append_block(lines, format(phase, include_sim));
   }
 
   return lines;
@@ -320,7 +323,7 @@ std::vector<std::string> champsim::toml_printer::format(std::vector<phase_stats>
 
 void champsim::toml_printer::print(std::vector<phase_stats>& stats)
 {
-  for (const auto& line : format(stats)) {
+  for (const auto& line : format(stats, include_sim_stats)) {
     stream << line << "\n";
   }
 }

@@ -257,17 +257,20 @@ jobs:
         doc = tomllib.load(open("test.toml", "rb"))
         assert doc["meta"]["schema_version"] == 1, doc["meta"]
         phase = doc["phase"]["simulation"]
-        for section in ("roi", "sim"):
-            core = phase[section]["core"]["cpu0"]
-            assert core["instructions"] > 0, core
-            assert core["cycles"] > 0, core
-            assert set(core["mispredict"]) == set(core["executed"]), core
-            assert phase[section]["cache"], "no caches emitted"
-            assert phase[section]["dram"]["channel0"], "no DRAM channel emitted"
-            # Ratios must be real floats -- `nan` is legal and expected, a
-            # string or an int is not.
-            for key in ("ipc", "mpki", "cyc_wpki", "branch_prediction_accuracy"):
-                assert isinstance(core[key], float), (key, core[key])
+        # The whole-run section is opt-in, and [meta] must agree with what was
+        # actually emitted; --toml-sim-stats is covered by 099-toml-printer.cc.
+        assert doc["meta"]["sim_stats"] is False, doc["meta"]
+        assert "sim" not in phase, sorted(phase)
+        core = phase["roi"]["core"]["cpu0"]
+        assert core["instructions"] > 0, core
+        assert core["cycles"] > 0, core
+        assert set(core["mispredict"]) == set(core["executed"]), core
+        assert phase["roi"]["cache"], "no caches emitted"
+        assert phase["roi"]["dram"]["channel0"], "no DRAM channel emitted"
+        # Ratios must be real floats -- `nan` is legal and expected, a string or
+        # an int is not.
+        for key in ("ipc", "mpki", "cyc_wpki", "branch_prediction_accuracy"):
+            assert isinstance(core[key], float), (key, core[key])
         print("TOML document validated")
         PY
 

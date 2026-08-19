@@ -57,14 +57,19 @@ class toml_printer
 {
   std::ostream& stream;
 
+  // The whole-run section is a copy of the region-of-interest one whenever
+  // there is a single region of interest, which is the usual case, so it is
+  // written only on request.
+  bool include_sim_stats;
+
 public:
-  toml_printer(std::ostream& str) : stream(str) {}
+  explicit toml_printer(std::ostream& str, bool include_sim = false) : stream(str), include_sim_stats(include_sim) {}
   void print(std::vector<phase_stats>& stats);
 
   static std::vector<std::string> format(O3_CPU::stats_type stats, std::string_view path);
   static std::vector<std::string> format(CACHE::stats_type stats, std::string_view path);
   static std::vector<std::string> format(DRAM_CHANNEL::stats_type stats, std::string_view path);
-  static std::vector<std::string> format(phase_stats& stats);
-  static std::vector<std::string> format(std::vector<phase_stats>& stats);
+  static std::vector<std::string> format(phase_stats& stats, bool include_sim = false);
+  static std::vector<std::string> format(std::vector<phase_stats>& stats, bool include_sim = false);
 };
 } // namespace champsim

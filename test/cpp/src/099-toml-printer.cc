@@ -286,21 +286,41 @@ TEST_CASE("A phase is keyed by its lower-cased name but preserves the original")
   REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"cpu0 = \"/traces/a.champsimtrace.xz\""}));
 }
 
-TEST_CASE("Both the region of interest and the whole-run sections are emitted")
+TEST_CASE("The region of interest is emitted and the whole-run section is not, by default")
 {
-  // The plain printer only prints the whole-run block when NUM_CPUS > 1. The
-  // machine-readable document always carries both, so a script never has to
-  // know how many cores the binary was built for to find a section.
+  // A run with a single region of interest -- which is the usual case -- makes
+  // the whole-run section a copy of the region-of-interest one, so it is off
+  // unless asked for. [meta] records which, so a consumer can tell a suppressed
+  // section from one this ChampSim never produced.
   auto phase = one_of_everything();
   std::vector<champsim::phase_stats> given{phase};
 
   const auto lines = champsim::toml_printer::format(given);
+
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"[phase.simulation.roi.core.cpu0]"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"[phase.simulation.roi.cache.cpu0_l1d]"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"[phase.simulation.roi.dram.channel0]"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"sim_stats = false"}));
+
+  const auto is_sim_table = [](const auto& line) {
+    return line.rfind("[phase.simulation.sim.", 0) == 0;
+  };
+  REQUIRE(std::none_of(std::begin(lines), std::end(lines), is_sim_table));
+}
+
+TEST_CASE("The whole-run section is emitted when it is asked for")
+{
+  auto phase = one_of_everything();
+  std::vector<champsim::phase_stats> given{phase};
+
+  const auto lines = champsim::toml_printer::format(given, true);
 
   for (const auto* section : {"roi", "sim"}) {
     REQUIRE_THAT(lines, Catch::Matchers::Contains(fmt::format("[phase.simulation.{}.core.cpu0]", section)));
     REQUIRE_THAT(lines, Catch::Matchers::Contains(fmt::format("[phase.simulation.{}.cache.cpu0_l1d]", section)));
     REQUIRE_THAT(lines, Catch::Matchers::Contains(fmt::format("[phase.simulation.{}.dram.channel0]", section)));
   }
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"sim_stats = true"}));
 }
 
 TEST_CASE("A component name that is not a bare TOML key is quoted in the path")
