@@ -65,6 +65,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   long long warmup_instructions = 0;
   long long simulation_instructions = std::numeric_limits<long long>::max();
   std::string json_file_name;
+  std::string toml_file_name;
   std::vector<std::string> requested_listeners;
   std::vector<std::string> trace_names;
 
@@ -87,14 +88,39 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   auto* deprec_sim_instr_option =
       app.add_option("--simulation_instructions", simulation_instructions, "[deprecated] use --simulation-instructions instead")->excludes(sim_instr_option);
 
-  auto* json_option =
-      app.add_option("--json", json_file_name, "The name of the file to receive JSON output. If no name is specified, stdout will be used")->expected(0, 1);
+  // --json is retired in favour of --toml, but is still accepted so that a
+  // stale script fails at once with an explanation rather than running for
+  // hours and writing no machine-readable output at all.
+  auto* json_option = app.add_option("--json", json_file_name, "[removed] the statistics document is now TOML -- use --toml")->expected(0, 1);
+
+  auto* toml_option =
+      app.add_option("--toml", toml_file_name, "The name of the file to receive TOML output. If no name is specified, stdout will be used")->expected(0, 1);
 
   app.add_option("--listeners", requested_listeners, "A list of the listeners to be attached to the run");
 
   app.add_option("traces", trace_names, "The paths to the traces")->required()->expected(NUM_CPUS)->check(CLI::ExistingFile);
 
   CLI11_PARSE(app, argc, argv);
+
+  // Refuse before a single trace is opened: discovering this after a long run
+  // would cost the whole run.
+  if (json_option->count() > 0) {
+    fmt::print(stderr,
+               "ERROR: --json has been removed. The machine-readable statistics document is now TOML, with lower_snake_case keys and a different structure; "
+               "pass --toml{} instead.\n",
+               std::empty(json_file_name) ? std::string{} : fmt::format(" {}", json_file_name));
+    return 1;
+  }
+
+  // Same reasoning as the guard above: a statistics path that cannot be written
+  // should cost nothing, but finding that out after the run costs the run. The
+  // probe truncates the file, which the run would do anyway.
+  if (toml_option->count() > 0 && !std::empty(toml_file_name)) {
+    if (const std::ofstream probe{toml_file_name}; !probe) {
+      fmt::print(stderr, "ERROR: cannot open '{}' to receive the TOML statistics.\n", toml_file_name);
+      return 1;
+    }
+  }
 
   init_event_listeners(requested_listeners);
   std::get<0>(listeners).instructions_between_printouts = heartbeat_frequency;
@@ -117,11 +143,10 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   }
 
   std::vector<champsim::tracereader> traces;
-  std::transform(
-      std::begin(trace_names), std::end(trace_names), std::back_inserter(traces),
-      [knob_cloudsuite, trace_version, repeat = simulation_given, i = uint8_t(0)](auto name) mutable {
-        return get_tracereader(name, i++, knob_cloudsuite, repeat, trace_version);
-      });
+  std::transform(std::begin(trace_names), std::end(trace_names), std::back_inserter(traces),
+                 [knob_cloudsuite, trace_version, repeat = simulation_given, i = uint8_t(0)](auto name) mutable {
+                   return get_tracereader(name, i++, knob_cloudsuite, repeat, trace_version);
+                 });
 
   std::vector<champsim::phase_info> phases{
       {champsim::phase_info{"Warmup", true, warmup_instructions, std::vector<std::size_t>(std::size(trace_names), 0), trace_names},
@@ -152,12 +177,22 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     cache.impl_replacement_final_stats();
   }
 
-  if (json_option->count() > 0) {
-    if (json_file_name.empty()) {
-      champsim::json_printer{std::cout}.print(phase_stats);
+  // champsim::json_printer is still compiled and linked, so it cannot rot
+  // silently, but it is unreachable at run time: --json is rejected above.
+  if (toml_option->count() > 0) {
+    if (toml_file_name.empty()) {
+      champsim::toml_printer{std::cout}.print(phase_stats);
     } else {
-      std::ofstream json_file{json_file_name};
-      champsim::json_printer{json_file}.print(phase_stats);
+      std::ofstream toml_file{toml_file_name};
+      champsim::toml_printer{toml_file}.print(phase_stats);
+      toml_file.flush();
+
+      // A full disk here would otherwise discard the run's only
+      // machine-readable output and still report success.
+      if (!toml_file) {
+        fmt::print(stderr, "ERROR: failed to write the TOML statistics to '{}'.\n", toml_file_name);
+        return 1;
+      }
     }
   }
 

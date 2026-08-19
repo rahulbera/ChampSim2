@@ -16,6 +16,7 @@
 
 #include <iostream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "cache.h"
@@ -47,5 +48,23 @@ class json_printer
 public:
   json_printer(std::ostream& str) : stream(str) {}
   void print(std::vector<phase_stats>& stats);
+};
+
+// The machine-readable statistics format. Each component formats into the
+// dotted TOML table path it is given, which is what makes the pieces testable
+// in isolation -- json_printer has no such seam, which is why it has no tests.
+class toml_printer
+{
+  std::ostream& stream;
+
+public:
+  toml_printer(std::ostream& str) : stream(str) {}
+  void print(std::vector<phase_stats>& stats);
+
+  static std::vector<std::string> format(O3_CPU::stats_type stats, std::string_view path);
+  static std::vector<std::string> format(CACHE::stats_type stats, std::string_view path);
+  static std::vector<std::string> format(DRAM_CHANNEL::stats_type stats, std::string_view path);
+  static std::vector<std::string> format(phase_stats& stats);
+  static std::vector<std::string> format(std::vector<phase_stats>& stats);
 };
 } // namespace champsim

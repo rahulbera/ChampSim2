@@ -221,7 +221,7 @@ jobs:
         name: lcov-python
         path: lcov_python.info
 
-  json_output:
+  stats_output:
     runs-on: ubuntu-latest
 
     steps:
@@ -244,28 +244,63 @@ jobs:
         CXXFLAGS: "--coverage"
         LDFLAGS: "--coverage"
 
-    - name: Produce JSON
-      run: ./bin/champsim -w5000 -i5000 --json=test.json -- <(curl -s https://dpc3.compas.cs.stonybrook.edu/champsim-traces/speccpu/400.perlbench-41B.champsimtrace.xz | xz -dc)
+    - name: Produce TOML
+      run: ./bin/champsim -w5000 -i5000 --toml=test.toml -- <(curl -s https://dpc3.compas.cs.stonybrook.edu/champsim-traces/speccpu/400.perlbench-41B.champsimtrace.xz | xz -dc)
 
-    - name: Validate JSON
-      run: python3 -m json.tool test.json
+    # Parsing alone only proves the file is well formed, which stayed true
+    # through every past change to the printer. Assert the shape too, so that
+    # dropping a section or emitting an empty document fails here.
+    - name: Validate TOML
+      run: |
+        python3 - <<'PY'
+        import tomllib
+        doc = tomllib.load(open("test.toml", "rb"))
+        assert doc["meta"]["schema_version"] == 1, doc["meta"]
+        phase = doc["phase"]["simulation"]
+        for section in ("roi", "sim"):
+            core = phase[section]["core"]["cpu0"]
+            assert core["instructions"] > 0, core
+            assert core["cycles"] > 0, core
+            assert set(core["mispredict"]) == set(core["executed"]), core
+            assert phase[section]["cache"], "no caches emitted"
+            assert phase[section]["dram"]["channel0"], "no DRAM channel emitted"
+            # Ratios must be real floats -- `nan` is legal and expected, a
+            # string or an int is not.
+            for key in ("ipc", "mpki", "cyc_wpki", "branch_prediction_accuracy"):
+                assert isinstance(core[key], float), (key, core[key])
+        print("TOML document validated")
+        PY
+
+    # Asserting the message, not just a non-zero exit: almost anything makes
+    # this command fail, and a guard that passes for the wrong reason is worse
+    # than no guard.
+    - name: Reject the removed --json option
+      run: |
+        set +e
+        message=$(./bin/champsim -w5000 -i5000 --json=test.json -- /dev/null 2>&1)
+        status=$?
+        set -e
+        echo "$message"
+        test "$status" -ne 0 || { echo "expected --json to exit non-zero"; exit 1; }
+        echo "$message" | grep -q -- "--json has been removed" || { echo "exited non-zero, but not because of the --json guard"; exit 1; }
 
     - name: Capture LCOV
       run: |
         lcov --capture --no-external \
         --directory . \
+        --include $(pwd)/src/toml_printer.cc \
         --include $(pwd)/src/json_printer.cc \
         --include $(pwd)/inc/stats_printer.h \
-        --output-file lcov_json.info
+        --output-file lcov_stats.info
 
     - uses: actions/upload-artifact@v7
       with:
-        name: lcov-json
-        path: lcov_json.info
+        name: lcov-stats
+        path: lcov_stats.info
 
   upload_coveralls:
     runs-on: ubuntu-latest
-    needs: [cpp, python, json_output]
+    needs: [cpp, python, stats_output]
     steps:
     - uses: actions/checkout@v6
 
@@ -282,10 +317,10 @@ jobs:
 
     - uses: actions/download-artifact@v8.0.0
       with:
-        name: lcov-json
+        name: lcov-stats
 
     - name: Merge coverage
-      run: lcov --add-tracefile lcov_cpp.info --add-tracefile lcov_python.info --add-tracefile lcov_json.info --output-file lcov.info
+      run: lcov --add-tracefile lcov_cpp.info --add-tracefile lcov_python.info --add-tracefile lcov_stats.info --output-file lcov.info
 
     - name: Coveralls
       uses: coverallsapp/github-action@master

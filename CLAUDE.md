@@ -25,7 +25,7 @@ bin/champsim --warmup-instructions 200000000 --simulation-instructions 500000000
 ```
 
 Traces are `.champsimtrace` optionally `.xz`/`.gz`/`.bz2`/`.zst` compressed; a `-`/process
-substitution stream also works (see the `json_output` CI job). Warmup/sim counts are
+substitution stream also works (see the `stats_output` CI job). Warmup/sim counts are
 *instructions retired*; reported stats cover the simulation phase only.
 
 Two record formats. v1 is the 64-byte `input_instr`; **v2 is a 512-byte
@@ -186,6 +186,39 @@ Four branch-predictor hooks (`branch_predictor_final_stats`, `branch_execute_res
 reported as **CycWPKI**, `--trace-version`, and a configurable, flushed
 `--heartbeat-frequency`.
 
+### The machine-readable stats document is TOML (`--toml`), not JSON
+
+`src/toml_printer.cc` emits the statistics document; `--json` is **rejected at
+startup** with an error pointing at `--toml`. `src/json_printer.cc` is still
+compiled and linked so it cannot rot silently, but it is unreachable at run time
+and therefore reports zero coverage. An unwritable `--toml` path is also
+rejected at startup, and a failed write exits non-zero rather than reporting
+success. The format differs from the old JSON in ways that matter to a parser:
+
+- **`lower_snake_case` keys throughout**, including lower-cased component names
+  (`cpu0_l1d`, `llc`). A configured name that is not a bare TOML key is quoted,
+  never rewritten, so two distinct names can never collide onto one table.
+- **No arrays.** Every key holds a single scalar; what were per-CPU arrays are
+  now per-CPU tables (`…roi.cache.cpu0_l1d.cpu0`), so key names do not change
+  with the core count. The document root is `[meta]` plus `[phase.<name>]`.
+- **Every ratio is rounded to two decimals, and the exact integer operands are
+  emitted next to it** (`total_miss_latency_cycles` beside `miss_latency`,
+  `total_branches`/`total_mispredicts` beside `mpki`), so rounding never loses
+  information.
+- **An undefined ratio is `nan`**, a real TOML float, never a dropped key — the
+  schema is identical for every run. The plain printer writes `-` for the same
+  case, and the old JSON collapsed NaN and infinity indistinguishably to `null`.
+- It carries stats the JSON never did: the per-type **executed** branch census,
+  `wq_full`, per-access-type **fill** counts, and `ipc`/`mpki`/
+  `branch_prediction_accuracy`/`avg_cycles_per_mispredict`.
+- `miss_latency` uses a **cache-wide** demand-fill denominator (the JSON
+  printer's), not `plain_printer`'s per-CPU one; the two disagree once
+  `NUM_CPUS > 1`.
+
+Tests are `test/cpp/src/099-toml-printer.cc`, which pin exact output via the
+static `format()` seam — the seam `json_printer` lacks, which is why it never
+had tests.
+
 ## Conventions
 
 - C++17, warnings-heavy (`global.options`: `-Wall -Wextra -Wshadow -Wpedantic -Wconversion -O3`).
@@ -197,4 +230,4 @@ reported as **CycWPKI**, `--trace-version`, and a configurable, flushed
   and the compression libs (bzip2, liblzma, zlib, zstd). Use `fmt` for output, not
   iostreams/printf.
 - CI (`.github/workflows/`) builds across many GCC/Clang versions and macOS, runs the
-  compile-only configs, and produces/validates JSON stat output (`--json=`).
+  compile-only configs, and produces/validates the TOML stat document (`--toml=`).

@@ -35,14 +35,14 @@ jobs:
 
     # TODO run an actual set of checks
     - name: Run tests
-      run: ./bin/champsim -w50000000 -i50000000 --json=single_core_result.json -- 400.perlbench-41B.champsimtrace.xz
+      run: ./bin/champsim -w50000000 -i50000000 --toml=single_core_result.toml -- 400.perlbench-41B.champsimtrace.xz
 
     # We upload the generated files under github actions assets
     - name: Upload Results
       uses: actions/upload-artifact@v7
       with:
         name: champsim-singlecore-results
-        path: single_core_result.json
+        path: single_core_result.toml
 
   multi_core:
     runs-on: ubuntu-latest
@@ -73,11 +73,11 @@ jobs:
 
     # TODO run an actual set of checks
     - name: Run tests
-      run: ./bin/champsim -w50000000 -i50000000 --json=multi_core_result.json -- 400.perlbench-41B.champsimtrace.xz 401.bzip2-226B.champsimtrace.xz
+      run: ./bin/champsim -w50000000 -i50000000 --toml=multi_core_result.toml -- 400.perlbench-41B.champsimtrace.xz 401.bzip2-226B.champsimtrace.xz
 
     # We upload the generated files under github actions assets
     - name: Upload Results
       uses: actions/upload-artifact@v7
       with:
         name: champsim-multicore-results
-        path: multi_core_result.json
+        path: multi_core_result.toml
