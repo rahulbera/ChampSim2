@@ -213,8 +213,25 @@ builds break on the machine where it is hardest to notice. Keep such code in `sr
 
 Four branch-predictor hooks (`branch_predictor_final_stats`, `branch_execute_resolve`,
 `branch_decode_notify`, `branch_execute_notify`), the `cycles_on_wrong_path` statistic
-reported as **CycWPKI**, `--trace-version`, and a configurable, flushed
-`--heartbeat-frequency`.
+reported as **CycWPKI**, DIB lookup/hit/miss counters, `--trace-version`, and a
+configurable, flushed `--heartbeat-frequency`.
+
+DIB accounting lives in `cpu_stats` (`inc/core_stats.h`) and is charged in
+`O3_CPU::do_check_dib`, which runs once per instruction, gated by `dib_checked`. Only
+`dib_hits`/`dib_misses` are stored; `dib_lookups()` is their sum, so the total cannot
+drift from its parts. Two things about the numbers are easy to get wrong:
+
+- **A hit means the window was already decoded, not that a neighbour shares it.** The
+  DIB is filled at *decode* (`do_dib_update`), many cycles after `check_dib` has
+  classified the whole fetch group, so a cold fetch group misses in its entirety —
+  four instructions in one 16-byte window are four misses on the first pass, and hit
+  only when that code runs again. `dib_misses` counts *instructions*, not distinct
+  windows; it is not a code-footprint proxy. `test/cpp/src/141-dib-stats.cc` pins this.
+- **The lookup count is not the retired instruction count.** The pipeline is *not*
+  drained between phases (`do_phase` in `src/champsim.cc`), so a phase's lookups equal
+  its retired count adjusted by the in-flight delta at both boundaries — measured at
+  +72 on 400.perlbench and −405 on 657.xz. Close to `instructions`, but neither equal
+  to nor an upper bound on it.
 
 ### The machine-readable stats document is TOML (`--toml`), not JSON
 
@@ -244,7 +261,8 @@ success. The format differs from the old JSON in ways that matter to a parser:
   plain printer writes `-` for the same case; the old JSON collapsed NaN and
   infinity indistinguishably to `null`.
 - It carries stats the JSON never did: the per-type **executed** branch census,
-  `wq_full`, per-access-type **fill** counts, and `ipc`/`mpki`/
+  `wq_full`, per-access-type **fill** counts, the DIB census
+  (`dib_lookups`/`dib_hits`/`dib_misses`/`dib_hit_rate`), and `ipc`/`mpki`/
   `branch_prediction_accuracy`/`avg_cycles_per_mispredict`.
 - `miss_latency` uses a **cache-wide** demand-fill denominator, not
   `plain_printer`'s per-CPU one; the two disagree once `NUM_CPUS > 1`.

@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <numeric>
 #include <fmt/chrono.h>
 #include <fmt/core.h>
@@ -29,8 +30,6 @@
 #include "deadlock.h"
 #include "event_listeners.h"
 #include "instruction.h"
-#include <cstring>
-
 #include "util/span.h"
 
 long O3_CPU::operate()
@@ -203,7 +202,14 @@ void O3_CPU::do_check_dib(ooo_model_instr& instr)
 {
   // Check DIB to see if we recently fetched this line
   auto dib_result = DIB.check_hit(instr.ip);
+
+  // Every instruction is checked exactly once -- `dib_checked` below gates
+  // re-entry -- so this is the only site that charges a DIB lookup, and the
+  // hit/miss counts sum to one lookup per fetched instruction. The fill is at
+  // decode (`do_dib_update`), not here, so a whole cold fetch group misses.
   if (dib_result) {
+    sim_stats.dib_hits++;
+
     // The cache line is in the L0, so we can mark this as complete
     instr.fetch_completed = true;
 
@@ -212,6 +218,8 @@ void O3_CPU::do_check_dib(ooo_model_instr& instr)
 
     // It can be acted on immediately
     instr.ready_time = current_time;
+  } else {
+    sim_stats.dib_misses++;
   }
 
   instr.dib_checked = true;

@@ -24,8 +24,24 @@ struct cpu_stats {
   champsim::stats::event_counter<branch_type> total_branch_types = {};
   champsim::stats::event_counter<branch_type> branch_type_misses = {};
 
+  // Decoded-instruction-buffer accesses. One lookup is charged per instruction
+  // that reaches the fetch stage, so the two counters sum to one lookup per
+  // fetched instruction; the total is derived rather than counted separately
+  // and so cannot drift from its parts.
+  //
+  // A hit means this instruction's window was DECODED earlier and is still
+  // resident -- NOT merely that a neighbour was fetched alongside it. The DIB
+  // is filled at decode (`do_dib_update`), long after `check_dib` has already
+  // classified the whole fetch group, so a cold group misses in its entirety:
+  // four instructions sharing a 16-byte window are four misses on their first
+  // pass, and hit only when that code runs again. `dib_misses` therefore counts
+  // instructions, not distinct windows, and is not a code-footprint proxy.
+  uint64_t dib_hits = 0;
+  uint64_t dib_misses = 0;
+
   [[nodiscard]] auto instrs() const { return end_instrs - begin_instrs; }
   [[nodiscard]] auto cycles() const { return end_cycles - begin_cycles; }
+  [[nodiscard]] auto dib_lookups() const { return dib_hits + dib_misses; }
 };
 
 cpu_stats operator-(cpu_stats lhs, cpu_stats rhs);

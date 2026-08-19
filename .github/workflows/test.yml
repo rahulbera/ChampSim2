@@ -265,11 +265,31 @@ jobs:
         assert core["instructions"] > 0, core
         assert core["cycles"] > 0, core
         assert set(core["mispredict"]) == set(core["executed"]), core
+        # One lookup per fetched instruction, always classified. The pipeline
+        # is not drained between phases, so the lookup count is neither equal to
+        # nor bounded by `instructions` and cannot be asserted against it.
+        #
+        # `dib_lookups` is derived from the other two (inc/core_stats.h), so the
+        # sum below is a tautology today -- it is kept as a guard against it
+        # ever becoming an independently stored counter. The RATE is the check
+        # that bites: it would catch a swapped key or a wrong denominator in the
+        # printer, neither of which the sum can see.
+        assert core["dib_lookups"] > 0, core
+        assert core["dib_lookups"] == core["dib_hits"] + core["dib_misses"], core
+        assert abs(core["dib_hit_rate"] - 100 * core["dib_hits"] / core["dib_lookups"]) < 0.01, core
+        # Hits need already-DECODED code to run again (the DIB fills at decode,
+        # so a cold fetch group misses in its entirety); 400.perlbench loops
+        # well inside the ROI, so this holds by thousands of events. dib_misses
+        # is deliberately NOT asserted: the ROI starts deep in a hot loop, and
+        # the miss count there is a handful of events -- 4 at `-w5000 -i5000`,
+        # 0 at `-i2000` -- so guarding it would red this leg on any change to
+        # the run length, for a reason unrelated to the document's shape.
+        assert core["dib_hits"] > 0, core
         assert phase["roi"]["cache"], "no caches emitted"
         assert phase["roi"]["dram"]["channel0"], "no DRAM channel emitted"
         # Ratios must be real floats -- `nan` is legal and expected, a string or
         # an int is not.
-        for key in ("ipc", "mpki", "cyc_wpki", "branch_prediction_accuracy"):
+        for key in ("ipc", "mpki", "cyc_wpki", "branch_prediction_accuracy", "dib_hit_rate"):
             assert isinstance(core[key], float), (key, core[key])
         print("TOML document validated")
         PY

@@ -28,6 +28,10 @@ TEST_CASE("An empty core emits every key with a nan for each undefined ratio")
                                     "instructions = 0",
                                     "cycles = 0",
                                     "ipc = nan",
+                                    "dib_lookups = 0",
+                                    "dib_hits = 0",
+                                    "dib_misses = 0",
+                                    "dib_hit_rate = nan",
                                     "total_branches = 0",
                                     "total_mispredicts = 0",
                                     "mpki = nan",
@@ -71,6 +75,44 @@ TEST_CASE("A core ratio is rounded to two decimals and keeps its exact operands"
   REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"ipc = 0.43"}));
   REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"instructions = 300"}));
   REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"cycles = 700"}));
+}
+
+TEST_CASE("The DIB hit rate is emitted beside the counts it came from")
+{
+  // The decoded-instruction buffer's hit rate is the number anyone reads, but
+  // the rounded percentage alone cannot be re-weighted across traces, so the
+  // exact lookup/hit/miss counts sit beside it.
+  cpu_stats given{};
+  given.name = "test_cpu";
+  given.end_instrs = 1000;
+  given.end_cycles = 1000;
+  given.dib_hits = 700;
+  given.dib_misses = 323;
+
+  const auto lines = champsim::toml_printer::format(given, "core.cpu0");
+
+  // 1023 lookups against 1000 instructions, deliberately unequal: the rate's
+  // denominator is the LOOKUP count, and a run's lookups never match its
+  // retired instructions exactly (the pipeline is not drained between phases).
+  // 700/1023 = 68.4262..., which also exercises the two-decimal rule -- against
+  // `instrs()` it would read 70.00.
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"dib_lookups = 1023"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"dib_hits = 700"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"dib_misses = 323"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"dib_hit_rate = 68.43"}));
+}
+
+TEST_CASE("A DIB hit rate whose denominator is zero is nan, not a dropped key")
+{
+  cpu_stats given{};
+  given.name = "test_cpu";
+  given.end_instrs = 1000;
+  given.end_cycles = 1000;
+
+  const auto lines = champsim::toml_printer::format(given, "core.cpu0");
+
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"dib_lookups = 0"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"dib_hit_rate = nan"}));
 }
 
 TEST_CASE("Executed and mispredicted branches are counted in separate tables")

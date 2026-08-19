@@ -51,6 +51,13 @@ std::vector<std::string> champsim::plain_printer::format(O3_CPU::stats_type stat
   lines.push_back(fmt::format("{} cumulative IPC: {} instructions: {} cycles: {}", stats.name, ::print_ratio(stats.instrs(), stats.cycles()), stats.instrs(),
                               stats.cycles()));
 
+  // Decoded-instruction-buffer accesses. A hit lets the instruction skip both
+  // the L1I access and decode, so the hit rate is a front-end property in its
+  // own right. The counts are reported beside the rate because a percentage
+  // cannot be pooled across traces on its own.
+  lines.push_back(fmt::format("{} DIB lookups: {} hits: {} misses: {} hit rate: {}%", stats.name, stats.dib_lookups(), stats.dib_hits, stats.dib_misses,
+                              ::print_ratio(100 * stats.dib_hits, stats.dib_lookups())));
+
   lines.push_back(fmt::format("{} Branch Prediction Accuracy: {}% MPKI: {} Average ROB Occupancy at Mispredict: {}", stats.name,
                               ::print_ratio(100 * (total_branch - total_mispredictions), total_branch),
                               ::print_ratio(std::kilo::num * total_mispredictions, stats.instrs()),
