@@ -35,8 +35,11 @@ version is asserted on the command line:
 
 ```bash
 bin/champsim --trace-version 2 --heartbeat-frequency 1000000 \
-    -w 50000000 -i 200000000 trace.champsim2.zst
+    -w 50000000 -i 200000000 --toml stats.toml trace.champsim2.zst
 ```
+
+`--toml` writes the machine-readable statistics document (see below). Without it, only
+the plain-text report goes to stdout.
 
 ### Tests
 
@@ -65,10 +68,13 @@ regressions.
 
 There is no hand-written `main()` wiring of components. `config.sh` → `config/` package
 (`parse.py`, `filewrite.py`, `instantiation_file.py`, `makefile.py`, `defaults.py`)
-reads the JSON and **generates** the concrete instantiation: `src/core_inst.cc`,
-`inc/champsim_constants.h`, `inc/cache_modules.h`, `inc/ooo_cpu_modules.h`, and
-`_configuration.mk` (which defines `executable_name`, per-object flags, and module
-object lists that the top-level `Makefile` `include`s). Multiple JSON files can be merged
+reads the JSON and **generates** the concrete instantiation into **`.csconfig/`**
+(`core_inst.inc`, `core_inst.cc.inc`, `module_decl.inc`, `legacy_bridge.*` — see
+`config/filewrite.py`), plus `_configuration.mk` at the root (which defines
+`executable_name`, per-object flags, and module object lists that the top-level
+`Makefile` `include`s). `.csconfig/` is gitignored, so no generated source is ever a
+staging hazard. (`make clean` still deletes `inc/champsim_constants.h` and friends;
+those paths are vestigial — nothing writes them any more.) Multiple JSON files can be merged
 (`--join product|chain`) to produce several executables in one pass. To change the
 simulated machine (cache sizes, core width, number of cores, which module is active),
 edit JSON and re-run `config.sh` — do **not** edit generated files.
@@ -139,11 +145,24 @@ modules currently use the legacy path.
   `uint64_t`. Many hooks have both `champsim::address` and legacy `uint64_t` overloads;
   the `uint64_t` ones are `[[deprecated]]`.
 
-## This Branch (`rbdev`): CBP2025 Branch-Predictor Evaluation
+## This Branch (`rbdev`): branch-prediction research
 
-Work specific to evaluating the CBP2025 (6th Championship Branch Prediction) submissions
-inside ChampSim. Full write-up, with all numbers and figures, in
-`docs/research-log/CBP6/`.
+Four campaigns, each with a full write-up (every number, every figure, and the
+disclosures) under `docs/research-log/`. Read the write-up before touching a campaign's
+code — the constants in it were tuned, and the reasoning is not reconstructible from
+the source.
+
+| Campaign | Code | Write-up |
+|---|---|---|
+| CBP2025 conditional predictors | `inc/cbp6/`, `branch/cbp6_*` | `docs/research-log/CBP6/` |
+| ITTAGE indirect target predictor | `inc/ittage/`, `btb/ittage_{32,64}kb` | `docs/research-log/CBP6/` |
+| BLBP bit-level perceptron (clean-room) | `inc/blbp/`, `btb/blbp_64kb{,_tuned}` | `docs/research-log/BLBP/` |
+| Headroom oracles | `inc/perfect_group/`, `btb/{perfect,ideal}_*` | both |
+
+The oracle BTBs decompose target-prediction headroom by class (direct / indirect /
+return), so a predictor's capture can be stated as a fraction of what is attainable
+rather than as a raw MPKI. `cluster_configs/` holds one-binary-per-config JSONs for
+cluster batch runs.
 
 ### The CBP6 adapter (`inc/cbp6/`)
 
@@ -158,6 +177,17 @@ can be **vendored unmodified** rather than rewritten. Hosted tenants:
 - `CBP6_PROTOCOL_CHECK=1` validates the call sequence; `CBP6_DELAYED_UPDATE=1` moves the
   update from fetch to execute; `CBP6_CALL_DUMP` records a replay log.
 - Each vendored source documents every deviation from the submission at its site.
+
+### Standalone harnesses (`tools/`)
+
+`tools/blbp_tune/` (trace-stream extractor, the `blbp_eval` objective binary, and the
+hill-climbing tuner — plus `TUNING_NOTES.md`, which is how a paused campaign is resumed),
+`tools/cbp6_replay/`, `tools/ittage_equiv/`.
+
+Each has its own Makefile that compiles with **nothing but `g++ -I../../inc`** — no
+vcpkg — so they build on a bare cluster login node. The consequence is a real
+constraint: if a header they include ever starts pulling a vcpkg dependency, those
+builds break on the machine where it is hardest to notice. Keep such code in `src/`.
 
 ### Gotchas that cost real time here
 
@@ -206,19 +236,18 @@ success. The format differs from the old JSON in ways that matter to a parser:
   `--toml-sim-stats`; `[meta].sim_stats` records which, so its absence is never
   ambiguous. (This is *not* `plain_printer`'s rule, which keys the same
   decision on `NUM_CPUS > 1`.)
-- **Every ratio is rounded to two decimals, and the exact integer operands are
-  emitted next to it** (`total_miss_latency_cycles` beside `miss_latency`,
-  `total_branches`/`total_mispredicts` beside `mpki`), so rounding never loses
-  information.
-- **An undefined ratio is `nan`**, a real TOML float, never a dropped key — the
-  schema is identical for every run. The plain printer writes `-` for the same
-  case, and the old JSON collapsed NaN and infinity indistinguishably to `null`.
+- **Every ratio is rounded to two decimals with its exact integer operands beside
+  it** (`total_miss_latency_cycles` next to `miss_latency`, `total_branches` and
+  `total_mispredicts` next to `mpki`), so rounding never loses information —
+  recompute rather than trusting the rounded value.
+- **An undefined ratio is `nan`**, a real TOML float, never a dropped key. The
+  plain printer writes `-` for the same case; the old JSON collapsed NaN and
+  infinity indistinguishably to `null`.
 - It carries stats the JSON never did: the per-type **executed** branch census,
   `wq_full`, per-access-type **fill** counts, and `ipc`/`mpki`/
   `branch_prediction_accuracy`/`avg_cycles_per_mispredict`.
-- `miss_latency` uses a **cache-wide** demand-fill denominator (the JSON
-  printer's), not `plain_printer`'s per-CPU one; the two disagree once
-  `NUM_CPUS > 1`.
+- `miss_latency` uses a **cache-wide** demand-fill denominator, not
+  `plain_printer`'s per-CPU one; the two disagree once `NUM_CPUS > 1`.
 
 Tests are `test/cpp/src/099-toml-printer.cc`, which pin exact output via the
 static `format()` seam — the seam `json_printer` lacks, which is why it never
@@ -229,8 +258,13 @@ had tests.
 - C++17, warnings-heavy (`global.options`: `-Wall -Wextra -Wshadow -Wpedantic -Wconversion -O3`).
   Modules additionally get `-Wno-unused-parameter -DCHAMPSIM_MODULE` (`module.options`).
 - Formatting is enforced by `.clang-format` (LLVM base, 160 col); the `lint` CI workflow
-  reformats `src inc prefetcher branch replacement btb tracer` on push. `.clang-tidy`
-  configures the enabled checks.
+  reformats `champsim_config.json vcpkg.json src inc prefetcher branch replacement btb
+  test tracer` **in place on push** — note `test/` is included, so a new test file gets
+  reformatted by CI unless you run clang-format first. `.clang-tidy` configures the checks.
+- `.commit-profile` at the repo root records this branch's commit conventions for the
+  `git-commit` skill: `<component>: imperative summary` subjects, `make test` to verify,
+  and the clang-format invocation above. Never add AI co-author or tool-attribution
+  trailers to a commit message.
 - Dependencies are vendored via vcpkg (`vcpkg.json`): CLI11, nlohmann-json, fmt, catch2,
   and the compression libs (bzip2, liblzma, zlib, zstd). Use `fmt` for output, not
   iostreams/printf.
