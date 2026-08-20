@@ -104,6 +104,25 @@ class CpuBuilderTest(unittest.TestCase):
     def test_dib_window_dict(self):
         self.get_element_diff(['.dib_window(1)'], DIB={ 'window_size': 1 })
 
+    def test_dib_inorder_width(self):
+        self.get_element_diff(['.dib_inorder_width(champsim::bandwidth::maximum_type{1})'], dib_inorder_width=1)
+
+    def test_dib_hit_buffer_size(self):
+        self.get_element_diff(['.dib_hit_buffer_size(1)'], dib_hit_buffer_size=1)
+
+    def test_dib_inorder_width_dict(self):
+        self.get_element_diff(['.dib_inorder_width(champsim::bandwidth::maximum_type{1})'], DIB={ 'inorder_width': 1 })
+
+    def test_dib_hit_buffer_size_dict(self):
+        # Regression test: this emitted inorder_width's value (or raised KeyError
+        # when inorder_width was absent, as here) instead of the configured size.
+        self.get_element_diff(['.dib_hit_buffer_size(1)'], DIB={ 'hit_buffer_size': 1 })
+
+    def test_dib_hit_buffer_size_dict_is_independent_of_inorder_width(self):
+        self.get_element_diff(
+            ['.dib_hit_buffer_size(7)', '.dib_inorder_width(champsim::bandwidth::maximum_type{3})'],
+            DIB={ 'hit_buffer_size': 7, 'inorder_width': 3 })
+
     def test_branch_predictor(self):
         self.get_element_diff(['.branch_predictor<class a_class>()'], _branch_predictor_data=[{ 'name': 'a', 'class': 'a_class' }])
         self.get_element_diff(['.branch_predictor<class a_class, class b_class>()'], _branch_predictor_data=[{ 'name': 'a', 'class': 'a_class' }, { 'name': 'b', 'class': 'b_class' }])
