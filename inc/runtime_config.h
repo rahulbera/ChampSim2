@@ -1,0 +1,180 @@
+#ifndef RUNTIME_CONFIG_H
+#define RUNTIME_CONFIG_H
+
+#include <algorithm>
+#include <cctype>
+#include <cstdint>
+#include <limits>
+#include <map>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <type_traits>
+#include <utility>
+#include <variant>
+#include <vector>
+
+namespace champsim
+{
+/*
+ * The runtime configuration store: a flat key -> scalar map populated from
+ * TOML files (--config) and command-line assignments (--set), applied in argv
+ * order so the last definition of a key wins regardless of source.
+ *
+ * The generated environment's constructor consults it through value<T>(key,
+ * fallback), where the fallback is the configure-time value config.sh baked
+ * in -- so a binary run without --config/--set behaves exactly as it did
+ * before this store existed.
+ *
+ * This class must name no generated symbol: it is linked into the test binary,
+ * where CHAMPSIM_BUILD expands to the non-literal 0xTEST.
+ */
+class runtime_config
+{
+public:
+  using value_type = std::variant<int64_t, double, bool, std::string>;
+
+  // Load one TOML file, flattening nested tables into dotted keys. Later
+  // definitions overwrite earlier ones. Throws std::runtime_error on an
+  // unreadable or unparseable file, or on a non-scalar value (the schema has
+  // no arrays -- matching the statistics document's own rule).
+  void load_file(const std::string& path);
+
+  // Apply one "key=value" assignment. The value is typed by parse: true/false
+  // -> bool, an integer literal -> int64, a float literal -> double, anything
+  // else -> string. Throws std::runtime_error on a malformed assignment.
+  void set(std::string_view assignment);
+
+  // The configured value, or the fallback when the key is absent. int64 -> T
+  // conversions are range-checked; double -> integer, string -> anything, and
+  // int -> bool never convert (they would truncate or reinterpret silently).
+  // Records the (key, fallback) pair so --knobs can enumerate what this
+  // binary consults. Throws std::runtime_error on a type mismatch.
+  template <typename T>
+  T value(std::string_view key, T fallback) const;
+
+  // As value(), additionally rejecting zero and negative results. Used by the
+  // generated frequency/data-rate lookups, whose value divides into a clock
+  // period: zero would be a division by zero and a negative clock runs time
+  // backwards -- both silently corrupt a simulation rather than failing it.
+  template <typename T>
+  T positive_value(std::string_view key, T fallback) const
+  {
+    T result = value<T>(key, fallback);
+    if (!(result > T{})) {
+      throw std::runtime_error("runtime config: " + std::string{key} + " must be positive");
+    }
+    return result;
+  }
+
+  // Keys the user set that the manifest does not contain, each formatted as a
+  // ready-to-print complaint (with a did-you-mean when a case-folded match
+  // exists). Empty means the configuration is valid.
+  template <typename It>
+  [[nodiscard]] std::vector<std::string> unknown_keys(It manifest_begin, It manifest_end) const;
+
+  // Provenance, for [meta] and [config_override]: the files loaded, in order,
+  // and the applied key -> value pairs (sorted, values in TOML syntax).
+  [[nodiscard]] const std::vector<std::string>& files() const { return files_; }
+  [[nodiscard]] std::vector<std::pair<std::string, std::string>> applied() const;
+
+  // Every (key, rendered fallback) pair value<T>() has been asked for, sorted.
+  // Constructing a throwaway environment against an empty store and reading
+  // this back is how --knobs enumerates the binary's knobs.
+  [[nodiscard]] std::vector<std::pair<std::string, std::string>> consulted() const;
+
+private:
+  [[nodiscard]] static std::string render(const value_type& val);
+  void note_consulted(std::string_view key, const value_type& fallback) const;
+  void note_consulted_raw(std::string_view key, std::string rendered) const;
+  [[nodiscard]] static std::string type_name(const value_type& val);
+
+  std::map<std::string, value_type, std::less<>> values_;
+  std::vector<std::string> files_;
+  // Recording is observation, not state of the configuration itself.
+  mutable std::map<std::string, std::string, std::less<>> consulted_;
+};
+
+template <typename T>
+T runtime_config::value(std::string_view key, T fallback) const
+{
+  static_assert(std::is_arithmetic_v<T>, "the runtime store holds numeric and boolean scalars");
+
+  if constexpr (std::is_same_v<T, bool>) {
+    note_consulted(key, value_type{fallback});
+  } else if constexpr (std::is_floating_point_v<T>) {
+    note_consulted(key, value_type{static_cast<double>(fallback)});
+  } else if constexpr (std::is_unsigned_v<T>) {
+    // Not through the variant's int64_t: an unsigned fallback above its max
+    // would wrap negative in the --knobs rendering.
+    note_consulted_raw(key, std::to_string(fallback));
+  } else {
+    note_consulted(key, value_type{static_cast<int64_t>(fallback)});
+  }
+
+  auto found = values_.find(key);
+  if (found == std::end(values_)) {
+    return fallback;
+  }
+
+  const auto& held = found->second;
+  if constexpr (std::is_same_v<T, bool>) {
+    if (const auto* val = std::get_if<bool>(&held)) {
+      return *val;
+    }
+  } else if constexpr (std::is_floating_point_v<T>) {
+    // An integer is a valid TOML spelling of a whole number of any type.
+    if (const auto* val = std::get_if<double>(&held)) {
+      return static_cast<T>(*val);
+    }
+    if (const auto* val = std::get_if<int64_t>(&held)) {
+      return static_cast<T>(*val);
+    }
+  } else {
+    if (const auto* val = std::get_if<int64_t>(&held)) {
+      // Range-check the narrowing rather than truncate silently.
+      using limits = std::numeric_limits<T>;
+      const bool below = *val < static_cast<int64_t>(limits::lowest());
+      const bool above =
+          std::is_unsigned_v<T> ? static_cast<uint64_t>(*val) > static_cast<uint64_t>(limits::max()) : *val > static_cast<int64_t>(limits::max());
+      if (*val < 0 && std::is_unsigned_v<T>) {
+        throw std::runtime_error("runtime config: " + std::string{key} + " = " + render(held) + " is negative");
+      }
+      if (below || above) {
+        throw std::runtime_error("runtime config: " + std::string{key} + " = " + render(held) + " is out of range");
+      }
+      return static_cast<T>(*val);
+    }
+  }
+  throw std::runtime_error("runtime config: " + std::string{key} + " holds a " + type_name(held) + ", which does not convert to the expected type");
+}
+
+template <typename It>
+std::vector<std::string> runtime_config::unknown_keys(It manifest_begin, It manifest_end) const
+{
+  auto lower = [](std::string_view text) {
+    std::string out{};
+    for (auto chr : text) {
+      out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(chr))));
+    }
+    return out;
+  };
+
+  std::vector<std::string> complaints{};
+  for (const auto& [key, val] : values_) {
+    if (std::find(manifest_begin, manifest_end, std::string_view{key}) != manifest_end) {
+      continue;
+    }
+    std::string complaint = "unknown configuration key '" + key + "'";
+    const auto folded = lower(key);
+    auto suggestion = std::find_if(manifest_begin, manifest_end, [&](std::string_view candidate) { return lower(candidate) == folded; });
+    if (suggestion != manifest_end) {
+      complaint += "; did you mean '" + std::string{*suggestion} + "'?";
+    }
+    complaints.push_back(std::move(complaint));
+  }
+  return complaints;
+}
+} // namespace champsim
+
+#endif
