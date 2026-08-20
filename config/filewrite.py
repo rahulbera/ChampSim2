@@ -23,6 +23,8 @@ import pathlib
 from .makefile import get_makefile_lines
 from .instantiation_file import get_instantiation_lines
 from .instantiation_file import get_instantiation_header
+from .config_record import get_config_record_lines
+from .config_record import get_config_record_cxx
 from . import util
 
 warning_text = (
@@ -164,7 +166,15 @@ class Fragment:
 
         fileparts = [
             # Instantiation file
-            (os.path.join(objdir_name, 'core_inst.inc'), cxx_file(get_instantiation_header(len(elements['cores']), config_file, build_id=build_id))),
+            # The [config] record rides along in core_inst.inc: src/main.cc already
+            # includes that file (guarded by CHAMPSIM_TEST_BUILD, which is what keeps
+            # the per-build-id symbol out of the test link), and Fragment.join merges
+            # same-named parts, so a --join of N configurations yields N
+            # specializations in one file exactly as the environments already do.
+            (os.path.join(objdir_name, 'core_inst.inc'), cxx_file(itertools.chain(
+                get_instantiation_header(len(elements['cores']), config_file, build_id=build_id),
+                get_config_record_cxx(build_id, get_config_record_lines(executable_basename, elements, config_file))
+            ))),
             (os.path.join(objdir_name, 'core_inst.cc.inc'), cxx_file(get_instantiation_lines(build_id=build_id, **elements))),
 
             # Makefile generation

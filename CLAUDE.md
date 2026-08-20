@@ -267,9 +267,45 @@ success. The format differs from the old JSON in ways that matter to a parser:
 - `miss_latency` uses a **cache-wide** demand-fill denominator, not
   `plain_printer`'s per-CPU one; the two disagree once `NUM_CPUS > 1`.
 
+It also records **what produced the document**, not just what was measured:
+
+- `[meta]` carries `build_id`, `warmup_instructions`, `simulation_instructions`,
+  `trace_version`, and `command_line`. `build_id` is `0x` plus the 16-hex-digit
+  shake_128 digest that `config/filewrite.py` derives from the *whole* parsed
+  config — so it identifies the configuration exactly, and is printed
+  zero-padded because a digest may begin with a zero. `command_line` is `argv`
+  joined verbatim; the shell has already expanded process substitution and
+  globs, so it is a record of what the process received, **not** a re-runnable
+  command.
+- `[config]` is the parsed configuration the binary was generated from, rendered
+  by `config/config_record.py` and embedded as a `champsim::configured::config_record<ID>`
+  specialization in `.csconfig/core_inst.inc`. Component tables are lower-cased
+  the same way the stats tables are, so `[config.cache.cpu0_l1d]` joins directly
+  to `[phase.<name>.roi.cache.cpu0_l1d]` — CI asserts the two key sets are equal.
+
+Three things about `[config]` are not obvious:
+
+- **Module names are recovered from the config layer's internal `_*_data` keys,
+  not the plain ones.** `cpu0_L1I` has no `replacement` key at all in the shipped
+  config — the policy comes from `champsim::defaults::default_l1i` — so reading
+  only the plain key would silently omit the most useful field. Other
+  `_`-prefixed keys are dropped: `_offset_bits` is the C++ expression
+  `champsim::lg2(64)` and `_defaults` names a C++ object.
+- **It records what was *requested*, so C++-side defaults are absent.** The
+  generated instantiation starts from `champsim::defaults::default_core` and
+  overrides only what the config layer produced, so anything supplied purely by
+  `inc/defaults.hpp` (e.g. the PTW's PSCL geometry) never appears.
+- **The record may only be named inside `#ifndef CHAMPSIM_TEST_BUILD`.**
+  `src/main.cc` *is* linked into the test binary (`$(call get_base_objs,TEST)`),
+  where `CHAMPSIM_BUILD` expands to the non-literal `0xTEST`. `main.cc` therefore
+  reads the blob and passes it to the printer as a `toml_printer::run_info`;
+  `toml_printer.cc` names no generated symbol, which is what keeps it linkable
+  into the tests and preserves the static `format()` seam.
+
 Tests are `test/cpp/src/099-toml-printer.cc`, which pin exact output via the
 static `format()` seam — the seam `json_printer` lacks, which is why it never
-had tests.
+had tests — and `test/python/test_config_record.py`, which pins the rendering
+rules and round-trips the shipped config through `tomllib`.
 
 ## Conventions
 

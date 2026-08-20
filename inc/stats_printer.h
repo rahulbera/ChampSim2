@@ -17,6 +17,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "cache.h"
@@ -63,13 +64,45 @@ class toml_printer
   bool include_sim_stats;
 
 public:
+  // What produced this document, as opposed to what it measured. Everything
+  // here is supplied by the caller rather than read from a generated symbol:
+  // src/main.cc IS linked into the test binary, where CHAMPSIM_BUILD expands to
+  // the non-literal `0xTEST`, so only code inside `#ifndef CHAMPSIM_TEST_BUILD`
+  // may name one. Keeping the printer ignorant of the build is what lets it be
+  // linked into the tests at all -- and what keeps the static format() seam,
+  // which is the only reason this printer can be pinned by exact output.
+  struct run_info {
+    // The build id config.sh derived from the parsed configuration, rendered
+    // as it appears in the generated source (e.g. "0x2989172160dc027f").
+    std::string build_id{};
+    // argv, joined. Recorded verbatim rather than prettified: a shell has
+    // already expanded process substitution and globs by the time ChampSim
+    // sees them, so a re-runnable line cannot be reconstructed honestly.
+    std::string command_line{};
+    long long warmup_instructions{0};
+    long long simulation_instructions{0};
+    int trace_version{0};
+    // A [config] section already rendered as TOML by the configuration layer
+    // (config/config_record.py), carried on the generated environment. Spliced
+    // verbatim; the printer does not parse or validate it.
+    std::string_view config_toml{};
+  };
+
+  // `run_info` cannot appear in a default argument of this class: its default
+  // member initializers are not required until the end of the enclosing class,
+  // which is after a default argument would need them. Hence overloads.
   explicit toml_printer(std::ostream& str, bool include_sim = false) : stream(str), include_sim_stats(include_sim) {}
+  toml_printer(std::ostream& str, bool include_sim, run_info info) : stream(str), include_sim_stats(include_sim), info_(std::move(info)) {}
   void print(std::vector<phase_stats>& stats);
 
   static std::vector<std::string> format(O3_CPU::stats_type stats, std::string_view path);
   static std::vector<std::string> format(CACHE::stats_type stats, std::string_view path);
   static std::vector<std::string> format(DRAM_CHANNEL::stats_type stats, std::string_view path);
   static std::vector<std::string> format(phase_stats& stats, bool include_sim = false);
+  static std::vector<std::string> format(std::vector<phase_stats>& stats, bool include_sim, const run_info& info);
   static std::vector<std::string> format(std::vector<phase_stats>& stats, bool include_sim = false);
+
+private:
+  run_info info_{};
 };
 } // namespace champsim

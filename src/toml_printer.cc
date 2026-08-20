@@ -159,6 +159,34 @@ void append_block(std::vector<std::string>& lines, const std::vector<std::string
   lines.insert(std::end(lines), std::begin(block), std::end(block));
 }
 
+// Split an already-rendered TOML blob into lines, dropping the blank lines at
+// its edges. The blob comes from a C++ raw string literal that opens right
+// after its delimiter, so it always carries a leading newline of its own; left
+// alone, those would accumulate every time the block is spliced.
+std::vector<std::string> split_lines(std::string_view text)
+{
+  std::vector<std::string> out{};
+  while (!std::empty(text)) {
+    const auto end = text.find('\n');
+    out.emplace_back(text.substr(0, end));
+    if (end == std::string_view::npos) {
+      break;
+    }
+    text.remove_prefix(end + 1);
+  }
+
+  const auto blank = [](const std::string& line) {
+    return std::empty(line);
+  };
+  while (!std::empty(out) && blank(out.front())) {
+    out.erase(std::begin(out));
+  }
+  while (!std::empty(out) && blank(out.back())) {
+    out.pop_back();
+  }
+  return out;
+}
+
 void emit_table(std::vector<std::string>& lines, std::string_view path, const std::vector<entry>& entries)
 {
   if (!std::empty(lines)) {
@@ -312,11 +340,31 @@ std::vector<std::string> champsim::toml_printer::format(champsim::phase_stats& s
   return lines;
 }
 
-std::vector<std::string> champsim::toml_printer::format(std::vector<phase_stats>& stats, bool include_sim)
+std::vector<std::string> champsim::toml_printer::format(std::vector<phase_stats>& stats, bool include_sim, const run_info& info)
 {
   std::vector<std::string> lines{"# ChampSim statistics. Ratios are rounded to two decimals; the exact",
                                  "# operands of every ratio are emitted alongside it. An undefined ratio", "# is `nan` rather than a missing key."};
-  emit_table(lines, "meta", {{"schema_version", "1"}, {"num_cpus", fmt::format("{}", NUM_CPUS)}, {"sim_stats", include_sim ? "true" : "false"}});
+  emit_table(lines, "meta",
+             {{"schema_version", "1"},
+              {"num_cpus", fmt::format("{}", NUM_CPUS)},
+              {"sim_stats", include_sim ? "true" : "false"},
+              {"build_id", quote(info.build_id)},
+              {"warmup_instructions", fmt::format("{}", info.warmup_instructions)},
+              {"simulation_instructions", fmt::format("{}", info.simulation_instructions)},
+              {"trace_version", fmt::format("{}", info.trace_version)},
+              {"command_line", quote(info.command_line)}});
+
+  // The configuration this build was generated from, already rendered as TOML
+  // by config/config_record.py. It is spliced rather than built here because
+  // the parsed configuration does not survive to run time in any other form.
+  // The header is emitted even when the record is empty -- as it is in every
+  // unit test, and in any build whose environment predates this section -- so
+  // that a consumer can always index [config] instead of testing for it.
+  auto config_lines = split_lines(info.config_toml);
+  if (std::empty(config_lines)) {
+    config_lines.emplace_back("[config]");
+  }
+  append_block(lines, config_lines);
 
   for (auto& phase : stats) {
     append_block(lines, format(phase, include_sim));
@@ -325,9 +373,11 @@ std::vector<std::string> champsim::toml_printer::format(std::vector<phase_stats>
   return lines;
 }
 
+std::vector<std::string> champsim::toml_printer::format(std::vector<phase_stats>& stats, bool include_sim) { return format(stats, include_sim, run_info{}); }
+
 void champsim::toml_printer::print(std::vector<phase_stats>& stats)
 {
-  for (const auto& line : format(stats, include_sim_stats)) {
+  for (const auto& line : format(stats, include_sim_stats, info_)) {
     stream << line << "\n";
   }
 }

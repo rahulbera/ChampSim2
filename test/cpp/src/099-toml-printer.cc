@@ -439,3 +439,122 @@ TEST_CASE("Names that do not collide are still lower-cased")
   REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"[phase.simulation.roi.cache.cpu0_l1d]"}));
   REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"[phase.simulation.roi.cache.cpu0_l1i]"}));
 }
+
+// The [config] section and the run parameters in [meta] exist so a statistics
+// document states which machine, and which run, produced it. The configuration
+// itself is compiled away into literals by config.sh, so it reaches the printer
+// as an already-rendered TOML blob (config/config_record.py) carried on the
+// generated environment. The printer's job is to splice it, not to build it --
+// which is what keeps toml_printer.cc free of any generated symbol, and so
+// linkable into the test binary.
+
+TEST_CASE("The run parameters are recorded in the meta table")
+{
+  auto phase = one_of_everything();
+  std::vector<champsim::phase_stats> given{phase};
+
+  champsim::toml_printer::run_info info{};
+  info.build_id = "0x2989172160dc027f";
+  info.warmup_instructions = 50000000;
+  info.simulation_instructions = 200000000;
+  info.trace_version = 2;
+  info.command_line = "bin/champsim -w 50000000 trace.xz";
+
+  const auto lines = champsim::toml_printer::format(given, false, info);
+
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"build_id = \"0x2989172160dc027f\""}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"warmup_instructions = 50000000"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"simulation_instructions = 200000000"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"trace_version = 2"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"command_line = \"bin/champsim -w 50000000 trace.xz\""}));
+}
+
+TEST_CASE("The run parameters keep their keys even when nothing is known")
+{
+  // Same rule as every ratio in this document: a key is never dropped, so a
+  // parser can index the document without first checking what happened to be
+  // available at the time.
+  auto phase = one_of_everything();
+  std::vector<champsim::phase_stats> given{phase};
+
+  const auto lines = champsim::toml_printer::format(given);
+
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"build_id = \"\""}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"warmup_instructions = 0"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"command_line = \"\""}));
+}
+
+TEST_CASE("A command line containing a quote is escaped, not emitted raw")
+{
+  auto phase = one_of_everything();
+  std::vector<champsim::phase_stats> given{phase};
+
+  champsim::toml_printer::run_info info{};
+  info.command_line = "bin/champsim --toml \"a b.toml\"";
+
+  const auto lines = champsim::toml_printer::format(given, false, info);
+
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"command_line = \"bin/champsim --toml \\\"a b.toml\\\"\""}));
+}
+
+TEST_CASE("The configuration record is spliced into the document verbatim")
+{
+  auto phase = one_of_everything();
+  std::vector<champsim::phase_stats> given{phase};
+
+  champsim::toml_printer::run_info info{};
+  info.config_toml = "[config]\nexecutable_name = \"cbp_blbp64t\"\n\n[config.ooo_cpu.cpu0]\nbtb = \"blbp_64kb_tuned\"";
+
+  const auto lines = champsim::toml_printer::format(given, false, info);
+
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"[config]"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"executable_name = \"cbp_blbp64t\""}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"[config.ooo_cpu.cpu0]"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"btb = \"blbp_64kb_tuned\""}));
+
+  // It must land after [meta] and before the first phase, so that neither
+  // table swallows the other's keys.
+  const auto find_at = [&lines](std::string_view header) {
+    const auto pos = std::find(std::begin(lines), std::end(lines), header);
+    REQUIRE(pos != std::end(lines)); // a header that is never found would make the ordering check vacuous
+    return std::distance(std::begin(lines), pos);
+  };
+  const auto meta_at = find_at("[meta]");
+  const auto config_at = find_at("[config]");
+  const auto phase_at = find_at("[phase.simulation]");
+  REQUIRE(meta_at < config_at);
+  REQUIRE(config_at < phase_at);
+}
+
+TEST_CASE("A configuration record with no content still leaves an indexable table")
+{
+  auto phase = one_of_everything();
+  std::vector<champsim::phase_stats> given{phase};
+
+  const auto lines = champsim::toml_printer::format(given);
+
+  REQUIRE(std::find(std::begin(lines), std::end(lines), "[config]") != std::end(lines));
+}
+
+TEST_CASE("Blank lines around the configuration record do not accumulate")
+{
+  // The record arrives from a raw string literal that begins right after the
+  // opening delimiter, so it always carries a leading newline of its own, and
+  // append_block adds a separator of its own on top. Left alone the two would
+  // compound every time the block is spliced.
+  auto phase = one_of_everything();
+  std::vector<champsim::phase_stats> given{phase};
+
+  champsim::toml_printer::run_info info{};
+  info.config_toml = "\n\n[config]\nblock_size = 64\n\n\n";
+
+  const auto lines = champsim::toml_printer::format(given, false, info);
+
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"[config]"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"block_size = 64"}));
+
+  // No two blank lines anywhere: one separator between blocks, never a run.
+  const auto doubled =
+      std::adjacent_find(std::begin(lines), std::end(lines), [](const std::string& lhs, const std::string& rhs) { return std::empty(lhs) && std::empty(rhs); });
+  REQUIRE(doubled == std::end(lines));
+}

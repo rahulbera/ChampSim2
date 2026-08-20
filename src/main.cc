@@ -16,11 +16,13 @@
 
 #include <algorithm>
 #include <fstream>
+#include <iterator>
 #include <numeric>
 #include <string>
 #include <vector>
 #include <CLI/CLI.hpp>
 #include <fmt/core.h>
+#include <fmt/ranges.h>
 
 #include "cache.h" // for CACHE
 #include "champsim.h"
@@ -181,14 +183,35 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     cache.impl_replacement_final_stats();
   }
 
+  // What produced this document, so that a result file states which machine and
+  // which run it came from. The configuration itself is compiled away into
+  // literals by config.sh, so it is carried as a pre-rendered TOML fragment on
+  // the generated environment -- see config/config_record.py. Both this and the
+  // build id may only be named inside `#ifndef CHAMPSIM_TEST_BUILD`, which is
+  // why they are read here and passed to the printer as plain data.
+  champsim::toml_printer::run_info run{};
+  // Sixteen digits, zero-padded, to match the id in the generated source and in
+  // _configuration.mk exactly -- a shake_128 digest may begin with a zero, and
+  // "{:#x}" would silently drop it.
+  run.build_id = fmt::format("0x{:016x}", static_cast<unsigned long long>(CHAMPSIM_BUILD));
+  run.config_toml = champsim::configured::config_record<CHAMPSIM_BUILD>::toml;
+  run.warmup_instructions = warmup_instructions;
+  run.simulation_instructions = simulation_instructions;
+  run.trace_version = static_cast<int>(trace_version);
+  // argv joined verbatim. The shell has already expanded process substitution,
+  // globs and quotes by now, so a re-runnable command line cannot be honestly
+  // reconstructed; recording what this process actually received is the only
+  // claim that is true.
+  run.command_line = fmt::format("{}", fmt::join(std::vector<std::string>(argv, std::next(argv, argc)), " "));
+
   // champsim::json_printer is still compiled and linked, so it cannot rot
   // silently, but it is unreachable at run time: --json is rejected above.
   if (toml_option->count() > 0) {
     if (toml_file_name.empty()) {
-      champsim::toml_printer{std::cout, toml_sim_stats}.print(phase_stats);
+      champsim::toml_printer{std::cout, toml_sim_stats, run}.print(phase_stats);
     } else {
       std::ofstream toml_file{toml_file_name};
-      champsim::toml_printer{toml_file, toml_sim_stats}.print(phase_stats);
+      champsim::toml_printer{toml_file, toml_sim_stats, run}.print(phase_stats);
       toml_file.flush();
 
       // A full disk here would otherwise discard the run's only

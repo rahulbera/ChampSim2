@@ -18,6 +18,7 @@
 #define ENVIRONMENT_H
 
 #include <functional>
+#include <string_view>
 #include <vector>
 
 #include "cache.h"
@@ -40,6 +41,18 @@ namespace configured
 {
 template <unsigned long long ID>
 struct generated_environment;
+
+// The parsed configuration this build was generated from, rendered as a TOML
+// fragment by the Python configuration layer (config/config_record.py) and
+// specialized per build id alongside generated_environment. It lets a
+// statistics document state which machine produced it -- the JSON is otherwise
+// compiled away into literals and unavailable at run time.
+//
+// Only src/main.cc reads this, and only inside `#ifndef CHAMPSIM_TEST_BUILD`:
+// main.cc IS linked into the test binary, where CHAMPSIM_BUILD expands to the
+// non-literal `0xTEST`, so nothing outside that guard may name a specialization.
+template <unsigned long long ID>
+struct config_record;
 
 template <typename R, typename... PTWs>
 auto build(PTWs... builders)
