@@ -439,6 +439,7 @@ def get_instantiation_header(num_cpus, env, build_id):
         f'constexpr static std::size_t num_cpus = {num_cpus};',
         f'constexpr static std::size_t block_size = {env["block_size"]};',
         f'constexpr static std::size_t page_size = {env["page_size"]};',
+        f'constexpr static uint64_t heartbeat_frequency = {env.get("heartbeat_frequency", 10000000)};',
 
         'generated_environment();',
         'std::vector<std::reference_wrapper<O3_CPU>> cpu_view() final;',

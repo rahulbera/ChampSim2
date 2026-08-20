@@ -323,3 +323,18 @@ class GetQueueInfoTests(unittest.TestCase):
             { 'is_good_boy': False }
         ]
         self.assertEqual(expected, evaluated)
+
+
+class InstantiationHeaderTest(unittest.TestCase):
+    def header_lines(self, env):
+        return [l.strip() for l in config.instantiation_file.get_instantiation_header(1, env, 'deadbeef')]
+
+    def test_heartbeat_frequency_is_emitted(self):
+        # The JSON key was captured by parse.py but consumed by no generator, so
+        # only the CLI flag ever worked; the binary's default was hardcoded.
+        lines = self.header_lines({'block_size': 64, 'page_size': 4096, 'heartbeat_frequency': 5000})
+        self.assertIn('constexpr static uint64_t heartbeat_frequency = 5000;', lines)
+
+    def test_heartbeat_frequency_defaults_when_absent(self):
+        lines = self.header_lines({'block_size': 64, 'page_size': 4096})
+        self.assertIn('constexpr static uint64_t heartbeat_frequency = 10000000;', lines)

@@ -63,7 +63,9 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 
   bool knob_cloudsuite{false};
   unsigned trace_version{1};
-  uint64_t heartbeat_frequency{10000000};
+  // Default from the configuration's heartbeat_frequency (config.sh bakes it
+  // into the generated environment); --heartbeat-frequency still overrides.
+  uint64_t heartbeat_frequency{configured_environment::heartbeat_frequency};
   long long warmup_instructions = 0;
   long long simulation_instructions = std::numeric_limits<long long>::max();
   std::string json_file_name;
@@ -82,7 +84,9 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   app.add_option("--trace-version", trace_version, "The trace record format version: 1 (64-byte, default) or 2 (512-byte, with memory values)")
       ->check(CLI::IsMember({1U, 2U}));
   app.add_flag("--hide-heartbeat", set_heartbeat_callback, "Hide the heartbeat output");
-  app.add_option("--heartbeat-frequency", heartbeat_frequency, "Instructions retired between heartbeat lines (default 10000000)")->check(CLI::PositiveNumber);
+  app.add_option("--heartbeat-frequency", heartbeat_frequency,
+                 "Instructions retired between heartbeat lines (default: the configuration's heartbeat_frequency)")
+      ->check(CLI::PositiveNumber);
   auto* warmup_instr_option = app.add_option("-w,--warmup-instructions", warmup_instructions, "The number of instructions in the warmup phase");
   auto* deprec_warmup_instr_option =
       app.add_option("--warmup_instructions", warmup_instructions, "[deprecated] use --warmup-instructions instead")->excludes(warmup_instr_option);
