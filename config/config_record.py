@@ -185,10 +185,11 @@ def get_config_record_lines(executable_name, elements, config_file):
     if elements.get('vmem'):
         yield from _table('config.vmem', elements['vmem'])
 
-def get_config_record_cxx(build_id, record_lines):
+def get_config_record_cxx(build_id, record_lines, runtime_keys=()):
     '''
     Yield the champsim::configured::config_record specialization carrying a
-    rendered [config] section, for the given build id.
+    rendered [config] section and the runtime-key manifest, for the given
+    build id.
 
     The specialization is emitted at namespace scope rather than as a member of
     generated_environment, because cxx.brace_wrap indents every struct-body line
@@ -204,9 +205,17 @@ def get_config_record_cxx(build_id, record_lines):
     if any(terminator in line for line in record_lines):
         raise ValueError(f'configuration value contains the raw string delimiter {terminator!r}')
 
+    runtime_keys = sorted(runtime_keys)
+    yield '#include <array>'
     yield 'template <>'
     yield f'struct champsim::configured::config_record<0x{build_id}> {{'
     yield f'static constexpr std::string_view toml = R"{CXX_RAW_DELIMITER}('
     yield from record_lines
     yield f'){CXX_RAW_DELIMITER}";'
+    # Every runtime-config key the generated constructor consults, for startup
+    # validation of --config/--set and for --knobs.
+    yield f'static constexpr std::array<std::string_view, {len(runtime_keys)}> runtime_keys{{{{'
+    for key in runtime_keys:
+        yield f'"{key}",'
+    yield '}};'
     yield '};'

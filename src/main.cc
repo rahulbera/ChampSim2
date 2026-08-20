@@ -15,9 +15,11 @@
  */
 
 #include <algorithm>
+#include <array>
 #include <fstream>
 #include <iterator>
 #include <numeric>
+#include <optional>
 #include <string>
 #include <vector>
 #include <CLI/CLI.hpp>
@@ -34,13 +36,14 @@
 #include "event_listeners.h"
 #include "ooo_cpu.h" // for O3_CPU
 #include "phase_info.h"
+#include "runtime_config.h"
 #include "stats_printer.h"
 #include "tracereader.h"
 #include "vmem.h"
 
 namespace champsim
 {
-std::vector<phase_stats> main(environment& env, std::vector<phase_info>& phases, std::vector<tracereader>& traces);
+std::vector<phase_stats> main(environment& env, std::vector<phase_info>& phases, std::vector<tracereader>& traces, const simulation_knobs& knobs);
 }
 
 #ifndef CHAMPSIM_TEST_BUILD
@@ -57,7 +60,11 @@ const unsigned LOG2_PAGE_SIZE = champsim::lg2(PAGE_SIZE);
 #ifndef CHAMPSIM_TEST_BUILD
 int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 {
-  configured_environment gen_environment{};
+  // The runtime configuration store. --config and --set apply to it in argv
+  // order (trigger_on_parse), so the LAST definition of a key wins regardless
+  // of which source it came from. The environment is constructed only after
+  // the store is complete and validated.
+  champsim::runtime_config runtime_cfg{};
 
   CLI::App app{"A microarchitecture simulator for research and education"};
 
@@ -74,19 +81,43 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   std::vector<std::string> requested_listeners;
   std::vector<std::string> trace_names;
 
-  auto set_heartbeat_callback = [&](auto) {
-    for (O3_CPU& cpu : gen_environment.cpu_view()) {
-      cpu.show_heartbeat = false;
-    }
-  };
+  // Applied after the environment exists; a parse-time callback would touch
+  // an environment that is no longer constructed before CLI11_PARSE.
+  bool hide_heartbeat{false};
+  bool list_knobs{false};
 
   app.add_flag("-c,--cloudsuite", knob_cloudsuite, "Read all traces using the cloudsuite format");
+
+  app.add_option_function<std::string>(
+         "--config",
+         [&runtime_cfg](const std::string& path) {
+           try {
+             runtime_cfg.load_file(path);
+           } catch (const std::runtime_error& err) {
+             throw CLI::ValidationError{"--config", err.what()};
+           }
+         },
+         "A TOML file of runtime configuration values. May repeat; applied in command-line order, interleaved with --set, and the last definition of a key "
+         "wins")
+      ->trigger_on_parse();
+  app.add_option_function<std::string>(
+         "--set",
+         [&runtime_cfg](const std::string& assignment) {
+           try {
+             runtime_cfg.set(assignment);
+           } catch (const std::runtime_error& err) {
+             throw CLI::ValidationError{"--set", err.what()};
+           }
+         },
+         "One runtime configuration value, as key=value (e.g. --set ooo_cpu.cpu0.rob_size=512). May repeat; same ordering rule as --config")
+      ->trigger_on_parse();
+  app.add_flag("--knobs", list_knobs, "List every runtime configuration key this binary consults, with its baked default, then exit");
   app.add_option("--trace-version", trace_version, "The trace record format version: 1 (64-byte, default) or 2 (512-byte, with memory values)")
       ->check(CLI::IsMember({1U, 2U}));
-  app.add_flag("--hide-heartbeat", set_heartbeat_callback, "Hide the heartbeat output");
-  app.add_option("--heartbeat-frequency", heartbeat_frequency,
-                 "Instructions retired between heartbeat lines (default: the configuration's heartbeat_frequency)")
-      ->check(CLI::PositiveNumber);
+  app.add_flag("--hide-heartbeat", hide_heartbeat, "Hide the heartbeat output");
+  auto* heartbeat_option = app.add_option("--heartbeat-frequency", heartbeat_frequency,
+                                          "Instructions retired between heartbeat lines (default: the configuration's heartbeat_frequency)")
+                               ->check(CLI::PositiveNumber);
   auto* warmup_instr_option = app.add_option("-w,--warmup-instructions", warmup_instructions, "The number of instructions in the warmup phase");
   auto* deprec_warmup_instr_option =
       app.add_option("--warmup_instructions", warmup_instructions, "[deprecated] use --warmup-instructions instead")->excludes(warmup_instr_option);
@@ -108,7 +139,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 
   app.add_option("--listeners", requested_listeners, "A list of the listeners to be attached to the run");
 
-  app.add_option("traces", trace_names, "The paths to the traces")->required()->expected(NUM_CPUS)->check(CLI::ExistingFile);
+  app.add_option("traces", trace_names, "The paths to the traces")->expected(NUM_CPUS)->check(CLI::ExistingFile);
 
   CLI11_PARSE(app, argc, argv);
 
@@ -129,6 +160,77 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     if (const std::ofstream probe{toml_file_name}; !probe) {
       fmt::print(stderr, "ERROR: cannot open '{}' to receive the TOML statistics.\n", toml_file_name);
       return 1;
+    }
+  }
+
+  // The simulation-level knobs live outside the generated constructor, so
+  // their keys are appended to the generated manifest by hand.
+  constexpr std::array<std::string_view, 3> sim_knob_keys{"sim.deadlock_cycle", "sim.heartbeat_frequency", "sim.livelock_period"};
+
+  if (list_knobs) {
+    // Construct a throwaway environment against an empty recording store: the
+    // (key, fallback) pairs it consults ARE this binary's knobs, exactly as
+    // the real construction would consult them.
+    champsim::runtime_config recorder{};
+    configured_environment knob_probe{recorder};
+    recorder.value<int>("sim.deadlock_cycle", champsim::simulation_knobs{}.deadlock_cycle);
+    recorder.value<uint64_t>("sim.heartbeat_frequency", configured_environment::heartbeat_frequency);
+    recorder.value<uint64_t>("sim.livelock_period", champsim::simulation_knobs{}.livelock_period);
+    for (const auto& [knob_key, fallback] : recorder.consulted()) {
+      fmt::print("{} = {}\n", knob_key, fallback);
+    }
+    return 0;
+  }
+
+  // Fail before construction: an unknown key would otherwise be silently
+  // ignored, and a sweep that misspells a knob would sweep nothing.
+  {
+    std::vector<std::string_view> valid{std::begin(champsim::configured::config_record<CHAMPSIM_BUILD>::runtime_keys),
+                                        std::end(champsim::configured::config_record<CHAMPSIM_BUILD>::runtime_keys)};
+    valid.insert(std::end(valid), std::begin(sim_knob_keys), std::end(sim_knob_keys));
+    const auto complaints = runtime_cfg.unknown_keys(std::begin(valid), std::end(valid));
+    if (!std::empty(complaints)) {
+      for (const auto& complaint : complaints) {
+        fmt::print(stderr, "ERROR: {}\n", complaint);
+      }
+      fmt::print(stderr, "Run with --knobs to list every key this binary accepts.\n");
+      return 1;
+    }
+  }
+
+  // --knobs is the only invocation that may omit the traces.
+  if (std::size(trace_names) != NUM_CPUS) {
+    fmt::print(stderr, "ERROR: expected {} trace(s), got {}.\n", NUM_CPUS, std::size(trace_names));
+    return 1;
+  }
+
+  // The environment is constructed here -- after the CLI parse -- so that
+  // every builder argument can consult the completed store. Every store read,
+  // including the sim.* knobs, sits inside this try so that a type mismatch
+  // anywhere is a clean diagnostic and exit 1, never an uncaught exception.
+  champsim::simulation_knobs sim_knobs{};
+  std::optional<configured_environment> built_environment{};
+  try {
+    // Heartbeat precedence: the explicit CLI flag beats the store, which
+    // beats the configuration's baked default. positive_value gives the store
+    // path the same zero-rejection the flag's PositiveNumber check gives the
+    // CLI path.
+    if (heartbeat_option->count() == 0) {
+      heartbeat_frequency = runtime_cfg.positive_value<uint64_t>("sim.heartbeat_frequency", configured_environment::heartbeat_frequency);
+    }
+    sim_knobs.deadlock_cycle = runtime_cfg.positive_value<int>("sim.deadlock_cycle", sim_knobs.deadlock_cycle);
+    sim_knobs.livelock_period = runtime_cfg.positive_value<uint64_t>("sim.livelock_period", sim_knobs.livelock_period);
+
+    built_environment.emplace(runtime_cfg);
+  } catch (const std::runtime_error& err) {
+    fmt::print(stderr, "ERROR: {}\n", err.what());
+    return 1;
+  }
+  configured_environment& gen_environment = *built_environment;
+
+  if (hide_heartbeat) {
+    for (O3_CPU& cpu : gen_environment.cpu_view()) {
+      cpu.show_heartbeat = false;
     }
   }
 
@@ -169,7 +271,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   fmt::print("\n*** ChampSim Multicore Out-of-Order Simulator ***\nWarmup Instructions: {}\nSimulation Instructions: {}\nNumber of CPUs: {}\nPage size: {}\n\n",
              phases.at(0).length, phases.at(1).length, std::size(gen_environment.cpu_view()), PAGE_SIZE);
 
-  auto phase_stats = champsim::main(gen_environment, phases, traces);
+  auto phase_stats = champsim::main(gen_environment, phases, traces, sim_knobs);
 
   fmt::print("\nChampSim completed all CPUs\n\n");
 
@@ -207,6 +309,16 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   // reconstructed; recording what this process actually received is the only
   // claim that is true.
   run.command_line = fmt::format("{}", fmt::join(std::vector<std::string>(argv, std::next(argv, argc)), " "));
+  run.config_files = fmt::format("{}", fmt::join(runtime_cfg.files(), ","));
+  run.overrides = runtime_cfg.applied();
+  // [config_override] records what took effect. A stored heartbeat that lost
+  // to the explicit --heartbeat-frequency flag did not, so it must not be
+  // recorded as if it had.
+  if (heartbeat_option->count() > 0) {
+    run.overrides.erase(
+        std::remove_if(std::begin(run.overrides), std::end(run.overrides), [](const auto& entry) { return entry.first == "sim.heartbeat_frequency"; }),
+        std::end(run.overrides));
+  }
 
   // champsim::json_printer is still compiled and linked, so it cannot rot
   // silently, but it is unreachable at run time: --json is rejected above.

@@ -188,6 +188,13 @@ public:
   self_type& set_prefetch_as_load();
 
   /**
+   * Specify whether the cache should issue prefetches as loads. The
+   * bool-taking overloads exist for the runtime configuration store, whose
+   * value cannot select between set_/reset_ at compile time.
+   */
+  self_type& prefetch_as_load(bool pref_load_);
+
+  /**
    * Specify that prefetches should be issued with lower priority than loads.
    */
   self_type& reset_prefetch_as_load();
@@ -206,6 +213,11 @@ public:
    * Specify that prefetchers should operate in the virtual address space.
    */
   self_type& set_virtual_prefetch();
+
+  /**
+   * Specify whether prefetches should be translated. See prefetch_as_load(bool).
+   */
+  self_type& virtual_prefetch(bool virt_pref_);
 
   /**
    * Specify that prefetchers should operate in the physical address space.
@@ -444,6 +456,13 @@ auto champsim::cache_builder<P, R>::log2_offset_bits(unsigned log2_offset_bits_)
 }
 
 template <typename P, typename R>
+auto champsim::cache_builder<P, R>::prefetch_as_load(bool pref_load_) -> self_type&
+{
+  m_pref_load = pref_load_;
+  return *this;
+}
+
+template <typename P, typename R>
 auto champsim::cache_builder<P, R>::set_prefetch_as_load() -> self_type&
 {
   m_pref_load = true;
@@ -468,6 +487,13 @@ template <typename P, typename R>
 auto champsim::cache_builder<P, R>::reset_wq_checks_full_addr() -> self_type&
 {
   m_wq_full_addr = false;
+  return *this;
+}
+
+template <typename P, typename R>
+auto champsim::cache_builder<P, R>::virtual_prefetch(bool virt_pref_) -> self_type&
+{
+  m_va_pref = virt_pref_;
   return *this;
 }
 

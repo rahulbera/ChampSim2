@@ -86,6 +86,13 @@ public:
     // (config/config_record.py), carried on the generated environment. Spliced
     // verbatim; the printer does not parse or validate it.
     std::string_view config_toml{};
+    // The runtime configuration files loaded, in order, comma-joined (the
+    // document holds no arrays).
+    std::string config_files{};
+    // The keys the runtime store applied, with values already rendered in TOML
+    // syntax. [config] records what config.sh generated from; this records
+    // what the run changed on top of it.
+    std::vector<std::pair<std::string, std::string>> overrides{};
   };
 
   // `run_info` cannot appear in a default argument of this class: its default

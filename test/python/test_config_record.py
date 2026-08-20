@@ -259,3 +259,18 @@ class KeyFoldingTest(unittest.TestCase):
         self.assertEqual(core['rob_size'], 352)
         self.assertEqual(core['dib']['sets'], 32)
         self.assertNotIn('rob_size', core['dib'])
+
+
+class RuntimeKeysTest(unittest.TestCase):
+    def test_the_manifest_rides_with_the_config_record(self):
+        lines = list(config.config_record.get_config_record_cxx('abc123', ['[config]'], runtime_keys=['b.two', 'a.one']))
+        text = '\n'.join(lines)
+        self.assertIn('champsim::configured::config_record<0xabc123>', text)
+        # Sorted, so the emitted file is stable across dict orderings.
+        self.assertIn('"a.one",', text)
+        self.assertLess(text.index('"a.one"'), text.index('"b.two"'))
+        self.assertIn('runtime_keys', text)
+
+    def test_an_empty_manifest_is_still_declared(self):
+        lines = list(config.config_record.get_config_record_cxx('abc123', ['[config]']))
+        self.assertIn('runtime_keys', '\n'.join(lines))

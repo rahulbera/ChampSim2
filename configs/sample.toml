@@ -1,0 +1,49 @@
+# Sample runtime configuration for ChampSim.
+#
+#     bin/champsim --config configs/sample.toml [--set KEY=VALUE ...] trace.xz
+#
+# Keys use the same language as the statistics document's [config] section:
+# lower_snake_case, components named as <kind>.<lowercased name>. Sources are
+# applied in command-line order -- a --set AFTER this file overrides it, a
+# --config AFTER a --set overrides that -- so the LAST definition of any key
+# wins, whichever source it came from.
+#
+# Every key is validated at startup against the binary's manifest: a
+# misspelled or inapplicable key is a fatal error, not a silent no-op. Run
+#
+#     bin/champsim --knobs
+#
+# to list every key THIS binary accepts, with its baked default. A run's
+# statistics document records what was applied under [config_override], and
+# the files loaded under [meta].config_files.
+#
+# Values shown here are examples, chosen to differ from the shipped defaults
+# so their effect is visible in a run's statistics.
+
+[sim]
+# Instructions retired between heartbeat lines (--heartbeat-frequency, if
+# given, still wins over this).
+heartbeat_frequency = 5000000
+# Consecutive no-progress cycles before the run is declared deadlocked. Slow
+# oracle predictors may want this raised.
+deadlock_cycle = 1000
+
+[ooo_cpu.cpu0]
+rob_size = 512
+fetch_width = 8
+
+[ooo_cpu.cpu0.dib]
+sets = 64
+ways = 4
+
+[cache.cpu0_l1d]
+sets = 128
+mshr_size = 32
+
+[cache.llc]
+ways = 8
+
+[pmem]
+tcas = 12
+trcd = 12
+trp = 12

@@ -352,7 +352,8 @@ std::vector<std::string> champsim::toml_printer::format(std::vector<phase_stats>
               {"warmup_instructions", fmt::format("{}", info.warmup_instructions)},
               {"simulation_instructions", fmt::format("{}", info.simulation_instructions)},
               {"trace_version", fmt::format("{}", info.trace_version)},
-              {"command_line", quote(info.command_line)}});
+              {"command_line", quote(info.command_line)},
+              {"config_files", quote(info.config_files)}});
 
   // The configuration this build was generated from, already rendered as TOML
   // by config/config_record.py. It is spliced rather than built here because
@@ -365,6 +366,16 @@ std::vector<std::string> champsim::toml_printer::format(std::vector<phase_stats>
     config_lines.emplace_back("[config]");
   }
   append_block(lines, config_lines);
+
+  // What this run changed on top of the baked configuration. Each entry names
+  // one knob with a dotted path, so the whole key is quoted -- a bare dotted
+  // key would parse as a nested table and collide with [config]'s own shape.
+  // The values arrive already rendered in TOML syntax by the runtime store.
+  std::vector<entry> override_entries{};
+  for (const auto& [override_key, rendered] : info.overrides) {
+    override_entries.emplace_back(quote(override_key), rendered);
+  }
+  emit_table(lines, "config_override", override_entries);
 
   for (auto& phase : stats) {
     append_block(lines, format(phase, include_sim));

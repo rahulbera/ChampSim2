@@ -30,8 +30,6 @@
 #include "phase_info.h"
 #include "tracereader.h"
 
-constexpr int DEADLOCK_CYCLE{500};
-
 const auto start_time = std::chrono::steady_clock::now();
 
 std::chrono::seconds elapsed_time() { return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - start_time); }
@@ -61,7 +59,8 @@ long do_cycle(environment& env, std::vector<tracereader>& traces, std::vector<st
   return progress;
 }
 
-phase_stats do_phase(const phase_info& phase, environment& env, std::vector<tracereader>& traces, champsim::chrono::clock& global_clock)
+phase_stats do_phase(const phase_info& phase, environment& env, std::vector<tracereader>& traces, champsim::chrono::clock& global_clock,
+                     const simulation_knobs& knobs)
 {
   auto operables = env.operable_view();
   auto [phase_name, is_warmup, length, trace_index, trace_names] = phase;
@@ -76,7 +75,7 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
                                             [](const auto acc, const operable& y) { return std::min(acc, y.clock_period); });
 
   bool livelock_trigger{false};
-  uint64_t livelock_period{10000000};
+  const uint64_t livelock_period{knobs.livelock_period};
   uint64_t livelock_timer{0};
   //                                   die | critical | warning
   std::vector<double> livelock_threshold{0.01, 0.02, 0.05};
@@ -122,7 +121,7 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
       livelock_timer = 0;
     }
 
-    if (stalled_cycle >= DEADLOCK_CYCLE || livelock_trigger) {
+    if (stalled_cycle >= knobs.deadlock_cycle || livelock_trigger) {
       std::for_each(std::begin(operables), std::end(operables), [](champsim::operable& c) { c.print_deadlock(); });
       abort();
     }
@@ -182,7 +181,7 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
 }
 
 // simulation entry point
-std::vector<phase_stats> main(environment& env, std::vector<phase_info>& phases, std::vector<tracereader>& traces)
+std::vector<phase_stats> main(environment& env, std::vector<phase_info>& phases, std::vector<tracereader>& traces, const simulation_knobs& knobs)
 {
   for (champsim::operable& op : env.operable_view()) {
     op.initialize();
@@ -195,7 +194,7 @@ std::vector<phase_stats> main(environment& env, std::vector<phase_info>& phases,
     handle_event<Event::BEGIN_PHASE>(phase.is_warmup);
     // handle_begin_phase(0, phase.is_warmup);
 
-    auto stats = do_phase(phase, env, traces, global_clock);
+    auto stats = do_phase(phase, env, traces, global_clock, knobs);
     if (!phase.is_warmup) {
       results.push_back(stats);
     }

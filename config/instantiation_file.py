@@ -22,84 +22,106 @@ import multiprocessing as mp
 from . import util
 from . import cxx
 
-pmem_fmtstr = 'champsim::chrono::picoseconds{{{clock_period_dbus}}}, champsim::chrono::picoseconds{{{clock_period_mc}}}, std::size_t{{{_tRP}}}, std::size_t{{{_tRCD}}}, std::size_t{{{_tCAS}}}, std::size_t{{{_tRAS}}}, champsim::chrono::microseconds{{{_refresh_period}}}, {{{_ulptr}}}, {rq_size}, {wq_size}, {channels}, champsim::data::bytes{{{channel_width}}}, {_bank_rows}, {_bank_columns}, {ranks}, {bankgroups}, {banks}, {_refreshes_per_period}'
-vmem_fmtstr = 'champsim::data::bytes{{{pte_page_size}}}, {num_levels}, champsim::chrono::picoseconds{{{clock_period}*{minor_fault_penalty}}}, {dram_name}, {_randomization}'
+pmem_fmtstr = ('champsim::chrono::picoseconds{{static_cast<champsim::chrono::picoseconds::rep>(1000000.0 / cfg.positive_value<double>("pmem.data_rate", {data_rate}))}}, '
+               'champsim::chrono::picoseconds{{static_cast<champsim::chrono::picoseconds::rep>(1000000.0 / cfg.positive_value<double>("pmem.frequency", {frequency}))}}, '
+               'std::size_t{{cfg.value<std::size_t>("pmem.trp", {_tRP})}}, std::size_t{{cfg.value<std::size_t>("pmem.trcd", {_tRCD})}}, '
+               'std::size_t{{cfg.value<std::size_t>("pmem.tcas", {_tCAS})}}, std::size_t{{cfg.value<std::size_t>("pmem.tras", {_tRAS})}}, '
+               'champsim::chrono::microseconds{{static_cast<champsim::chrono::microseconds::rep>(1000.0 * cfg.value<double>("pmem.refresh_period", {refresh_period}))}}, '
+               '{{{_ulptr}}}, cfg.value<std::size_t>("pmem.rq_size", {rq_size}), cfg.value<std::size_t>("pmem.wq_size", {wq_size}), '
+               'cfg.value<std::size_t>("pmem.channels", {channels}), champsim::data::bytes{{cfg.value<champsim::data::bytes::rep>("pmem.channel_width", {channel_width})}}, '
+               'cfg.value<std::size_t>("pmem.bank_rows", {_bank_rows}), cfg.value<std::size_t>("pmem.bank_columns", {_bank_columns}), '
+               'cfg.value<std::size_t>("pmem.ranks", {ranks}), cfg.value<std::size_t>("pmem.bankgroups", {bankgroups}), cfg.value<std::size_t>("pmem.banks", {banks}), '
+               'cfg.value<std::size_t>("pmem.refreshes_per_period", {_refreshes_per_period})')
+# NOTE: two conversions below bake CONFIGURE-TIME derived constants into the
+# generated expression. vmem's minor-fault penalty multiplies the configure-time
+# global clock period, and pmem's frequency<->data_rate mutual defaulting ran
+# once in config.parse -- so overriding ooo_cpu.*.frequency at run time does
+# NOT rescale the vmem penalty, and overriding pmem.data_rate does NOT
+# recompute pmem.frequency (or vice versa). Each key changes only the values
+# derived from it in C++.
+vmem_fmtstr = ('champsim::data::bytes{{cfg.value<champsim::data::bytes::rep>("vmem.pte_page_size", {pte_page_size})}}, '
+               'cfg.value<std::size_t>("vmem.num_levels", {num_levels}), '
+               'champsim::chrono::picoseconds{{{clock_period} * cfg.value<champsim::chrono::picoseconds::rep>("vmem.minor_fault_penalty", {minor_fault_penalty})}}, '
+               '{dram_name}, {_randomization}')
 
-queue_fmtstr = '{rq_size}, {pq_size}, {wq_size}, champsim::data::bits{{{_offset_bits}}}, {_queue_check_full_addr:b}'
+queue_fmtstr = '{rq_expr}, {pq_expr}, {wq_expr}, champsim::data::bits{{{_offset_bits}}}, {_queue_check_full_addr:b}'
 
 core_builder_parts = {
-    'ifetch_buffer_size': '.ifetch_buffer_size({ifetch_buffer_size})',
-    'decode_buffer_size': '.decode_buffer_size({decode_buffer_size})',
-    'dispatch_buffer_size': '.dispatch_buffer_size({dispatch_buffer_size})',
-    'register_file_size': '.register_file_size({register_file_size})',
-    'rob_size': '.rob_size({rob_size})',
-    'lq_size': '.lq_size({lq_size})',
-    'sq_size': '.sq_size({sq_size})',
-    'fetch_width': '.fetch_width(champsim::bandwidth::maximum_type{{{fetch_width}}})',
-    'decode_width': '.decode_width(champsim::bandwidth::maximum_type{{{decode_width}}})',
-    'dispatch_width': '.dispatch_width(champsim::bandwidth::maximum_type{{{dispatch_width}}})',
-    'scheduler_size': '.schedule_width(champsim::bandwidth::maximum_type{{{scheduler_size}}})',
-    'execute_width': '.execute_width(champsim::bandwidth::maximum_type{{{execute_width}}})',
-    'lq_width': '.lq_width(champsim::bandwidth::maximum_type{{{lq_width}}})',
-    'sq_width': '.sq_width(champsim::bandwidth::maximum_type{{{sq_width}}})',
-    'retire_width': '.retire_width(champsim::bandwidth::maximum_type{{{retire_width}}})',
-    'mispredict_penalty': '.mispredict_penalty({mispredict_penalty})',
-    'decode_latency': '.decode_latency({decode_latency})',
-    'dispatch_latency': '.dispatch_latency({dispatch_latency})',
-    'schedule_latency': '.schedule_latency({schedule_latency})',
-    'execute_latency': '.execute_latency({execute_latency})',
-    'dib_set': '  .dib_set({dib_set})',
-    'dib_way': '  .dib_way({dib_way})',
-    'dib_window': '  .dib_window({dib_window})',
-    'dib_inorder_width': '  .dib_inorder_width(champsim::bandwidth::maximum_type{{{dib_inorder_width}}})',
-    'dib_hit_buffer_size': '  .dib_hit_buffer_size({dib_hit_buffer_size})',
+    'ifetch_buffer_size': '.ifetch_buffer_size(cfg.value<std::size_t>("{^cfg_prefix}.ifetch_buffer_size", {ifetch_buffer_size}))',
+    'decode_buffer_size': '.decode_buffer_size(cfg.value<std::size_t>("{^cfg_prefix}.decode_buffer_size", {decode_buffer_size}))',
+    'dispatch_buffer_size': '.dispatch_buffer_size(cfg.value<std::size_t>("{^cfg_prefix}.dispatch_buffer_size", {dispatch_buffer_size}))',
+    'register_file_size': '.register_file_size(cfg.value<std::size_t>("{^cfg_prefix}.register_file_size", {register_file_size}))',
+    'rob_size': '.rob_size(cfg.value<std::size_t>("{^cfg_prefix}.rob_size", {rob_size}))',
+    'lq_size': '.lq_size(cfg.value<std::size_t>("{^cfg_prefix}.lq_size", {lq_size}))',
+    'sq_size': '.sq_size(cfg.value<std::size_t>("{^cfg_prefix}.sq_size", {sq_size}))',
+    'fetch_width': '.fetch_width(champsim::bandwidth::maximum_type{{cfg.value<long>("{^cfg_prefix}.fetch_width", {fetch_width})}})',
+    'decode_width': '.decode_width(champsim::bandwidth::maximum_type{{cfg.value<long>("{^cfg_prefix}.decode_width", {decode_width})}})',
+    'dispatch_width': '.dispatch_width(champsim::bandwidth::maximum_type{{cfg.value<long>("{^cfg_prefix}.dispatch_width", {dispatch_width})}})',
+    'scheduler_size': '.schedule_width(champsim::bandwidth::maximum_type{{cfg.value<long>("{^cfg_prefix}.scheduler_size", {scheduler_size})}})',
+    'execute_width': '.execute_width(champsim::bandwidth::maximum_type{{cfg.value<long>("{^cfg_prefix}.execute_width", {execute_width})}})',
+    'lq_width': '.lq_width(champsim::bandwidth::maximum_type{{cfg.value<long>("{^cfg_prefix}.lq_width", {lq_width})}})',
+    'sq_width': '.sq_width(champsim::bandwidth::maximum_type{{cfg.value<long>("{^cfg_prefix}.sq_width", {sq_width})}})',
+    'retire_width': '.retire_width(champsim::bandwidth::maximum_type{{cfg.value<long>("{^cfg_prefix}.retire_width", {retire_width})}})',
+    'mispredict_penalty': '.mispredict_penalty(cfg.value<unsigned>("{^cfg_prefix}.mispredict_penalty", {mispredict_penalty}))',
+    'decode_latency': '.decode_latency(cfg.value<unsigned>("{^cfg_prefix}.decode_latency", {decode_latency}))',
+    'dispatch_latency': '.dispatch_latency(cfg.value<unsigned>("{^cfg_prefix}.dispatch_latency", {dispatch_latency}))',
+    'schedule_latency': '.schedule_latency(cfg.value<unsigned>("{^cfg_prefix}.schedule_latency", {schedule_latency}))',
+    'execute_latency': '.execute_latency(cfg.value<unsigned>("{^cfg_prefix}.execute_latency", {execute_latency}))',
+    # The store key is the canonical dib.* form for BOTH JSON spellings.
+    'dib_set': '  .dib_set(cfg.value<std::size_t>("{^cfg_prefix}.dib.sets", {dib_set}))',
+    'dib_way': '  .dib_way(cfg.value<std::size_t>("{^cfg_prefix}.dib.ways", {dib_way}))',
+    'dib_window': '  .dib_window(cfg.value<std::size_t>("{^cfg_prefix}.dib.window_size", {dib_window}))',
+    'dib_inorder_width': '  .dib_inorder_width(champsim::bandwidth::maximum_type{{cfg.value<long>("{^cfg_prefix}.dib.inorder_width", {dib_inorder_width})}})',
+    'dib_hit_buffer_size': '  .dib_hit_buffer_size(cfg.value<std::size_t>("{^cfg_prefix}.dib.hit_buffer_size", {dib_hit_buffer_size}))',
     'L1I': ['.l1i(&{^l1i_ptr})', '.l1i_bandwidth({^l1i_ptr}.MAX_TAG)', '.fetch_queues(&{^fetch_queues})'],
     'L1D': ['.l1d_bandwidth({^l1d_ptr}.MAX_TAG)', '.data_queues(&{^data_queues})'],
     '_branch_predictor_data': '.branch_predictor<{^branch_predictor_string}>()',
     '_btb_data': '.btb<{^btb_string}>()',
     '_index': '.index({_index})',
-    'frequency': '.clock_period(champsim::chrono::picoseconds{{{^clock_period}}})'
+    'frequency': '.clock_period(champsim::chrono::picoseconds{{static_cast<champsim::chrono::picoseconds::rep>(1000000.0 / cfg.positive_value<double>("{^cfg_prefix}.frequency", {frequency}))}})'
 }
 
 dib_builder_parts = {
-    'sets': '  .dib_set({DIB[sets]})',
-    'ways': '  .dib_way({DIB[ways]})',
-    'window_size': '  .dib_window({DIB[window_size]})',
-    'inorder_width': '  .dib_inorder_width(champsim::bandwidth::maximum_type{{{DIB[inorder_width]}}})',
-    'hit_buffer_size': '  .dib_hit_buffer_size({DIB[hit_buffer_size]})',
+    'sets': '  .dib_set(cfg.value<std::size_t>("{^cfg_prefix}.dib.sets", {DIB[sets]}))',
+    'ways': '  .dib_way(cfg.value<std::size_t>("{^cfg_prefix}.dib.ways", {DIB[ways]}))',
+    'window_size': '  .dib_window(cfg.value<std::size_t>("{^cfg_prefix}.dib.window_size", {DIB[window_size]}))',
+    'inorder_width': '  .dib_inorder_width(champsim::bandwidth::maximum_type{{cfg.value<long>("{^cfg_prefix}.dib.inorder_width", {DIB[inorder_width]})}})',
+    'hit_buffer_size': '  .dib_hit_buffer_size(cfg.value<std::size_t>("{^cfg_prefix}.dib.hit_buffer_size", {DIB[hit_buffer_size]}))',
 }
 
 cache_builder_parts = {
+    # size/log2_* spellings are configure-time derivations of sets/ways and stay
+    # literal; the canonical runtime knobs are sets and ways.
     'size': '.size(champsim::data::bytes{{{size}}})',
     'log2_size': '.log2_size({log2_size})',
-    'sets': '.sets({sets})',
+    'sets': '.sets(cfg.value<uint32_t>("{^cfg_prefix}.sets", {sets}))',
     'log2_sets': '.log2_sets({log2_sets})',
-    'ways': '.ways({ways})',
+    'ways': '.ways(cfg.value<uint32_t>("{^cfg_prefix}.ways", {ways}))',
     'log2_ways': '.log2_ways({log2_ways})',
-    'pq_size': '.pq_size({pq_size})',
-    'mshr_size': '.mshr_size({mshr_size})',
-    'latency': '.latency({latency})',
-    'hit_latency': '.hit_latency({hit_latency})',
-    'fill_latency': '.fill_latency({fill_latency})',
-    'max_tag_check': '.tag_bandwidth(champsim::bandwidth::maximum_type{{{max_tag_check}}})',
-    'max_fill': '.fill_bandwidth(champsim::bandwidth::maximum_type{{{max_fill}}})',
+    'pq_size': '.pq_size(cfg.value<uint32_t>("{^cfg_prefix}.pq_size", {pq_size}))',
+    'mshr_size': '.mshr_size(cfg.value<uint32_t>("{^cfg_prefix}.mshr_size", {mshr_size}))',
+    'latency': '.latency(cfg.value<uint64_t>("{^cfg_prefix}.latency", {latency}))',
+    'hit_latency': '.hit_latency(cfg.value<uint64_t>("{^cfg_prefix}.hit_latency", {hit_latency}))',
+    'fill_latency': '.fill_latency(cfg.value<uint64_t>("{^cfg_prefix}.fill_latency", {fill_latency}))',
+    'max_tag_check': '.tag_bandwidth(champsim::bandwidth::maximum_type{{cfg.value<long>("{^cfg_prefix}.max_tag_check", {max_tag_check})}})',
+    'max_fill': '.fill_bandwidth(champsim::bandwidth::maximum_type{{cfg.value<long>("{^cfg_prefix}.max_fill", {max_fill})}})',
     '_offset_bits': '.offset_bits(champsim::data::bits{{{_offset_bits}}})',
     'prefetch_activate': '.prefetch_activate({^prefetch_activate_string})',
     '_replacement_data': '.replacement<{^replacement_string}>()',
     '_prefetcher_data': '.prefetcher<{^prefetcher_string}>()',
     'lower_translate': '.lower_translate(&{^lower_translate_queues})',
     'lower_level': '.lower_level(&{^lower_level_queues})',
-    'frequency': '.clock_period(champsim::chrono::picoseconds{{{^clock_period}}})'
+    'frequency': '.clock_period(champsim::chrono::picoseconds{{static_cast<champsim::chrono::picoseconds::rep>(1000000.0 / cfg.positive_value<double>("{^cfg_prefix}.frequency", {frequency}))}})'
 }
 
 ptw_builder_parts = {
     'name': '.name("{name}")',
     'cpu': '.cpu({cpu})',
     'lower_level': '.lower_level(&{^lower_level_queues})',
-    'mshr_size': '.mshr_size({mshr_size})',
-    'max_read': '.tag_bandwidth(champsim::bandwidth::maximum_type{{{max_read}}})',
-    'max_write': '.fill_bandwidth(champsim::bandwidth::maximum_type{{{max_write}}})',
-    'frequency': '.clock_period(champsim::chrono::picoseconds{{{^clock_period}}})'
+    'mshr_size': '.mshr_size(cfg.value<uint32_t>("{^cfg_prefix}.mshr_size", {mshr_size}))',
+    'max_read': '.tag_bandwidth(champsim::bandwidth::maximum_type{{cfg.value<long>("{^cfg_prefix}.max_read", {max_read})}})',
+    'max_write': '.fill_bandwidth(champsim::bandwidth::maximum_type{{cfg.value<long>("{^cfg_prefix}.max_write", {max_write})}})',
+    'frequency': '.clock_period(champsim::chrono::picoseconds{{static_cast<champsim::chrono::picoseconds::rep>(1000000.0 / cfg.positive_value<double>("{^cfg_prefix}.frequency", {frequency}))}})'
 }
 
 def vector_string(iterable):
@@ -108,6 +130,47 @@ def vector_string(iterable):
     if len(hoisted) == 1:
         return hoisted[0]
     return '{'+', '.join(hoisted)+'}'
+
+def runtime_keys(instantiation_lines):
+    """
+    Every runtime-config key the given generated lines consult, sorted and
+    unique. Extracted from the emitted text itself -- the same characters the
+    compiler will see -- so the manifest cannot drift from the lookups.
+    """
+    import re
+    found = set()
+    for line in instantiation_lines:
+        found.update(re.findall(r'cfg\.(?:positive_)?value<[^>]+>\("([^"]+)"', line))
+    return sorted(found)
+
+def store_prefix(kind, name):
+    """
+    The runtime-config key prefix for a component: its kind, then its name
+    folded to lower case -- the same folding the statistics document's [config]
+    section uses, so one language names a component everywhere.
+
+    The fold is not injective, so get_instantiation_lines rejects a
+    configuration whose component names differ only by case: their runtime keys
+    would silently merge onto one prefix.
+    """
+    return f'{kind}.{str(name).lower()}'
+
+def reject_folded_name_collisions(cores, caches, ptws):
+    """
+    Raise if two component names differ only by case. The statistics document
+    survives such names by falling back to the exact spelling (see
+    config_record.folded_keys), but a runtime-config PREFIX cannot: both
+    components would consult the same keys, and an override meant for one
+    would silently apply to both.
+    """
+    names = [c['name'] for c in cores] + [c['name'] for c in caches] + [p['name'] for p in ptws]
+    folded = {}
+    for name in names:
+        folded.setdefault(str(name).lower(), []).append(name)
+    collisions = {k: v for k, v in folded.items() if len(v) > 1}
+    if collisions:
+        detail = '; '.join(', '.join(v) for v in collisions.values())
+        raise ValueError(f'component names may not differ only by case (their runtime configuration keys would collide): {detail}')
 
 def get_cpu_builder(cpu, caches, ul_pairs):
     '''
@@ -120,6 +183,7 @@ def get_cpu_builder(cpu, caches, ul_pairs):
         return next(filter(lambda x: x[1]['name'] == name, enumerate(caches)))[0]
 
     local_params = {
+        '^cfg_prefix': store_prefix('ooo_cpu', cpu.get('name')),
         '^branch_predictor_string': ', '.join(f'class {k["class"]}' for k in cpu.get('_branch_predictor_data',[])),
         '^btb_string': ', '.join(f'class {k["class"]}' for k in cpu.get('_btb_data',[])),
         '^fetch_queues': f'channels.at({ul_pairs.index((cpu.get("L1I"), cpu.get("name")))})',
@@ -148,16 +212,20 @@ def get_cache_builder(elem, ul_pairs):
     ]
 
     local_cache_builder_parts = {
-        ('prefetch_as_load', True): '.set_prefetch_as_load()',
-        ('prefetch_as_load', False): '.reset_prefetch_as_load()',
+        ('prefetch_as_load', True): '.prefetch_as_load(cfg.value<bool>("{^cfg_prefix}.prefetch_as_load", true))',
+        ('prefetch_as_load', False): '.prefetch_as_load(cfg.value<bool>("{^cfg_prefix}.prefetch_as_load", false))',
+        # wq_check_full_addr also shapes the generated CHANNEL constructors, so
+        # a runtime override here would desynchronize the two consumers; it
+        # stays configure-time.
         ('wq_check_full_addr', True): '.set_wq_checks_full_addr()',
         ('wq_check_full_addr', False): '.reset_wq_checks_full_addr()',
-        ('virtual_prefetch', True): '.set_virtual_prefetch()',
-        ('virtual_prefetch', False): '.reset_virtual_prefetch()'
+        ('virtual_prefetch', True): '.virtual_prefetch(cfg.value<bool>("{^cfg_prefix}.virtual_prefetch", true))',
+        ('virtual_prefetch', False): '.virtual_prefetch(cfg.value<bool>("{^cfg_prefix}.virtual_prefetch", false))'
     }
 
     uppers = (v for v in ul_pairs if v[0] == elem.get('name'))
     local_params = {
+        '^cfg_prefix': store_prefix('cache', elem.get('name')),
         '^defaults': elem.get('_defaults', ''),
         '^upper_levels_string': vector_string(f'&channels.at({ul_pairs.index(v)})' for v in uppers),
         '^prefetch_activate_string': ', '.join('access_type::'+t for t in elem.get('prefetch_activate',[])),
@@ -191,14 +259,15 @@ def get_ptw_builder(ptw, ul_pairs):
     ]
 
     local_ptw_builder_parts = {
-        ('pscl5_set', 'pscl5_way'): '.add_pscl(5, {pscl5_set}, {pscl5_way})',
-        ('pscl4_set', 'pscl4_way'): '.add_pscl(4, {pscl4_set}, {pscl4_way})',
-        ('pscl3_set', 'pscl3_way'): '.add_pscl(3, {pscl3_set}, {pscl3_way})',
-        ('pscl2_set', 'pscl2_way'): '.add_pscl(2, {pscl2_set}, {pscl2_way})'
+        (f'pscl{n}_set', f'pscl{n}_way'): (f'.add_pscl({n}, '
+                                           f'cfg.value<uint32_t>("{{^cfg_prefix}}.pscl{n}_set", {{pscl{n}_set}}), '
+                                           f'cfg.value<uint32_t>("{{^cfg_prefix}}.pscl{n}_way", {{pscl{n}_way}}))')
+        for n in (5, 4, 3, 2)
     }
 
     uppers = (v for v in ul_pairs if v[0] == ptw.get('name'))
     local_params = {
+        '^cfg_prefix': store_prefix('ptw', ptw.get('name')),
         '^upper_levels_string': vector_string(f'&channels.at({ul_pairs.index(v)})' for v in uppers),
         '^lower_level_queues': f'channels.at({ul_pairs.index((ptw.get("lower_level"), ptw.get("name")))})'
     }
@@ -250,20 +319,25 @@ def get_builder_function_call(class_name, builders):
 
     yield ')'
 
+def queue_size_expr(prefix, key, fallback):
+    ''' A channel queue bound: runtime-overridable, keyed by the component that owns the queue. '''
+    return f'cfg.value<std::size_t>("{prefix}.{key}", {fallback})'
+
 def cache_queue_defaults(cache):
+    prefix = store_prefix('cache', cache['name'])
     return {
-        'rq_size': cache.get('rq_size', cache['_queue_factor']),
-        'wq_size': cache.get('wq_size', cache['_queue_factor']),
-        'pq_size': cache.get('pq_size', cache['_queue_factor']),
+        'rq_expr': queue_size_expr(prefix, 'rq_size', cache.get('rq_size', cache['_queue_factor'])),
+        'wq_expr': queue_size_expr(prefix, 'wq_size', cache.get('wq_size', cache['_queue_factor'])),
+        'pq_expr': queue_size_expr(prefix, 'pq_size', cache.get('pq_size', cache['_queue_factor'])),
         '_offset_bits': cache['_offset_bits'],
         '_queue_check_full_addr': cache['_queue_check_full_addr']
     }
 
 def ptw_queue_defaults(ptw):
     return {
-        'rq_size': ptw.get('rq_size', ptw['_queue_factor']),
-        'wq_size': 0,
-        'pq_size': 0,
+        'rq_expr': queue_size_expr(store_prefix('ptw', ptw['name']), 'rq_size', ptw.get('rq_size', ptw['_queue_factor'])),
+        'wq_expr': '0',
+        'pq_expr': '0',
         '_offset_bits': 'champsim::lg2(PAGE_SIZE)',
         '_queue_check_full_addr': False
     }
@@ -304,9 +378,9 @@ def decorate_queues(caches, ptws, pmem):
             *({c['name']: cache_queue_defaults(c)} for c in caches),
             *({p['name']: ptw_queue_defaults(p)} for p in ptws),
             {pmem['name']: {
-                    'rq_size':'std::numeric_limits<std::size_t>::max()',
-                    'wq_size':'std::numeric_limits<std::size_t>::max()',
-                    'pq_size':'std::numeric_limits<std::size_t>::max()',
+                    'rq_expr':'std::numeric_limits<std::size_t>::max()',
+                    'wq_expr':'std::numeric_limits<std::size_t>::max()',
+                    'pq_expr':'std::numeric_limits<std::size_t>::max()',
                     '_offset_bits':'champsim::lg2(BLOCK_SIZE)',
                     '_queue_check_full_addr':False
                 }
@@ -320,6 +394,7 @@ def get_instantiation_lines(cores, caches, ptws, pmem, vmem, build_id):
     '''
     Generate the lines for a C++ file that instantiates a configuration.
     '''
+    reject_folded_name_collisions(cores, caches, ptws)
     classname = f'champsim::configured::generated_environment<0x{build_id}>'
     ul_pairs = get_upper_levels(cores, caches, ptws)
     queues = get_queue_info(ul_pairs, decorate_queues(caches, ptws, pmem))
@@ -341,15 +416,12 @@ def get_instantiation_lines(cores, caches, ptws, pmem, vmem, build_id):
     pmem_instantiation_body = (
         'DRAM{',
         pmem_fmtstr.format(
-            clock_period_dbus=int(1000000/pmem['data_rate']),
-            clock_period_mc=int(1000000/pmem['frequency']),
             _tRP=int(pmem['tRP']),
             _tRCD=int(pmem['tRCD']),
             _tCAS=int(pmem['tCAS']),
             _tRAS=int(pmem['tRAS']),
             _bank_rows=int(pmem['bank_rows']), #added for supporting old configs, mainly column size change
             _bank_columns=int(pmem['columns']*8 if 'columns' in pmem else pmem['bank_columns']),
-            _refresh_period=int(1000*pmem['refresh_period']),
             _refreshes_per_period=int(pmem['refreshes_per_period']),
             _ulptr=vector_string(f'&channels.at({ul_pairs.index(v)})' for v in ul_pairs if v[0] == pmem['name']),
             **pmem),
@@ -385,7 +457,7 @@ def get_instantiation_lines(cores, caches, ptws, pmem, vmem, build_id):
         '}'
     )
 
-    yield f'champsim::configured::generated_environment<0x{build_id}>::generated_environment() :'
+    yield f'champsim::configured::generated_environment<0x{build_id}>::generated_environment([[maybe_unused]] const champsim::runtime_config& cfg) :'
     yield from itertools.chain(
     )
     yield from channel_instantiation_body
@@ -423,6 +495,7 @@ def get_instantiation_lines(cores, caches, ptws, pmem, vmem, build_id):
 
 def get_instantiation_header(num_cpus, env, build_id):
     yield '#include "environment.h"'
+    yield '#include "runtime_config.h"'
     yield '#include "vmem.h"'
     yield '#include <vector>'
     yield 'template <>'
@@ -441,7 +514,7 @@ def get_instantiation_header(num_cpus, env, build_id):
         f'constexpr static std::size_t page_size = {env["page_size"]};',
         f'constexpr static uint64_t heartbeat_frequency = {env.get("heartbeat_frequency", 10000000)};',
 
-        'generated_environment();',
+        'explicit generated_environment(const champsim::runtime_config& cfg);',
         'std::vector<std::reference_wrapper<O3_CPU>> cpu_view() final;',
         'std::vector<std::reference_wrapper<CACHE>> cache_view() final;',
         'std::vector<std::reference_wrapper<PageTableWalker>> ptw_view() final;',

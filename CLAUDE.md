@@ -41,6 +41,28 @@ bin/champsim --trace-version 2 --heartbeat-frequency 1000000 \
 `--toml` writes the machine-readable statistics document (see below). Without it, only
 the plain-text report goes to stdout.
 
+Tier-1 scalar parameters can also be set **at run time**, without rebuilding:
+`--config <toml-file>` and `--set key=value` (both repeatable) apply strictly in
+command-line order, and the last definition of a key wins whichever source it came
+from. Keys use the statistics document's `[config]` language
+(`ooo_cpu.cpu0.rob_size`, `cache.cpu0_l1d.sets`, `pmem.tcas`, `sim.deadlock_cycle`);
+`--knobs` lists every key a binary accepts with its baked default, and an unknown key
+is fatal at startup. The configure-time JSON values are the defaults, so a run without
+`--config`/`--set` is bit-identical to the pre-knob behavior. Topology, module
+selection, and `NUM_CPUS`/`BLOCK_SIZE`/`PAGE_SIZE` remain `config.sh`-time —
+`docs/runtime-config-map.md` maps which parameter lives where, and
+`configs/sample.toml` is a commented example. The machinery: a flat
+`champsim::runtime_config` store (`inc/runtime_config.h`, toml++ for reading only);
+generated builder calls consult it with the JSON value as fallback
+(`.rob_size(cfg.value<std::size_t>("ooo_cpu.cpu0.rob_size", 352))`); a generated
+per-build manifest (`config_record<ID>::runtime_keys`, regex-extracted in
+`config/filewrite.py` from the very lines the compiler sees) validates keys before
+construction. The environment is constructed **after** `CLI11_PARSE` for this reason.
+A run's document records the loaded files in `[meta].config_files` and every applied
+key under `[config_override]`. Two knobs deliberately stay configure-time despite
+being scalars: `wq_check_full_addr` (also shapes generated channel constructors) and
+`vmem.randomization` (its emitted form is an empty `std::optional` when disabled).
+
 ### Tests
 
 ```bash

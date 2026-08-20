@@ -558,3 +558,58 @@ TEST_CASE("Blank lines around the configuration record do not accumulate")
       std::adjacent_find(std::begin(lines), std::end(lines), [](const std::string& lhs, const std::string& rhs) { return std::empty(lhs) && std::empty(rhs); });
   REQUIRE(doubled == std::end(lines));
 }
+
+TEST_CASE("The runtime configuration sources are recorded in meta")
+{
+  auto phase = one_of_everything();
+  std::vector<champsim::phase_stats> given{phase};
+
+  champsim::toml_printer::run_info info{};
+  info.config_files = "base.toml,override.toml";
+
+  const auto lines = champsim::toml_printer::format(given, false, info);
+
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"config_files = \"base.toml,override.toml\""}));
+}
+
+TEST_CASE("The applied runtime overrides land in their own table")
+{
+  // The baked [config] records what config.sh generated from; this table
+  // records what THIS RUN changed on top of it, so the pair is a complete
+  // statement of the machine that produced the numbers.
+  auto phase = one_of_everything();
+  std::vector<champsim::phase_stats> given{phase};
+
+  champsim::toml_printer::run_info info{};
+  // Values arrive from the store already rendered in TOML syntax -- including
+  // quoted, escaped strings (pinned by 098-runtime-config.cc).
+  info.overrides = {{"cache.cpu0_l1d.sets", "128"}, {"ooo_cpu.cpu0.rob_size", "512"}, {"pmem.frequency", "1600.0"}, {"a.name", "\"with \\\"quotes\\\"\""}};
+
+  const auto lines = champsim::toml_printer::format(given, false, info);
+
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"[config_override]"}));
+  // Each entry is ONE flat key naming one knob, so the whole key is quoted --
+  // a bare dotted key would parse as a nested table.
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"\"cache.cpu0_l1d.sets\" = 128"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"\"ooo_cpu.cpu0.rob_size\" = 512"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"\"pmem.frequency\" = 1600.0"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"\"a.name\" = \"with \\\"quotes\\\"\""}));
+
+  // After [config] (so neither table swallows the other) and before the phases.
+  const auto config_at = std::distance(std::begin(lines), std::find(std::begin(lines), std::end(lines), "[config]"));
+  const auto override_at = std::distance(std::begin(lines), std::find(std::begin(lines), std::end(lines), "[config_override]"));
+  const auto phase_at = std::distance(std::begin(lines), std::find(std::begin(lines), std::end(lines), "[phase.simulation]"));
+  REQUIRE(config_at < override_at);
+  REQUIRE(override_at < phase_at);
+}
+
+TEST_CASE("An empty override set still emits an indexable table")
+{
+  auto phase = one_of_everything();
+  std::vector<champsim::phase_stats> given{phase};
+
+  const auto lines = champsim::toml_printer::format(given);
+
+  REQUIRE(std::find(std::begin(lines), std::end(lines), "[config_override]") != std::end(lines));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"config_files = \"\""}));
+}

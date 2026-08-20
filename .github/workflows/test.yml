@@ -320,6 +320,35 @@ jobs:
         print("TOML document validated")
         PY
 
+    # The runtime configuration path: a file, an overriding --set, and the
+    # provenance record. Streams the trace again -- process substitution caches
+    # nothing, so this is a second download.
+    - name: Runtime configuration overrides
+      run: |
+        ./bin/champsim -w5000 -i5000 --config configs/sample.toml --set ooo_cpu.cpu0.rob_size=256 \
+          --toml override.toml -- <(curl -s https://dpc3.compas.cs.stonybrook.edu/champsim-traces/speccpu/400.perlbench-41B.champsimtrace.xz | xz -dc)
+        python3 - <<'PY'
+        import tomllib
+        doc = tomllib.load(open("override.toml", "rb"))
+        ov = doc["config_override"]
+        # --set came AFTER --config, so it wins over the file's 512.
+        assert ov["ooo_cpu.cpu0.rob_size"] == 256, ov
+        # Untouched file keys apply as written.
+        assert ov["cache.cpu0_l1d.sets"] == 128, ov
+        assert doc["meta"]["config_files"] == "configs/sample.toml", doc["meta"]
+        print("runtime configuration validated")
+        PY
+
+    - name: Reject an unknown runtime key
+      run: |
+        set +e
+        message=$(./bin/champsim -w5000 -i5000 --set pmem.tCAS=24 -- /dev/null 2>&1)
+        status=$?
+        set -e
+        echo "$message"
+        test "$status" -ne 0 || { echo "expected an unknown key to exit non-zero"; exit 1; }
+        echo "$message" | grep -q "did you mean 'pmem.tcas'" || { echo "exited non-zero, but not because of the unknown-key guard"; exit 1; }
+
     # Asserting the message, not just a non-zero exit: almost anything makes
     # this command fail, and a guard that passes for the wrong reason is worse
     # than no guard.
@@ -338,6 +367,8 @@ jobs:
         lcov --capture --no-external \
         --directory . \
         --include $(pwd)/src/toml_printer.cc \
+        --include $(pwd)/src/runtime_config.cc \
+        --include $(pwd)/inc/runtime_config.h \
         --include $(pwd)/src/json_printer.cc \
         --include $(pwd)/inc/stats_printer.h \
         --output-file lcov_stats.info
