@@ -337,6 +337,16 @@ builds break on the machine where it is hardest to notice. Keep such code in `sr
   Thirteen keys used to kill the process at zero (SIGFPE in the DRAM divisors, SIGABRT in
   the cache asserts) and the two DIB knobs silently built a structure that can never hit.
   `pq_size = 0` is the shipped TLB configuration, which is why queues are exempt.
+- **DRAM timings are memory-controller CYCLES, so `pmem.frequency` scales them.**
+  `tCAS`/`tRCD`/`tRP`/`tRAS` are multiplied by `mc_period` in the `DRAM_CHANNEL`
+  constructor, and `mc_period = 1e6 / pmem.frequency`. Raising the frequency without
+  rescaling the cycle counts shortens absolute core latency by the same factor —
+  4266 MHz against the stock 24-cycle timings gives a 5.6 ns tCAS and drops LLC miss
+  latency from 186 to 67 cycles, with nothing to flag it. `pmem.data_rate` is the
+  independent one: it sets only the data-bus transfer period, so raising it alone
+  models a faster bus with intact core timings, which is what a memory *generation*
+  change usually wants. Note the 2:1 data-rate-to-clock ratio is a DDR relation and
+  does not hold for LPDDR5.
 - **Vendored ITTAGE has undefined behaviour in its RNG.** `inc/ittage/ittage.hpp:246,248`
   left-shift a negative `int` in `MYRANDOM`; UBSan flags it on any `ittage_64kb` run, so
   the ITTAGE campaign's numbers were produced with it. GCC emits the expected

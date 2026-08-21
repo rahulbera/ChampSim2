@@ -5,7 +5,10 @@
 #
 # Tags: disclosed = stated by a reference below; derived = computed from one
 # (capacity/associativity -> set count, load-to-use -> per-level latency);
-# default = ChampSim default, not an LNC figure.
+# default = ChampSim default, not an LNC figure; pinned = neither, held at a
+# value on purpose (see the comment at that line). A `default` tag means the
+# value equals what `bin/champsim --knobs` reports, and a disclosed figure that
+# happens to coincide with a ChampSim default is still tagged disclosed.
 #
 # References
 #   [1] https://chipsandcheese.com/p/lion-cove-intels-p-core-roars
@@ -50,7 +53,12 @@ decode_latency = 1              # default
 dispatch_latency = 1            # default
 schedule_latency = 0            # default
 execute_latency = 0             # default
-branch_predictor = "bimodal"    # default
+# Was the default when this file was written; the built-in default has since
+# moved to hashed_perceptron (inc/defs.h), so this line is now a PIN, not a
+# default. Left as-is so LNC results stay comparable with runs already taken --
+# delete the line to follow the built-in default instead. Neither is an LNC
+# figure: no reference discloses its predictor.
+branch_predictor = "bimodal"    # pinned
 btb = "basic_btb"               # default
 
 # Op cache: 5250 entries, 12-way [1][3]. ChampSim's DIB is indexed by
@@ -127,11 +135,25 @@ ways = 16                       # derived [1]  (256 x 16 = the 4096 entries)
 latency = 7                     # disclosed [1]
 
 # Platform, not core: LPDDR5X-8533 [6]
+#
+# Only the data rate is disclosed, and it is the only thing changed here: it
+# sets the data-bus transfer period, so a burst returns faster. The DRAM CORE
+# timings below are NOT LNC figures -- no reference gives them -- and are the
+# stock DDR-3200-era values, spelled out rather than left implicit so this file
+# says what it does and does not model.
+#
+# DO NOT raise `frequency` to "match" the data rate. tCAS/tRCD/tRP/tRAS are
+# counts of MEMORY-CONTROLLER CYCLES, scaled by 1/frequency in the channel
+# constructor, so raising the clock without rescaling them shortens absolute
+# core latency by the same factor: at 4266 MHz these become a 5.6 ns tCAS, and
+# LLC miss latency drops 186 -> 67 cycles. The 2:1 data-rate-to-clock ratio
+# that would suggest 4266 is a DDR4 relation; LPDDR5X does not use it, and [6]
+# is a product page, not a timing specification.
 [pmem]
 data_rate = 8533                # disclosed [6]
-# The two are a coupled pair -- ChampSim's stock 3200/1600 is the 2:1 DDR
-# relation between the bus and the memory controller's command clock. Setting
-# data_rate alone leaves the controller at its 1600 MHz default, modelling an
-# 8533 MT/s bus driven by a controller less than half its speed.
-frequency = 4266                # derived [6]  (8533 / 2)
+frequency = 1600                # default  (controller clock; see the note above)
+tcas = 24                       # default  (24 cycles @ 1600 MHz = 15.0 ns)
+trcd = 24                       # default
+trp = 24                        # default
+tras = 52                       # default  (32.5 ns)
 channels = 1                    # default
