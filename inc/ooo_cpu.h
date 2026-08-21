@@ -192,8 +192,6 @@ public:
 
   void print_deadlock() final;
 
-#include "module_decl.inc"
-
   struct branch_module_concept {
     virtual ~branch_module_concept() = default;
 

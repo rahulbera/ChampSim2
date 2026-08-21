@@ -220,8 +220,6 @@ public:
 
   void print_deadlock() final;
 
-#include "module_decl.inc"
-
   struct prefetcher_module_concept {
     virtual ~prefetcher_module_concept() = default;
 
