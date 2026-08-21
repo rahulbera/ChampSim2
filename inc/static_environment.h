@@ -54,6 +54,11 @@ public:
   [[nodiscard]] std::size_t channels_built() const { return std::size(channels); }
 
 private:
+  // Runtime module selection, run once at the end of construction: before any
+  // hook has fired, which is the only window in which replacing a module's
+  // type-erased pimpl is free.
+  void select_modules(const runtime_config& cfg);
+
   std::vector<channel> channels;
   MEMORY_CONTROLLER DRAM;
   VirtualMemory vmem;

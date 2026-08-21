@@ -10,6 +10,11 @@
 #include "defaults.hpp"
 #include "msl/bits.h"
 
+#if __has_include("registry.inc")
+#include "registry.inc"
+#define CHAMPSIM_HAVE_REGISTRY 1
+#endif
+
 namespace
 {
 // One channel per EDGE, its queue geometry taken from the LOWER component --
@@ -305,6 +310,49 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                            .dib_way(cfg.value<std::size_t>(key + ".dib.ways", 8))
                            .dib_window(cfg.value<std::size_t>(key + ".dib.window_size", 16)));
   }
+
+  select_modules(cfg);
+}
+
+void champsim::static_environment::select_modules(const runtime_config& cfg)
+{
+#ifdef CHAMPSIM_HAVE_REGISTRY
+  using registry = champsim::configured::module_registry;
+  for (std::size_t cpu = 0; cpu < defs::num_cpus; ++cpu) {
+    auto& core = cores.at(cpu);
+    const auto key = core_key(cpu);
+
+    const auto bp = cfg.value<std::string>(key + ".branch_predictor", champsim::defs::default_branch_predictor);
+    if (bp != champsim::defs::default_branch_predictor) {
+      core.install_branch_module(registry::make_branch(bp, &core));
+    }
+    core.branch_module_pimpl->impl_configure(cfg, key + "." + bp);
+
+    const auto btb = cfg.value<std::string>(key + ".btb", champsim::defs::default_btb);
+    if (btb != champsim::defs::default_btb) {
+      core.install_btb_module(registry::make_btb(btb, &core));
+    }
+    core.btb_module_pimpl->impl_configure(cfg, key + "." + btb);
+  }
+
+  for (auto& cache : caches) {
+    const auto key = "cache." + lower(cache.NAME);
+
+    const auto pref = cfg.value<std::string>(key + ".prefetcher", champsim::defs::default_prefetcher);
+    if (pref != champsim::defs::default_prefetcher) {
+      cache.install_prefetcher_module(registry::make_prefetcher(pref, &cache));
+    }
+    cache.pref_module_pimpl->impl_configure(cfg, key + "." + pref);
+
+    const auto repl = cfg.value<std::string>(key + ".replacement", champsim::defs::default_replacement);
+    if (repl != champsim::defs::default_replacement) {
+      cache.install_replacement_module(registry::make_replacement(repl, &cache));
+    }
+    cache.repl_module_pimpl->impl_configure(cfg, key + "." + repl);
+  }
+#else
+  (void)cfg;
+#endif
 }
 
 std::vector<std::reference_wrapper<O3_CPU>> champsim::static_environment::cpu_view() { return {std::begin(cores), std::end(cores)}; }

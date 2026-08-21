@@ -28,6 +28,14 @@ inline constexpr std::size_t page_size = 4096;
 // The default heartbeat interval; sim.heartbeat_frequency and the
 // --heartbeat-frequency flag both override it at run time.
 inline constexpr std::uint64_t heartbeat_frequency = 10000000;
+
+// The modules a binary uses unless a runtime key selects another. These are
+// the champsim::defaults packs; changing them here changes what a
+// configuration-free run simulates.
+inline constexpr const char* default_branch_predictor = "hashed_perceptron";
+inline constexpr const char* default_btb = "basic_btb";
+inline constexpr const char* default_prefetcher = "no";
+inline constexpr const char* default_replacement = "lru";
 } // namespace champsim::defs
 
 #endif
