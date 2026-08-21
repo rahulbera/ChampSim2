@@ -216,3 +216,34 @@ TEST_CASE("positive_value rejects zero and negative values")
   cfg.set("a.f=3200");
   REQUIRE(cfg.positive_value<double>("a.f", 4000.0) == 3200.0);
 }
+
+TEST_CASE("A string value round-trips for module selection")
+{
+  champsim::runtime_config cfg{};
+  REQUIRE(cfg.value<std::string>("ooo_cpu.cpu0.btb", "basic_btb") == "basic_btb");
+
+  cfg.set("ooo_cpu.cpu0.btb=blbp_64kb_tuned");
+  REQUIRE(cfg.value<std::string>("ooo_cpu.cpu0.btb", "basic_btb") == "blbp_64kb_tuned");
+
+  // A quoted TOML string from a file is the same value.
+  temp_toml file{"[ooo_cpu.cpu0]\nbtb = \"ittage_64kb\"\n"};
+  cfg.load_file(file.path);
+  REQUIRE(cfg.value<std::string>("ooo_cpu.cpu0.btb", "basic_btb") == "ittage_64kb");
+}
+
+TEST_CASE("A string lookup on a non-string value is a type error")
+{
+  champsim::runtime_config cfg{};
+  cfg.set("a.k=42");
+  REQUIRE_THROWS(cfg.value<std::string>("a.k", "x"));
+  cfg.set("a.b=true");
+  REQUIRE_THROWS(cfg.value<std::string>("a.b", "x"));
+}
+
+TEST_CASE("A consulted string fallback renders as a quoted TOML string")
+{
+  champsim::runtime_config cfg{};
+  cfg.value<std::string>("ooo_cpu.cpu0.btb", "basic_btb");
+  const auto consulted = cfg.consulted();
+  REQUIRE(consulted.at(0) == std::pair<std::string, std::string>{"ooo_cpu.cpu0.btb", "\"basic_btb\""});
+}

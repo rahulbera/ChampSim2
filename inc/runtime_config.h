@@ -34,6 +34,18 @@ class runtime_config
 public:
   using value_type = std::variant<int64_t, double, bool, std::string>;
 
+  // Non-copyable: consulted-key recording is how --knobs enumerates knobs and
+  // how main verifies every module-knob key was consumed, and a copy would
+  // record on the copy and discard the record. This also makes a module
+  // configure(runtime_config cfg, ...) BY VALUE fail the has_configure trait
+  // instead of silently mis-recording; the unconsumed-key error then points at
+  // the module.
+  runtime_config() = default;
+  runtime_config(const runtime_config&) = delete;
+  runtime_config& operator=(const runtime_config&) = delete;
+  runtime_config(runtime_config&&) = default;
+  runtime_config& operator=(runtime_config&&) = default;
+
   // Load one TOML file, flattening nested tables into dotted keys. Later
   // definitions overwrite earlier ones. Throws std::runtime_error on an
   // unreadable or unparseable file, or on a non-scalar value (the schema has
@@ -98,9 +110,21 @@ private:
 template <typename T>
 T runtime_config::value(std::string_view key, T fallback) const
 {
-  static_assert(std::is_arithmetic_v<T>, "the runtime store holds numeric and boolean scalars");
+  static_assert(std::is_arithmetic_v<T> || std::is_same_v<T, std::string>, "the runtime store holds numeric, boolean, and string scalars");
 
-  if constexpr (std::is_same_v<T, bool>) {
+  if constexpr (std::is_same_v<T, std::string>) {
+    // Strings select modules by name. The consulted record renders the
+    // fallback in TOML syntax (quoted), matching applied().
+    note_consulted(key, value_type{fallback});
+    auto found = values_.find(key);
+    if (found == std::end(values_)) {
+      return fallback;
+    }
+    if (const auto* val = std::get_if<std::string>(&found->second)) {
+      return *val;
+    }
+    throw std::runtime_error("runtime config: " + std::string{key} + " holds a " + type_name(found->second) + ", which does not convert to the expected type");
+  } else if constexpr (std::is_same_v<T, bool>) {
     note_consulted(key, value_type{fallback});
   } else if constexpr (std::is_floating_point_v<T>) {
     note_consulted(key, value_type{static_cast<double>(fallback)});
@@ -130,7 +154,7 @@ T runtime_config::value(std::string_view key, T fallback) const
     if (const auto* val = std::get_if<int64_t>(&held)) {
       return static_cast<T>(*val);
     }
-  } else {
+  } else if constexpr (std::is_integral_v<T>) { // the string case returned above; keep its branch un-instantiated here
     if (const auto* val = std::get_if<int64_t>(&held)) {
       // Range-check the narrowing rather than truncate silently.
       using limits = std::numeric_limits<T>;
