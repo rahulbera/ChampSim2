@@ -37,6 +37,7 @@
 #include "ooo_cpu.h" // for O3_CPU
 #include "phase_info.h"
 #include "runtime_config.h"
+#include "static_environment.h"
 #include "stats_printer.h"
 #include "tracereader.h"
 #include "vmem.h"
@@ -47,12 +48,26 @@ std::vector<phase_stats> main(environment& env, std::vector<phase_info>& phases,
 }
 
 #ifndef CHAMPSIM_TEST_BUILD
+#ifdef CHAMPSIM_STATIC_ENV
+// Phase C step 1: the hand-written machine, selectable so it can be compared
+// against the generated one before the generated path is removed.
+using configured_environment = champsim::static_environment;
+#else
 using configured_environment = champsim::configured::generated_environment<CHAMPSIM_BUILD>;
+#endif
 
+#ifdef CHAMPSIM_STATIC_ENV
+constexpr uint64_t configured_heartbeat_frequency = champsim::defs::heartbeat_frequency;
+const std::size_t NUM_CPUS = champsim::defs::num_cpus;
+const unsigned BLOCK_SIZE = champsim::defs::block_size;
+const unsigned PAGE_SIZE = champsim::defs::page_size;
+#else
+constexpr uint64_t configured_heartbeat_frequency = configured_environment::heartbeat_frequency;
 const std::size_t NUM_CPUS = configured_environment::num_cpus;
 
 const unsigned BLOCK_SIZE = configured_environment::block_size;
 const unsigned PAGE_SIZE = configured_environment::page_size;
+#endif
 #endif
 const unsigned LOG2_BLOCK_SIZE = champsim::lg2(BLOCK_SIZE);
 const unsigned LOG2_PAGE_SIZE = champsim::lg2(PAGE_SIZE);
@@ -72,7 +87,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   unsigned trace_version{1};
   // Default from the configuration's heartbeat_frequency (config.sh bakes it
   // into the generated environment); --heartbeat-frequency still overrides.
-  uint64_t heartbeat_frequency{configured_environment::heartbeat_frequency};
+  uint64_t heartbeat_frequency{configured_heartbeat_frequency};
   long long warmup_instructions = 0;
   long long simulation_instructions = std::numeric_limits<long long>::max();
   std::string json_file_name;
@@ -244,7 +259,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     try {
       configured_environment knob_probe{runtime_cfg};
       runtime_cfg.value<int>("sim.deadlock_cycle", champsim::simulation_knobs{}.deadlock_cycle);
-      runtime_cfg.value<uint64_t>("sim.heartbeat_frequency", configured_environment::heartbeat_frequency);
+      runtime_cfg.value<uint64_t>("sim.heartbeat_frequency", configured_heartbeat_frequency);
       runtime_cfg.value<uint64_t>("sim.livelock_period", champsim::simulation_knobs{}.livelock_period);
     } catch (const std::runtime_error& err) {
       fmt::print(stderr, "ERROR: {}\n", err.what());
@@ -282,7 +297,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     // path the same zero-rejection the flag's PositiveNumber check gives the
     // CLI path.
     if (heartbeat_option->count() == 0) {
-      heartbeat_frequency = runtime_cfg.positive_value<uint64_t>("sim.heartbeat_frequency", configured_environment::heartbeat_frequency);
+      heartbeat_frequency = runtime_cfg.positive_value<uint64_t>("sim.heartbeat_frequency", configured_heartbeat_frequency);
     }
     sim_knobs.deadlock_cycle = runtime_cfg.positive_value<int>("sim.deadlock_cycle", sim_knobs.deadlock_cycle);
     sim_knobs.livelock_period = runtime_cfg.positive_value<uint64_t>("sim.livelock_period", sim_knobs.livelock_period);

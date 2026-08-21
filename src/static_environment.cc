@@ -1,0 +1,330 @@
+#include "static_environment.h"
+
+#include <algorithm>
+#include <cctype>
+#include <iterator>
+#include <limits>
+#include <string_view>
+
+#include "champsim.h"
+#include "defaults.hpp"
+#include "msl/bits.h"
+
+namespace
+{
+// One channel per EDGE, its queue geometry taken from the LOWER component --
+// which is why three separate channels feed the STLB. Naming the edges keeps
+// the wiring readable; the configuration layer derived the same graph by
+// matching component names and printing &channels.at(N).
+enum edge : std::size_t {
+  ptw_to_l1d,
+  llc_to_dram,
+  dtlb_to_stlb,
+  itlb_to_stlb,
+  l1d_to_l2c,
+  l1i_to_l2c,
+  l2c_to_llc,
+  stlb_to_ptw,
+  l1d_to_dtlb,
+  l1i_to_itlb,
+  l2c_to_stlb,
+  core_to_l1i,
+  core_to_l1d,
+  edge_count
+};
+
+constexpr std::size_t chan(std::size_t cpu, edge which) { return (cpu * static_cast<std::size_t>(edge_count)) + static_cast<std::size_t>(which); }
+
+std::string lower(std::string text)
+{
+  std::transform(std::begin(text), std::end(text), std::begin(text), [](char chr) { return static_cast<char>(std::tolower(static_cast<unsigned char>(chr))); });
+  return text;
+}
+
+// Runtime-configuration key prefixes: component names lower-cased, exactly as
+// the statistics document's [config] section names them.
+std::string cache_key(std::size_t cpu, std::string_view level) { return "cache." + lower(champsim::static_environment::cache_name(cpu, level)); }
+std::string ptw_key(std::size_t cpu) { return "ptw." + lower(champsim::static_environment::ptw_name(cpu)); }
+std::string core_key(std::size_t cpu) { return "ooo_cpu." + lower(champsim::static_environment::core_name(cpu)); }
+
+champsim::channel queue(const champsim::runtime_config& cfg, const std::string& prefix, std::size_t rq, std::size_t pq, std::size_t wq, unsigned offset_bits,
+                        bool match_offset)
+{
+  return champsim::channel{cfg.value<std::size_t>(prefix + ".rq_size", rq), cfg.value<std::size_t>(prefix + ".pq_size", pq),
+                           cfg.value<std::size_t>(prefix + ".wq_size", wq), champsim::data::bits{offset_bits}, match_offset};
+}
+
+// MHz -> picoseconds, truncating, as the configuration layer did.
+champsim::chrono::picoseconds period(const champsim::runtime_config& cfg, const std::string& key, double mhz)
+{
+  return champsim::chrono::picoseconds{static_cast<champsim::chrono::picoseconds::rep>(1000000.0 / cfg.positive_value<double>(key, mhz))};
+}
+} // namespace
+
+std::string champsim::static_environment::core_name(std::size_t cpu) { return "cpu" + std::to_string(cpu); }
+std::string champsim::static_environment::cache_name(std::size_t cpu, std::string_view level) { return "cpu" + std::to_string(cpu) + "_" + std::string{level}; }
+std::string champsim::static_environment::ptw_name(std::size_t cpu) { return "cpu" + std::to_string(cpu) + "_PTW"; }
+
+champsim::static_environment::static_environment(const runtime_config& cfg)
+    : channels([&cfg] {
+        std::vector<channel> made{};
+        made.reserve(defs::num_cpus * static_cast<std::size_t>(edge_count));
+        for (std::size_t cpu = 0; cpu < defs::num_cpus; ++cpu) {
+          const auto l1i = cache_key(cpu, "L1I");
+          const auto l1d = cache_key(cpu, "L1D");
+          const auto l2c = cache_key(cpu, "L2C");
+          const auto itlb = cache_key(cpu, "ITLB");
+          const auto dtlb = cache_key(cpu, "DTLB");
+          const auto stlb = cache_key(cpu, "STLB");
+          const auto block_bits = champsim::lg2(BLOCK_SIZE);
+          const auto page_bits = champsim::lg2(PAGE_SIZE);
+
+          made.push_back(queue(cfg, l1d, 64, 8, 64, block_bits, true));
+          // The DRAM feeder is unbounded: the memory controller has its own queues.
+          made.push_back(channel{std::numeric_limits<std::size_t>::max(), std::numeric_limits<std::size_t>::max(), std::numeric_limits<std::size_t>::max(),
+                                 champsim::data::bits{block_bits}, false});
+          made.push_back(queue(cfg, stlb, 32, 0, 32, page_bits, false));
+          made.push_back(queue(cfg, stlb, 32, 0, 32, page_bits, false));
+          made.push_back(queue(cfg, l2c, 32, 16, 32, block_bits, false));
+          made.push_back(queue(cfg, l2c, 32, 16, 32, block_bits, false));
+          made.push_back(queue(cfg, "cache.llc", 32, 32, 32, block_bits, false));
+          made.push_back(channel{cfg.value<std::size_t>(ptw_key(cpu) + ".rq_size", 16), 0, 0, champsim::data::bits{page_bits}, false});
+          made.push_back(queue(cfg, dtlb, 16, 0, 16, page_bits, true));
+          made.push_back(queue(cfg, itlb, 16, 0, 16, page_bits, true));
+          made.push_back(queue(cfg, stlb, 32, 0, 32, page_bits, false));
+          made.push_back(queue(cfg, l1i, 64, 32, 64, block_bits, true));
+          made.push_back(queue(cfg, l1d, 64, 8, 64, block_bits, true));
+        }
+        return made;
+      }()),
+      DRAM(
+          period(cfg, "pmem.data_rate", 3200), period(cfg, "pmem.frequency", 1600.0), cfg.value<std::size_t>("pmem.trp", 24),
+          cfg.value<std::size_t>("pmem.trcd", 24), cfg.value<std::size_t>("pmem.tcas", 24), cfg.value<std::size_t>("pmem.tras", 52),
+          champsim::chrono::microseconds{static_cast<champsim::chrono::microseconds::rep>(1000.0 * cfg.value<double>("pmem.refresh_period", 32))},
+          [this] {
+            std::vector<channel*> upper{};
+            for (std::size_t cpu = 0; cpu < defs::num_cpus; ++cpu) {
+              upper.push_back(&channels.at(chan(cpu, llc_to_dram)));
+            }
+            return upper;
+          }(),
+          cfg.value<std::size_t>("pmem.rq_size", 64), cfg.value<std::size_t>("pmem.wq_size", 64), cfg.value<std::size_t>("pmem.channels", 1),
+          champsim::data::bytes{cfg.value<champsim::data::bytes::rep>("pmem.channel_width", 8)}, cfg.value<std::size_t>("pmem.bank_rows", 65536),
+          cfg.value<std::size_t>("pmem.bank_columns", 1024), cfg.value<std::size_t>("pmem.ranks", 1), cfg.value<std::size_t>("pmem.bankgroups", 8),
+          cfg.value<std::size_t>("pmem.banks", 4), cfg.value<std::size_t>("pmem.refreshes_per_period", 8192)),
+      vmem(champsim::data::bytes{cfg.value<champsim::data::bytes::rep>("vmem.pte_page_size", 4096)}, cfg.value<std::size_t>("vmem.num_levels", 5),
+           champsim::chrono::picoseconds{250 * cfg.value<champsim::chrono::picoseconds::rep>("vmem.minor_fault_penalty", 200)}, DRAM, 1)
+{
+  ptws.reserve(defs::num_cpus);
+  for (std::size_t cpu = 0; cpu < defs::num_cpus; ++cpu) {
+    const auto key = ptw_key(cpu);
+    ptws.emplace_back(champsim::ptw_builder{champsim::defaults::default_ptw}
+                          .name(ptw_name(cpu))
+                          .upper_levels({&channels.at(chan(cpu, stlb_to_ptw))})
+                          .virtual_memory(&vmem)
+                          .cpu(static_cast<uint32_t>(cpu))
+                          .lower_level(&channels.at(chan(cpu, ptw_to_l1d)))
+                          .mshr_size(cfg.value<uint32_t>(key + ".mshr_size", 5))
+                          .tag_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(key + ".max_read", 2)})
+                          .fill_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(key + ".max_write", 2)})
+                          .clock_period(period(cfg, key + ".frequency", 4000))
+                          .add_pscl(5, cfg.value<uint32_t>(key + ".pscl5_set", 1), cfg.value<uint32_t>(key + ".pscl5_way", 2))
+                          .add_pscl(4, cfg.value<uint32_t>(key + ".pscl4_set", 1), cfg.value<uint32_t>(key + ".pscl4_way", 4))
+                          .add_pscl(3, cfg.value<uint32_t>(key + ".pscl3_set", 2), cfg.value<uint32_t>(key + ".pscl3_way", 4))
+                          .add_pscl(2, cfg.value<uint32_t>(key + ".pscl2_set", 4), cfg.value<uint32_t>(key + ".pscl2_way", 8)));
+  }
+
+  // Cache order is load-bearing: it is the per-cycle operate() order. The
+  // configuration layer emitted them sorted by name, so LLC first, then the
+  // per-core caches alphabetically.
+  caches.reserve(1 + (defs::num_cpus * 6));
+  caches.emplace_back(champsim::cache_builder{champsim::defaults::default_llc}
+                          .name("LLC")
+                          .upper_levels([this] {
+                            std::vector<channel*> upper{};
+                            for (std::size_t cpu = 0; cpu < defs::num_cpus; ++cpu) {
+                              upper.push_back(&channels.at(chan(cpu, l2c_to_llc)));
+                            }
+                            return upper;
+                          }())
+                          .lower_level(&channels.at(chan(0, llc_to_dram)))
+                          .sets(cfg.value<uint32_t>("cache.llc.sets", 2048))
+                          .ways(cfg.value<uint32_t>("cache.llc.ways", 16))
+                          .pq_size(cfg.value<uint32_t>("cache.llc.pq_size", 32))
+                          .mshr_size(cfg.value<uint32_t>("cache.llc.mshr_size", 64))
+                          .latency(cfg.value<uint64_t>("cache.llc.latency", 20))
+                          .tag_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>("cache.llc.max_tag_check", 1)})
+                          .fill_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>("cache.llc.max_fill", 1)})
+                          .offset_bits(champsim::data::bits{champsim::lg2(BLOCK_SIZE)})
+                          .prefetch_activate(access_type::LOAD, access_type::PREFETCH)
+                          .clock_period(period(cfg, "cache.llc.frequency", 4000))
+                          .prefetch_as_load(cfg.value<bool>("cache.llc.prefetch_as_load", false))
+                          .virtual_prefetch(cfg.value<bool>("cache.llc.virtual_prefetch", false)));
+
+  for (std::size_t cpu = 0; cpu < defs::num_cpus; ++cpu) {
+    const auto dtlb = cache_key(cpu, "DTLB");
+    const auto itlb = cache_key(cpu, "ITLB");
+    const auto l1d = cache_key(cpu, "L1D");
+    const auto l1i = cache_key(cpu, "L1I");
+    const auto l2c = cache_key(cpu, "L2C");
+    const auto stlb = cache_key(cpu, "STLB");
+    const auto page_bits = champsim::lg2(PAGE_SIZE);
+    const auto block_bits = champsim::lg2(BLOCK_SIZE);
+
+    caches.emplace_back(champsim::cache_builder{champsim::defaults::default_dtlb}
+                            .name(cache_name(cpu, "DTLB"))
+                            .upper_levels({&channels.at(chan(cpu, l1d_to_dtlb))})
+                            .lower_level(&channels.at(chan(cpu, dtlb_to_stlb)))
+                            .sets(cfg.value<uint32_t>(dtlb + ".sets", 16))
+                            .ways(cfg.value<uint32_t>(dtlb + ".ways", 4))
+                            .pq_size(cfg.value<uint32_t>(dtlb + ".pq_size", 0))
+                            .mshr_size(cfg.value<uint32_t>(dtlb + ".mshr_size", 8))
+                            .latency(cfg.value<uint64_t>(dtlb + ".latency", 1))
+                            .tag_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(dtlb + ".max_tag_check", 2)})
+                            .fill_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(dtlb + ".max_fill", 2)})
+                            .offset_bits(champsim::data::bits{page_bits})
+                            .clock_period(period(cfg, dtlb + ".frequency", 4000))
+                            .prefetch_as_load(cfg.value<bool>(dtlb + ".prefetch_as_load", false)));
+
+    caches.emplace_back(champsim::cache_builder{champsim::defaults::default_itlb}
+                            .name(cache_name(cpu, "ITLB"))
+                            .upper_levels({&channels.at(chan(cpu, l1i_to_itlb))})
+                            .lower_level(&channels.at(chan(cpu, itlb_to_stlb)))
+                            .sets(cfg.value<uint32_t>(itlb + ".sets", 16))
+                            .ways(cfg.value<uint32_t>(itlb + ".ways", 4))
+                            .pq_size(cfg.value<uint32_t>(itlb + ".pq_size", 0))
+                            .mshr_size(cfg.value<uint32_t>(itlb + ".mshr_size", 8))
+                            .latency(cfg.value<uint64_t>(itlb + ".latency", 1))
+                            .tag_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(itlb + ".max_tag_check", 2)})
+                            .fill_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(itlb + ".max_fill", 2)})
+                            .offset_bits(champsim::data::bits{page_bits})
+                            .clock_period(period(cfg, itlb + ".frequency", 4000))
+                            .prefetch_as_load(cfg.value<bool>(itlb + ".prefetch_as_load", false)));
+
+    caches.emplace_back(champsim::cache_builder{champsim::defaults::default_l1d}
+                            .name(cache_name(cpu, "L1D"))
+                            .upper_levels({&channels.at(chan(cpu, ptw_to_l1d)), &channels.at(chan(cpu, core_to_l1d))})
+                            .lower_level(&channels.at(chan(cpu, l1d_to_l2c)))
+                            .lower_translate(&channels.at(chan(cpu, l1d_to_dtlb)))
+                            .sets(cfg.value<uint32_t>(l1d + ".sets", 64))
+                            .ways(cfg.value<uint32_t>(l1d + ".ways", 12))
+                            .pq_size(cfg.value<uint32_t>(l1d + ".pq_size", 8))
+                            .mshr_size(cfg.value<uint32_t>(l1d + ".mshr_size", 16))
+                            .latency(cfg.value<uint64_t>(l1d + ".latency", 5))
+                            .tag_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(l1d + ".max_tag_check", 2)})
+                            .fill_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(l1d + ".max_fill", 2)})
+                            .offset_bits(champsim::data::bits{block_bits})
+                            .prefetch_activate(access_type::LOAD, access_type::PREFETCH)
+                            .clock_period(period(cfg, l1d + ".frequency", 4000))
+                            .prefetch_as_load(cfg.value<bool>(l1d + ".prefetch_as_load", false))
+                            .virtual_prefetch(cfg.value<bool>(l1d + ".virtual_prefetch", false)));
+
+    caches.emplace_back(champsim::cache_builder{champsim::defaults::default_l1i}
+                            .name(cache_name(cpu, "L1I"))
+                            .upper_levels({&channels.at(chan(cpu, core_to_l1i))})
+                            .lower_level(&channels.at(chan(cpu, l1i_to_l2c)))
+                            .lower_translate(&channels.at(chan(cpu, l1i_to_itlb)))
+                            .sets(cfg.value<uint32_t>(l1i + ".sets", 64))
+                            .ways(cfg.value<uint32_t>(l1i + ".ways", 8))
+                            .pq_size(cfg.value<uint32_t>(l1i + ".pq_size", 32))
+                            .mshr_size(cfg.value<uint32_t>(l1i + ".mshr_size", 8))
+                            .latency(cfg.value<uint64_t>(l1i + ".latency", 4))
+                            .tag_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(l1i + ".max_tag_check", 2)})
+                            .fill_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(l1i + ".max_fill", 2)})
+                            .offset_bits(champsim::data::bits{block_bits})
+                            .prefetch_activate(access_type::LOAD, access_type::PREFETCH)
+                            .clock_period(period(cfg, l1i + ".frequency", 4000))
+                            .prefetch_as_load(cfg.value<bool>(l1i + ".prefetch_as_load", false))
+                            .virtual_prefetch(cfg.value<bool>(l1i + ".virtual_prefetch", true)));
+
+    caches.emplace_back(champsim::cache_builder{champsim::defaults::default_l2c}
+                            .name(cache_name(cpu, "L2C"))
+                            .upper_levels({&channels.at(chan(cpu, l1d_to_l2c)), &channels.at(chan(cpu, l1i_to_l2c))})
+                            .lower_level(&channels.at(chan(cpu, l2c_to_llc)))
+                            .lower_translate(&channels.at(chan(cpu, l2c_to_stlb)))
+                            .sets(cfg.value<uint32_t>(l2c + ".sets", 1024))
+                            .ways(cfg.value<uint32_t>(l2c + ".ways", 8))
+                            .pq_size(cfg.value<uint32_t>(l2c + ".pq_size", 16))
+                            .mshr_size(cfg.value<uint32_t>(l2c + ".mshr_size", 32))
+                            .latency(cfg.value<uint64_t>(l2c + ".latency", 10))
+                            .tag_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(l2c + ".max_tag_check", 1)})
+                            .fill_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(l2c + ".max_fill", 1)})
+                            .offset_bits(champsim::data::bits{block_bits})
+                            .prefetch_activate(access_type::LOAD, access_type::PREFETCH)
+                            .clock_period(period(cfg, l2c + ".frequency", 4000))
+                            .prefetch_as_load(cfg.value<bool>(l2c + ".prefetch_as_load", false))
+                            .virtual_prefetch(cfg.value<bool>(l2c + ".virtual_prefetch", false)));
+
+    caches.emplace_back(champsim::cache_builder{champsim::defaults::default_stlb}
+                            .name(cache_name(cpu, "STLB"))
+                            .upper_levels({&channels.at(chan(cpu, dtlb_to_stlb)), &channels.at(chan(cpu, itlb_to_stlb)), &channels.at(chan(cpu, l2c_to_stlb))})
+                            .lower_level(&channels.at(chan(cpu, stlb_to_ptw)))
+                            .sets(cfg.value<uint32_t>(stlb + ".sets", 128))
+                            .ways(cfg.value<uint32_t>(stlb + ".ways", 12))
+                            .pq_size(cfg.value<uint32_t>(stlb + ".pq_size", 0))
+                            .mshr_size(cfg.value<uint32_t>(stlb + ".mshr_size", 16))
+                            .latency(cfg.value<uint64_t>(stlb + ".latency", 8))
+                            .tag_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(stlb + ".max_tag_check", 1)})
+                            .fill_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(stlb + ".max_fill", 1)})
+                            .offset_bits(champsim::data::bits{page_bits})
+                            .clock_period(period(cfg, stlb + ".frequency", 4000))
+                            .prefetch_as_load(cfg.value<bool>(stlb + ".prefetch_as_load", false)));
+  }
+
+  cores.reserve(defs::num_cpus);
+  for (std::size_t cpu = 0; cpu < defs::num_cpus; ++cpu) {
+    const auto key = core_key(cpu);
+    auto& l1i = caches.at(1 + (cpu * 6) + 3);
+    auto& l1d = caches.at(1 + (cpu * 6) + 2);
+    cores.emplace_back(champsim::core_builder{champsim::defaults::default_core}
+                           .index(static_cast<uint32_t>(cpu))
+                           .l1i(&l1i)
+                           .l1i_bandwidth(l1i.MAX_TAG)
+                           .l1d_bandwidth(l1d.MAX_TAG)
+                           .fetch_queues(&channels.at(chan(cpu, core_to_l1i)))
+                           .data_queues(&channels.at(chan(cpu, core_to_l1d)))
+                           .ifetch_buffer_size(cfg.value<std::size_t>(key + ".ifetch_buffer_size", 64))
+                           .decode_buffer_size(cfg.value<std::size_t>(key + ".decode_buffer_size", 32))
+                           .dispatch_buffer_size(cfg.value<std::size_t>(key + ".dispatch_buffer_size", 32))
+                           .register_file_size(cfg.value<std::size_t>(key + ".register_file_size", 128))
+                           .rob_size(cfg.value<std::size_t>(key + ".rob_size", 352))
+                           .lq_size(cfg.value<std::size_t>(key + ".lq_size", 128))
+                           .sq_size(cfg.value<std::size_t>(key + ".sq_size", 72))
+                           .fetch_width(champsim::bandwidth::maximum_type{cfg.value<long>(key + ".fetch_width", 6)})
+                           .decode_width(champsim::bandwidth::maximum_type{cfg.value<long>(key + ".decode_width", 6)})
+                           .dispatch_width(champsim::bandwidth::maximum_type{cfg.value<long>(key + ".dispatch_width", 6)})
+                           .schedule_width(champsim::bandwidth::maximum_type{cfg.value<long>(key + ".scheduler_size", 128)})
+                           .execute_width(champsim::bandwidth::maximum_type{cfg.value<long>(key + ".execute_width", 4)})
+                           .lq_width(champsim::bandwidth::maximum_type{cfg.value<long>(key + ".lq_width", 2)})
+                           .sq_width(champsim::bandwidth::maximum_type{cfg.value<long>(key + ".sq_width", 2)})
+                           .retire_width(champsim::bandwidth::maximum_type{cfg.value<long>(key + ".retire_width", 5)})
+                           .mispredict_penalty(cfg.value<unsigned>(key + ".mispredict_penalty", 1))
+                           .decode_latency(cfg.value<unsigned>(key + ".decode_latency", 1))
+                           .dispatch_latency(cfg.value<unsigned>(key + ".dispatch_latency", 1))
+                           .schedule_latency(cfg.value<unsigned>(key + ".schedule_latency", 0))
+                           .execute_latency(cfg.value<unsigned>(key + ".execute_latency", 0))
+                           .clock_period(period(cfg, key + ".frequency", 4000))
+                           .dib_set(cfg.value<std::size_t>(key + ".dib.sets", 32))
+                           .dib_way(cfg.value<std::size_t>(key + ".dib.ways", 8))
+                           .dib_window(cfg.value<std::size_t>(key + ".dib.window_size", 16)));
+  }
+}
+
+std::vector<std::reference_wrapper<O3_CPU>> champsim::static_environment::cpu_view() { return {std::begin(cores), std::end(cores)}; }
+std::vector<std::reference_wrapper<CACHE>> champsim::static_environment::cache_view() { return {std::begin(caches), std::end(caches)}; }
+std::vector<std::reference_wrapper<PageTableWalker>> champsim::static_environment::ptw_view() { return {std::begin(ptws), std::end(ptws)}; }
+MEMORY_CONTROLLER& champsim::static_environment::dram_view() { return DRAM; }
+
+std::vector<std::reference_wrapper<champsim::operable>> champsim::static_environment::operable_view()
+{
+  // Order is the per-cycle operate() order: cores, caches, PTWs, DRAM.
+  std::vector<std::reference_wrapper<operable>> retval{};
+  auto make_ref = [](auto& elem) {
+    return std::ref<operable>(elem);
+  };
+  std::transform(std::begin(cores), std::end(cores), std::back_inserter(retval), make_ref);
+  std::transform(std::begin(caches), std::end(caches), std::back_inserter(retval), make_ref);
+  std::transform(std::begin(ptws), std::end(ptws), std::back_inserter(retval), make_ref);
+  retval.push_back(std::ref<operable>(DRAM));
+  return retval;
+}
