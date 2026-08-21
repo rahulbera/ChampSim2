@@ -64,32 +64,6 @@ def relroot(abspath):
     champsim_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return os.path.relpath(abspath, start=champsim_root)
 
-def get_makefile_lines(build_id, executable, module_info):
-    ''' Generate all of the lines to be written in a particular configuration's makefile '''
-    yield from header({
-        'Build ID': build_id,
-        'Executable': executable,
-        'Module Names': tuple(module_info.keys())
-    })
-    yield ''
-    exe_dirname, exe_basename = os.path.split(os.path.normpath(executable))
-    exe_basename = os.path.join('$(BIN_ROOT)', exe_basename)
-    yield from hard_assign_variable('BIN_ROOT', exe_dirname)
-    yield from hard_assign_variable('build_id', build_id, targets=["compile_commands", exe_basename])
-
-    mod_paths = [relroot(mod["path"]) for mod in module_info.values()]
-    yield from append_variable('nonbase_module_objs', '$(filter-out $(base_module_objs),$(call get_module_list,', *mod_paths, '))')
-
-    legacy_paths = [relroot(mod['path'])+'/' for mod in module_info.values() if mod.get('legacy',False)]
-    if legacy_paths:
-        yield from append_variable('prereq_for_generated', *legacy_paths, targets=['$(generated_files)'])
-
-    yield from append_variable('build_ids', build_id)
-    yield from append_variable('executable_name', exe_basename)
-
-    yield ''
-
-
 def get_discovery_makefile_lines(executable, module_info):
     """
     The makefile fragment for a discovery-only configure: one executable, and

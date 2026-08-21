@@ -40,7 +40,6 @@ def create_main_compile_command_(
             *get_options(champsim_dir / "global.options"),
             *get_options(champsim_dir / "absolute.options"),
             f"-I{config_dir}",
-            f"-DCHAMPSIM_BUILD=0x{build_id}",
             "-c",
             "-o",
             f"{object_file.absolute()}",

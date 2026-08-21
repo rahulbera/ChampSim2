@@ -420,12 +420,10 @@ std::vector<std::string> champsim::toml_printer::format(std::vector<phase_stats>
               {"command_line", quote(info.command_line)},
               {"config_files", quote(info.config_files)}});
 
-  // The configuration this build was generated from, already rendered as TOML
-  // by config/config_record.py. It is spliced rather than built here because
-  // the parsed configuration does not survive to run time in any other form.
-  // The header is emitted even when the record is empty -- as it is in every
-  // unit test, and in any build whose environment predates this section -- so
-  // that a consumer can always index [config] instead of testing for it.
+  // The effective configuration, rendered by format_config(). The header is
+  // emitted even when the record is empty -- as it is in every unit test that
+  // does not supply one -- so a consumer can always index [config] rather than
+  // testing for it.
   auto config_lines = split_lines(info.config_toml);
   if (std::empty(config_lines)) {
     config_lines.emplace_back("[config]");

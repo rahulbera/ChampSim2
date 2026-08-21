@@ -116,8 +116,8 @@ std::string champsim::runtime_config::render(const value_type& val)
           return text;
         } else if constexpr (std::is_same_v<held_type, std::string>) {
           // A TOML basic string, escaped exactly as ::quote() in
-          // src/toml_printer.cc and toml_string() in config/config_record.py
-          // escape it -- three implementations of one document's syntax.
+          // src/toml_printer.cc escapes it -- two implementations of one
+          // document's syntax.
           std::string out{"\""};
           for (auto chr : held) {
             switch (chr) {

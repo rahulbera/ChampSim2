@@ -305,11 +305,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   }
 
   // What produced this document, so that a result file states which machine and
-  // which run it came from. The configuration itself is compiled away into
-  // literals by config.sh, so it is carried as a pre-rendered TOML fragment on
-  // the generated environment -- see config/config_record.py. Both this and the
-  // build id may only be named inside `#ifndef CHAMPSIM_TEST_BUILD`, which is
-  // why they are read here and passed to the printer as plain data.
+  // which run it came from.
   champsim::toml_printer::run_info run{};
   // Identifies the MACHINE rather than the build: a content hash of the
   // effective configuration, so two runs that simulate the same thing share it

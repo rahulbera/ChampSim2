@@ -65,12 +65,10 @@ class toml_printer
 
 public:
   // What produced this document, as opposed to what it measured. Everything
-  // here is supplied by the caller rather than read from a generated symbol:
-  // src/main.cc IS linked into the test binary, where CHAMPSIM_BUILD expands to
-  // the non-literal `0xTEST`, so only code inside `#ifndef CHAMPSIM_TEST_BUILD`
-  // may name one. Keeping the printer ignorant of the build is what lets it be
-  // linked into the tests at all -- and what keeps the static format() seam,
-  // which is the only reason this printer can be pinned by exact output.
+  // here is supplied by the caller rather than read from a generated symbol,
+  // which is what lets this printer be linked into the test binary at all --
+  // and what keeps the static format() seam, the only reason it can be pinned
+  // by exact output.
   struct run_info {
     // The build id config.sh derived from the parsed configuration, rendered
     // as it appears in the generated source (e.g. "0x2989172160dc027f").
@@ -82,9 +80,8 @@ public:
     long long warmup_instructions{0};
     long long simulation_instructions{0};
     int trace_version{0};
-    // A [config] section already rendered as TOML by the configuration layer
-    // (config/config_record.py), carried on the generated environment. Spliced
-    // verbatim; the printer does not parse or validate it.
+    // The [config] section, already rendered as TOML by format_config().
+    // Spliced verbatim; the printer does not re-parse it.
     std::string_view config_toml{};
     // The runtime configuration files loaded, in order, comma-joined (the
     // document holds no arrays).

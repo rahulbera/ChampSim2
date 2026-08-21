@@ -26,8 +26,7 @@ namespace champsim
  * in -- so a binary run without --config/--set behaves exactly as it did
  * before this store existed.
  *
- * This class must name no generated symbol: it is linked into the test binary,
- * where CHAMPSIM_BUILD expands to the non-literal 0xTEST.
+ * This class names no generated symbol, so it links into the test binary.
  */
 class runtime_config
 {
