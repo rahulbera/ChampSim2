@@ -105,7 +105,7 @@ def registry_impl_lines(module_info):
         yield f'std::unique_ptr<{concept}> champsim::configured::module_registry::{factory}(std::string_view name, {owner}* owner)'
         yield '{'
         yield "  if (name.find(',') != std::string_view::npos) {"
-        yield f'    throw std::runtime_error("runtime module selection takes one module (got \'" + std::string{{name}} + "\'); compose multiple modules at config.sh time");'
+        yield f'    throw std::runtime_error("runtime module selection takes one module (got \'" + std::string{{name}} + "\'); module composition is not supported");'
         yield '  }'
         for mod in mods:
             yield f'  if (name == "{mod["class"]}") {{'

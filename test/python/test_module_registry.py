@@ -78,7 +78,10 @@ class RegistryImplTest(unittest.TestCase):
         # user-visible message, not the implementation of the check.
         text = ' '.join(self.lines())
         self.assertIn('one module', text)
-        self.assertIn('compose multiple modules at config.sh time', text)
+        # The advice must not name a capability that does not exist: config.sh
+        # composed module packs once, and no longer does anything of the kind.
+        self.assertIn('module composition is not supported', text)
+        self.assertNotIn('config.sh time', text)
 
     def test_module_headers_are_included(self):
         text = ' '.join(self.lines())
