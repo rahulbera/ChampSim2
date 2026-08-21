@@ -1,7 +1,7 @@
 # Intel Lion Cove (LNC) P-core -- Lunar Lake instantiation.
 #
-#     ./config.sh configs/lnc.json && make
-#     bin/lnc --config configs/lnc.toml [--set KEY=VALUE ...] trace.xz
+#     ./config.sh && make
+#     bin/champsim --config configs/lnc.toml [--set KEY=VALUE ...] trace.xz
 #
 # Tags: disclosed = stated by a reference below; derived = computed from one
 # (capacity/associativity -> set count, load-to-use -> per-level latency);
@@ -25,10 +25,8 @@
 #    set count, which ChampSim requires. Arrow Lake is 3 MB / 84-cycle L3 [3].
 #  * Load/store queue and register-file sizes are NOT disclosed for LNC ([4]
 #    lists them as unknown); values circulating online are Golden Cove's.
-#  * lnc.json carries only compile-time parameters plus a key skeleton at stock
-#    ChampSim values: a knob is runtime-overridable only if the configure-time
-#    config named it. Every LNC value lives here, so a run's [config] records
-#    the stock machine and [config_override] records exactly this file.
+#  * This file stands alone -- there is no JSON. NUM_CPUS, BLOCK_SIZE and
+#    PAGE_SIZE live in inc/defs.h; everything else is here.
 
 [ooo_cpu.cpu0]
 frequency = 5100                # disclosed [6]

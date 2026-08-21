@@ -20,12 +20,8 @@ import os
 import json
 import pathlib
 
-from .makefile import get_makefile_lines
-from .instantiation_file import get_instantiation_lines
-from .instantiation_file import runtime_keys
-from .instantiation_file import get_instantiation_header
-from .config_record import get_config_record_lines
-from .config_record import get_config_record_cxx
+from . import modules
+from .makefile import get_discovery_makefile_lines
 from .module_registry import registry_class_lines
 from .module_registry import registry_impl_lines
 from . import util
@@ -124,80 +120,6 @@ class Fragment:
         fileparts = list(util.collect(joined_parts, operator.itemgetter(0), Fragment.__part_joiner))
         return Fragment(fileparts)
 
-    @staticmethod
-    def from_config(parsed_config, bindir_name=None, srcdir_names=None, objdir_name=None, makedir_name=None, verbose=False):
-        '''
-        Produce a sequence of Fragments from the result of parse.parse_config().
-
-        :param parsed_config: the result of parsing a configuration file
-        :param bindir_name: the directory in which to place the binaries
-        :param srcdir_name: the directory to search for source files
-        :param objdir_name: the directory to place object files
-        :param makedir_name: the directory to place makefiles
-        '''
-        champsim_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        bindir_name = bindir_name or os.path.join(champsim_root, 'bin')
-        srcdir_names = srcdir_names or []
-        objdir_name = objdir_name or os.path.join(champsim_root, '.csconfig')
-        makedir_name = makedir_name or champsim_root
-
-        if verbose:
-            print('Configuring files to:')
-            print('Binary directory:', bindir_name)
-            print('Source directory:', srcdir_names)
-            print('Object directory:', objdir_name)
-            print('Makefile directory:', makedir_name)
-
-        build_id = hashlib.shake_128(json.dumps(parsed_config, sort_keys=True, default=try_int).encode('utf-8')).hexdigest(8)
-
-        executable_basename, elements, modules_to_compile, module_info, config_file = parsed_config
-
-        joined_module_info = util.subdict(util.chain(*module_info.values()), modules_to_compile) # remove module type tag
-        executable = os.path.join(bindir_name, executable_basename)
-        if verbose:
-            print('For Executable', executable)
-            print('Modules:')
-            for module in joined_module_info.values():
-                print(f'  {module["name"]}: {module["path"]} -> {module["class"]}')
-            print('Writing objects to', objdir_name)
-
-        # Touch 'path/to/__legacy__' to ensure makefile will generate legacy files
-        for legacy_marker in (pathlib.Path(module['path'], '__legacy__') for module in joined_module_info.values() if module.get('legacy')):
-            if verbose:
-                print('Touching file:', str(legacy_marker))
-            legacy_marker.touch()
-
-        instantiation_lines = list(get_instantiation_lines(build_id=build_id, **elements))
-
-        # Only compiled modules are linkable, so only they are registered. The
-        # registry describes the modules DISCOVERED, not any one configuration,
-        # so it is accumulated here and emitted once by finish().
-        compiled_module_info = {kind: util.subdict(kind_info, modules_to_compile) for kind, kind_info in module_info.items()}
-
-        fileparts = [
-            # Instantiation file
-            # The [config] record rides along in core_inst.inc: src/main.cc already
-            # includes that file (guarded by CHAMPSIM_TEST_BUILD, which is what keeps
-            # the per-build-id symbol out of the test link), and Fragment.join merges
-            # same-named parts, so a --join of N configurations yields N
-            # specializations in one file exactly as the environments already do.
-            # The instantiation is materialized first so the runtime-key manifest
-            # can be extracted from the very lines the compiler will see.
-            (os.path.join(objdir_name, 'core_inst.inc'), cxx_file(itertools.chain(
-                get_instantiation_header(len(elements['cores']), config_file, build_id=build_id),
-                get_config_record_cxx(build_id, get_config_record_lines(executable_basename, elements, config_file),
-                                      runtime_keys=runtime_keys(instantiation_lines))
-            ))),
-            (os.path.join(objdir_name, 'core_inst.cc.inc'), cxx_file(instantiation_lines)),
-
-            # Makefile generation
-            (os.path.join(makedir_name, '_configuration.mk'), (
-                *make_generated_warning(),
-                *get_makefile_lines(build_id, executable, joined_module_info)
-            ))
-        ]
-        return Fragment(list(util.collect(fileparts, operator.itemgetter(0), Fragment.__part_joiner))) # hoist the parts
-
     def write(self, verbose=False):
         ''' Write the internal series of fragments to file. '''
         for fname, fcontents in self.fileparts:
@@ -209,73 +131,28 @@ class Fragment:
     def __iter__(self):
         return iter(self.file_parts())
 
-class FileWriter:
-    '''
-    This class maintains the state of one or more configurations to be written.
+def write_discovery(executable_name, bindir_name, objdir_name, makedir_name, module_dir=None, branch_dir=None,
+                    btb_dir=None, pref_dir=None, repl_dir=None, verbose=False):
+    """
+    Emit everything that still has to be generated: the module registry and the
+    makefile fragment naming the module objects.
 
-    This class provides a context manager interface over a set of Fragments, and is more convenient for general use.
+    The simulated machine is written in C++ and configured at run time, so
+    nothing here describes a machine. What a header cannot know is which
+    modules exist on disk -- that is what this discovers.
+    """
+    objdir_name = os.path.abspath(objdir_name)
+    module_info = modules.get_module_info(module_dir=module_dir, branch_dir=branch_dir, btb_dir=btb_dir,
+                                          pref_dir=pref_dir, repl_dir=repl_dir, verbose=verbose)
 
-    :param bindir_name: The default directory for binaries if none is given to write_files().
-    :param objdir_name: The default directory for object files if none is given to write_files().
-    '''
-    def __init__(self, bindir_name=None, objdir_name=None, makedir_name=None, verbose=False):
-        self.fragments = []
-        self.module_census = {}
-        self.objdir_name = objdir_name
-        self.bindir_name = bindir_name
-        self.objdir_name = objdir_name
-        self.makedir_name = makedir_name
-        self.verbose = verbose
+    joined = util.chain(*module_info.values())
+    executable = os.path.join(bindir_name, executable_name)
 
-    def __enter__(self):
-        ''' This function forms one half of the context manager interface '''
-        self.fragments = []
-        return self
-
-    def write_files(self, parsed_config, bindir_name=None, srcdir_names=None, objdir_name=None, makedir_name=None):
-        '''
-        Accumulate the results of parsing a configuration into the File Writer.
-        Parameters passed here will override parameters given in the constructor
-
-        :param parsed_config: the result of parsing a configuration file
-        :param bindir_name: the directory in which to place the binaries
-        :param srcdir_name: the directory to search for source files
-        :param objdir_name: the directory to place object files
-        '''
-        # The registry describes the modules discovered, which is a property of
-        # the search paths rather than of any one configuration; accumulate the
-        # union and emit it once in finish().
-        _, _, modules_to_compile, module_info, _ = parsed_config
-        for kind, kind_info in module_info.items():
-            self.module_census.setdefault(kind, {}).update(util.subdict(kind_info, modules_to_compile))
-
-        self.fragments.append(Fragment.from_config(
-            parsed_config,
-            bindir_name=bindir_name or self.bindir_name,
-            srcdir_names=srcdir_names or [],
-            objdir_name=os.path.abspath(objdir_name or self.objdir_name),
-            makedir_name=makedir_name or self.makedir_name,
-            verbose=self.verbose
+    Fragment([
+        (os.path.join(objdir_name, 'registry.inc'), cxx_file(registry_class_lines(module_info))),
+        (os.path.join(objdir_name, 'registry.cc.inc'), cxx_file(registry_impl_lines(module_info))),
+        (os.path.join(makedir_name or '.', '_configuration.mk'), (
+            *make_generated_warning(),
+            *get_discovery_makefile_lines(executable, joined)
         ))
-
-    @staticmethod
-    def write_fragments(*fragments):
-        ''' Write out a set of prepared fragments. '''
-        if not fragments:
-            return
-        Fragment.join(*fragments).write()
-
-    def finish(self):
-        ''' Write all accumulated configurations to their files. '''
-        if self.module_census:
-            objdir = os.path.abspath(self.objdir_name)
-            self.fragments.append(Fragment([
-                (os.path.join(objdir, 'registry.inc'), cxx_file(registry_class_lines(self.module_census))),
-                (os.path.join(objdir, 'registry.cc.inc'), cxx_file(registry_impl_lines(self.module_census)))
-            ]))
-        FileWriter.write_fragments(*self.fragments)
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        ''' This function terminates the context manager and calls :meth:`finish()`. '''
-        if exc_type is None:
-            self.finish()
+    ]).write(verbose=verbose)

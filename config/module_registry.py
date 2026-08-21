@@ -11,8 +11,7 @@ class-based model the registry instantiates, so they are not registered.
 '''
 
 import itertools
-
-from . import instantiation_file
+import os
 
 # (module_info key, runtime key suffix / user-facing kind name, factory name,
 #  concept type, model template, owner type)
@@ -30,6 +29,23 @@ PIMPL_MEMBERS = {
     'make_prefetcher': 'pref_module_pimpl',
     'make_replacement': 'repl_module_pimpl',
 }
+
+def module_include_files(datas):
+    """
+    Every header contributing to the given modules, sorted.
+
+    Sorted deliberately: the original walked a set, so two identical configure
+    runs emitted these includes in different orders and forced a needless
+    rebuild of the translation unit that includes every module.
+    """
+    def all_headers_on(path):
+        for base, _, files in os.walk(path):
+            for file in files:
+                if os.path.splitext(file)[1] == '.h':
+                    yield os.path.abspath(os.path.join(base, file))
+
+    candidates = {header for data in datas for header in all_headers_on(data['path'])}
+    yield from (f'#include "{header}"' for header in sorted(candidates))
 
 def registered(module_info, kind):
     ''' The registerable modules of one kind, sorted by name for stable output. '''
@@ -79,7 +95,7 @@ def registry_impl_lines(module_info):
     yield '#include <string>'
     yield ''
     all_datas = list(itertools.chain.from_iterable(registered(module_info, kind) for kind, *_ in KINDS))
-    yield from instantiation_file.module_include_files(all_datas)
+    yield from module_include_files(all_datas)
     yield ''
 
     for kind, keyname, factory, concept, model, owner in KINDS:

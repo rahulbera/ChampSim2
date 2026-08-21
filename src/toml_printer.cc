@@ -365,6 +365,28 @@ void emit_node(std::vector<std::string>& lines, const std::string& path, const c
 }
 } // namespace
 
+std::string champsim::toml_printer::config_id(const std::vector<std::pair<std::string, std::string>>& effective)
+{
+  // FNV-1a: stable across runs, platforms and compilers, which std::hash is
+  // not required to be -- this identifier is compared between machines.
+  constexpr uint64_t offset_basis{1469598103934665603ULL};
+  constexpr uint64_t prime{1099511628211ULL};
+  uint64_t hash{offset_basis};
+  const auto consume = [&hash](std::string_view text) {
+    for (auto chr : text) {
+      hash ^= static_cast<unsigned char>(chr);
+      hash *= prime;
+    }
+  };
+  for (const auto& [key, value] : effective) {
+    consume(key);
+    consume("=");
+    consume(value);
+    consume(";");
+  }
+  return fmt::format("0x{:016x}", hash);
+}
+
 std::vector<std::string> champsim::toml_printer::format_config(const std::vector<std::pair<std::string, std::string>>& effective)
 {
   config_node root{};

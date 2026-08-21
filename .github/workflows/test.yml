@@ -235,11 +235,8 @@ jobs:
         vcpkg/vcpkg install
         sudo apt-get install lcov
 
-    # The shipped configuration, not the built-in no-argument default: the
-    # runtime-config steps below drive configs/sample.toml, whose keys exist
-    # only for a build that carried them (DIB geometry, bimodal defaults).
     - name: Configure
-      run: ./config.sh champsim_config.json
+      run: ./config.sh
 
     - name: Make
       run: make
@@ -360,8 +357,8 @@ jobs:
         ov = doc["config_override"]
         assert ov["ooo_cpu.cpu0.branch_predictor"] == "perfect_branch", ov
         assert ov["ooo_cpu.cpu0.btb"] == "perfect_btb", ov
-        # The baked [config] still records the configure-time modules.
-        assert doc["config"]["ooo_cpu"]["cpu0"]["branch_predictor"] == "bimodal", doc["config"]["ooo_cpu"]["cpu0"]
+        # [config] is the EFFECTIVE configuration, so it shows what ran.
+        assert doc["config"]["ooo_cpu"]["cpu0"]["branch_predictor"] == "perfect_branch", doc["config"]["ooo_cpu"]["cpu0"]
         core = doc["phase"]["simulation"]["roi"]["core"]["cpu0"]
         base = tomllib.load(open("test.toml", "rb"))["phase"]["simulation"]["roi"]["core"]["cpu0"]
         assert base["total_mispredicts"] > 0, base["mispredict"]

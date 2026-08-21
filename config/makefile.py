@@ -88,3 +88,24 @@ def get_makefile_lines(build_id, executable, module_info):
     yield from append_variable('executable_name', exe_basename)
 
     yield ''
+
+
+def get_discovery_makefile_lines(executable, module_info):
+    """
+    The makefile fragment for a discovery-only configure: one executable, and
+    the objects of every module found on disk. No build ids -- there is one
+    configuration per binary, chosen at run time.
+    """
+    yield from header({
+        'Executable': executable,
+        'Module Names': tuple(module_info.keys())
+    })
+    yield ''
+    exe_dirname, exe_basename = os.path.split(os.path.normpath(executable))
+    exe_basename = os.path.join('$(BIN_ROOT)', exe_basename)
+    yield from hard_assign_variable('BIN_ROOT', exe_dirname)
+
+    mod_paths = [relroot(mod['path']) for mod in module_info.values()]
+    yield from append_variable('nonbase_module_objs', '$(filter-out $(base_module_objs),$(call get_module_list,', *mod_paths, '))')
+    yield from append_variable('executable_name', exe_basename)
+    yield ''

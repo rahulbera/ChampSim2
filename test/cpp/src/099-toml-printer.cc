@@ -658,3 +658,18 @@ TEST_CASE("An empty effective configuration still emits an indexable table")
   const auto lines = champsim::toml_printer::format_config({});
   REQUIRE(lines == std::vector<std::string>{"[config]"});
 }
+
+TEST_CASE("The configuration id is a content hash of the effective configuration")
+{
+  // With no build to identify, [meta] identifies the MACHINE: two runs that
+  // simulate the same thing share an id however the configuration was
+  // expressed -- a file, a --set, or a baked default.
+  const std::vector<std::pair<std::string, std::string>> a{{"cache.llc.ways", "16"}, {"ooo_cpu.cpu0.rob_size", "352"}};
+  const std::vector<std::pair<std::string, std::string>> b{{"cache.llc.ways", "16"}, {"ooo_cpu.cpu0.rob_size", "352"}};
+  const std::vector<std::pair<std::string, std::string>> c{{"cache.llc.ways", "8"}, {"ooo_cpu.cpu0.rob_size", "352"}};
+
+  REQUIRE(champsim::toml_printer::config_id(a) == champsim::toml_printer::config_id(b));
+  REQUIRE(champsim::toml_printer::config_id(a) != champsim::toml_printer::config_id(c));
+  REQUIRE_THAT(champsim::toml_printer::config_id(a), Catch::Matchers::StartsWith("0x"));
+  REQUIRE(std::size(champsim::toml_printer::config_id(a)) == 18);
+}

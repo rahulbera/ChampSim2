@@ -29,7 +29,6 @@
 #include "cache.h" // for CACHE
 #include "champsim.h"
 #ifndef CHAMPSIM_TEST_BUILD
-#include "core_inst.inc"
 #include "registry.inc"
 #endif
 #include "defaults.hpp"
@@ -49,26 +48,12 @@ std::vector<phase_stats> main(environment& env, std::vector<phase_info>& phases,
 }
 
 #ifndef CHAMPSIM_TEST_BUILD
-#ifdef CHAMPSIM_STATIC_ENV
-// Phase C step 1: the hand-written machine, selectable so it can be compared
-// against the generated one before the generated path is removed.
 using configured_environment = champsim::static_environment;
-#else
-using configured_environment = champsim::configured::generated_environment<CHAMPSIM_BUILD>;
-#endif
 
-#ifdef CHAMPSIM_STATIC_ENV
 constexpr uint64_t configured_heartbeat_frequency = champsim::defs::heartbeat_frequency;
 const std::size_t NUM_CPUS = champsim::defs::num_cpus;
 const unsigned BLOCK_SIZE = champsim::defs::block_size;
 const unsigned PAGE_SIZE = champsim::defs::page_size;
-#else
-constexpr uint64_t configured_heartbeat_frequency = configured_environment::heartbeat_frequency;
-const std::size_t NUM_CPUS = configured_environment::num_cpus;
-
-const unsigned BLOCK_SIZE = configured_environment::block_size;
-const unsigned PAGE_SIZE = configured_environment::page_size;
-#endif
 #endif
 const unsigned LOG2_BLOCK_SIZE = champsim::lg2(BLOCK_SIZE);
 const unsigned LOG2_PAGE_SIZE = champsim::lg2(PAGE_SIZE);
@@ -326,10 +311,10 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   // build id may only be named inside `#ifndef CHAMPSIM_TEST_BUILD`, which is
   // why they are read here and passed to the printer as plain data.
   champsim::toml_printer::run_info run{};
-  // Sixteen digits, zero-padded, to match the id in the generated source and in
-  // _configuration.mk exactly -- a shake_128 digest may begin with a zero, and
-  // "{:#x}" would silently drop it.
-  run.build_id = fmt::format("0x{:016x}", static_cast<unsigned long long>(CHAMPSIM_BUILD));
+  // Identifies the MACHINE rather than the build: a content hash of the
+  // effective configuration, so two runs that simulate the same thing share it
+  // however their configuration was expressed.
+  run.build_id = champsim::toml_printer::config_id(runtime_cfg.consulted());
   // [config] is the EFFECTIVE configuration: every key the machine consulted
   // with the value it actually used. With no configure-time JSON there is no
   // "baked" configuration to record, and this is the more useful record --

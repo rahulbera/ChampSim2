@@ -110,6 +110,11 @@ public:
   // TOML syntax -- rendered as the nested [config] table tree.
   static std::vector<std::string> format_config(const std::vector<std::pair<std::string, std::string>>& effective);
 
+  // A stable content hash of the effective configuration: the identity of the
+  // MACHINE, not of a build. Two runs simulating the same thing share it
+  // however their configuration was expressed.
+  static std::string config_id(const std::vector<std::pair<std::string, std::string>>& effective);
+
   static std::vector<std::string> format(std::vector<phase_stats>& stats, bool include_sim, const run_info& info);
   static std::vector<std::string> format(std::vector<phase_stats>& stats, bool include_sim = false);
 

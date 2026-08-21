@@ -23,7 +23,9 @@ override LDLIBS   += -lCLI11 -llzma -lz -lbz2 -lzstd -lfmt
 .PHONY: all clean compile_commands compile_commands_clean configclean test pytest maketest
 
 test_main_name=test/bin/000-test-main
-build_ids:=
+# The main object's key. One executable now, so it is fixed; the test binary
+# keeps its own because it compiles a different main source.
+sim_key:=SIM
 executable_name:=
 prereq_for_generated:=
 
@@ -219,10 +221,6 @@ all: $(executable_name)
 get_base_objs = $(call get_object_list,$(base_source_dir),$(OBJ_ROOT),$1)
 test_base_objs = $(call get_object_list,$(test_source_dir),$(OBJ_ROOT)/test,TEST)
 
-# Pass the build ID into the main file
-$(OBJ_ROOT)/%_main.o: CPPFLAGS += -DCHAMPSIM_BUILD=0x$*
-$(DEP_ROOT)/%_main.d: CPPFLAGS += -DCHAMPSIM_BUILD=0x$*
-
 # Connect the main sources to the src/ directory
 base_main_prereqs = $(base_source_dir)/main.cc $(base_options)
 $(OBJ_ROOT)/%_main.o: $(base_main_prereqs) | $(@:$(OBJ_ROOT)/%.o=$(DEP_ROOT)/%.d) $$(dir $$@)
@@ -292,7 +290,7 @@ $(test_main_name): override LDLIBS += -lCatch2Main -lCatch2
 
 # Associate objects with executables
 $(test_main_name): $(call get_base_objs,TEST) $(test_base_objs) $(base_module_objs) $(nonbase_module_objs) | $$(dir $$@)
-$(executable_name): $(call get_base_objs,$$(build_id)) $(base_module_objs) $(nonbase_module_objs) | $$(dir $$@)
+$(executable_name): $(call get_base_objs,$(sim_key)) $(base_module_objs) $(nonbase_module_objs) | $$(dir $$@)
 
 # Link main executables
 $(executable_name) $(test_main_name):
@@ -308,7 +306,7 @@ test_compile_commands_file = $(test_source_dir)/compile_commands.json
 module_compile_commands_files = $(foreach mod,$(module_dirs),$(foreach subdir,$(call ls_dirs,$(mod)),$(subdir)/compile_commands.json))
 
 $(src_compile_commands_file): $(call rwildcard,$(base_source_dir),*.cc)
-	python3 $(ROOT_DIR)/config/compile_commands/src.py --build-id $(build_id) --champsim-dir $(ROOT_DIR) --config-dir $(OBJ_ROOT)
+	python3 $(ROOT_DIR)/config/compile_commands/src.py --build-id $(sim_key) --champsim-dir $(ROOT_DIR) --config-dir $(OBJ_ROOT)
 
 $(inc_compile_commands_file): $(call rwildcard,$(base_include_dir),*.h)
 	python3 $(ROOT_DIR)/config/compile_commands/inc.py --champsim-dir $(ROOT_DIR) --config-dir $(OBJ_ROOT)
@@ -332,7 +330,7 @@ pytest:
 	PYTHONPATH=$(PYTHONPATH):$(ROOT_DIR) python3 -m unittest discover -v --start-directory='test/python'
 
 ifeq (,$(filter clean compile_commands compile_commands_clean configclean pytest maketest, $(MAKECMDGOALS)))
--include $(patsubst $(OBJ_ROOT)/%.o,$(DEP_ROOT)/%.d,$(foreach build_id,TEST $(build_ids),$(call get_base_objs,$(build_id))) $(test_base_objs) $(base_module_objs))
+-include $(patsubst $(OBJ_ROOT)/%.o,$(DEP_ROOT)/%.d,$(foreach key,TEST $(sim_key),$(call get_base_objs,$(key))) $(test_base_objs) $(base_module_objs))
 endif
 
 ifeq (maketest,$(findstring maketest,$(MAKECMDGOALS)))

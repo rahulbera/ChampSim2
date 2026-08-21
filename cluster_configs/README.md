@@ -1,12 +1,17 @@
 # cluster_configs
 
-One ChampSim config per file, each producing exactly ONE binary.
+The campaign arms, as runtime configurations against **one** binary.
 
-`cluster_run.py` resolves the binary a batch will run as the newest entry in
-`bin/` after the build, so a config file that declares several executables is
-ambiguous — the batch would silently run whichever landed last. One file, one
-binary, one batch.
+`arms.toml` maps each arm to its BTB module; every arm shares
+`cbp6_tagescl64` as its conditional predictor. A sweep is therefore one build
+and eight `--set` values:
 
-Every file is derived from `cbp6-runs/sweep_c.json` and differs from it only in
-`branch_predictor` / `btb`; the microarchitecture is asserted identical at
-generation time so a cluster run is comparable with the local campaign.
+```bash
+bin/champsim --set ooo_cpu.cpu0.branch_predictor=cbp6_tagescl64 \
+             --set ooo_cpu.cpu0.btb=<arm> trace.champsimtrace.xz
+```
+
+This replaced eight per-arm JSON files and the eight binaries they built.
+Before the JSONs were removed, each arm was verified to reproduce its
+dedicated binary's statistics exactly through `--set` — all 237 leaves, on
+400.perlbench, including the oracle BTBs and the ITTAGE and BLBP modules.

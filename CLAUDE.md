@@ -9,20 +9,28 @@ prefetchers, replacement policies).
 
 ## Build, configure, run
 
-The build is **two-stage**: `config.sh` (Python) reads a JSON config and emits generated
-sources + a makefile fragment; `make` then compiles. **You must re-run `config.sh` after
-any change to a JSON config, or after adding/renaming a module**, before `make` will
-reflect it.
+`config.sh` **discovers modules** (which is all it still does — modules are added by
+creating a directory, and no header can know that) and emits the registry plus the
+makefile fragment naming their objects. There is **no JSON configuration**: the
+simulated machine is written in C++ (`src/static_environment.cc`), its compile-time
+constants are in `inc/defs.h`, and every other parameter is set at run time from a TOML
+file.
 
 ```bash
 git submodule update --init          # first-time only: fetch vcpkg
 vcpkg/bootstrap-vcpkg.sh && vcpkg/vcpkg install   # first-time only: build deps
 
-./config.sh champsim_config.json     # or no arg = default config; generates _configuration.mk + generated sources
-make                                 # builds bin/<executable_name> (e.g. bin/champsim)
+./config.sh                          # discover modules; emits .csconfig/registry*.inc + _configuration.mk
+make                                 # builds bin/champsim
 
-bin/champsim --warmup-instructions 200000000 --simulation-instructions 500000000 trace.champsimtrace.xz
+bin/champsim --config configs/lnc.toml --set ooo_cpu.cpu0.btb=ittage_64kb \
+    -w 20000000 -i 50000000 --toml stats.toml trace.champsimtrace.xz
 ```
+
+Re-run `config.sh` only after **adding or renaming a module**. Changing the machine's
+shape (which caches exist, how they are wired) is a code edit in
+`src/static_environment.cc`; changing `NUM_CPUS`, `BLOCK_SIZE` or `PAGE_SIZE` is an edit
+to `inc/defs.h` and a rebuild — multi-core is a separate binary by design.
 
 Traces are `.champsimtrace` optionally `.xz`/`.gz`/`.bz2`/`.zst` compressed; a `-`/process
 substitution stream also works (see the `stats_output` CI job). Warmup/sim counts are
