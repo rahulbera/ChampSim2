@@ -247,3 +247,35 @@ TEST_CASE("A consulted string fallback renders as a quoted TOML string")
   const auto consulted = cfg.consulted();
   REQUIRE(consulted.at(0) == std::pair<std::string, std::string>{"ooo_cpu.cpu0.btb", "\"basic_btb\""});
 }
+
+TEST_CASE("The consulted record holds the effective value, not the fallback")
+{
+  // [config] becomes the EFFECTIVE configuration once there is no baked JSON
+  // to record, so a consulted key must report what the run actually used.
+  champsim::runtime_config cfg{};
+  cfg.set("ooo_cpu.cpu0.rob_size=512");
+
+  REQUIRE(cfg.value<long>("ooo_cpu.cpu0.rob_size", 352) == 512);
+  REQUIRE(cfg.value<long>("ooo_cpu.cpu0.lq_size", 128) == 128);
+
+  const auto consulted = cfg.consulted();
+  REQUIRE(consulted.at(1) == std::pair<std::string, std::string>{"ooo_cpu.cpu0.rob_size", "512"});
+  REQUIRE(consulted.at(0) == std::pair<std::string, std::string>{"ooo_cpu.cpu0.lq_size", "128"});
+}
+
+TEST_CASE("An effective string value is recorded quoted, like any TOML string")
+{
+  champsim::runtime_config cfg{};
+  cfg.set("ooo_cpu.cpu0.btb=ittage_64kb");
+  REQUIRE(cfg.value<std::string>("ooo_cpu.cpu0.btb", "basic_btb") == "ittage_64kb");
+  REQUIRE(cfg.consulted().at(0) == std::pair<std::string, std::string>{"ooo_cpu.cpu0.btb", "\"ittage_64kb\""});
+}
+
+TEST_CASE("An unsigned fallback above int64 max is recorded exactly when it is the effective value")
+{
+  // The store cannot HOLD such a value (set() rejects it as out of range), but
+  // a baked default can be one, and the consulted record must not wrap it.
+  champsim::runtime_config cfg{};
+  REQUIRE(cfg.value<uint64_t>("a.k", 18446744073709551615ULL) == 18446744073709551615ULL);
+  REQUIRE(cfg.consulted().at(0) == std::pair<std::string, std::string>{"a.k", "18446744073709551615"});
+}

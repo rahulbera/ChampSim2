@@ -112,49 +112,53 @@ T runtime_config::value(std::string_view key, T fallback) const
 {
   static_assert(std::is_arithmetic_v<T> || std::is_same_v<T, std::string>, "the runtime store holds numeric, boolean, and string scalars");
 
-  if constexpr (std::is_same_v<T, std::string>) {
-    // Strings select modules by name. The consulted record renders the
-    // fallback in TOML syntax (quoted), matching applied().
-    note_consulted(key, value_type{fallback});
-    auto found = values_.find(key);
-    if (found == std::end(values_)) {
-      return fallback;
+  // Recorded AFTER the value is resolved, so the record holds what the run
+  // actually used -- which is what lets [config] report the effective
+  // configuration rather than the defaults it started from. The unsigned case
+  // renders directly instead of through the variant's int64_t, which would
+  // wrap a value above its maximum.
+  const auto note = [this, key](const T& effective) {
+    if constexpr (std::is_same_v<T, std::string>) {
+      note_consulted(key, value_type{effective});
+    } else if constexpr (std::is_same_v<T, bool>) {
+      note_consulted(key, value_type{effective});
+    } else if constexpr (std::is_floating_point_v<T>) {
+      note_consulted(key, value_type{static_cast<double>(effective)});
+    } else if constexpr (std::is_unsigned_v<T>) {
+      note_consulted_raw(key, std::to_string(effective));
+    } else {
+      note_consulted(key, value_type{static_cast<int64_t>(effective)});
     }
-    if (const auto* val = std::get_if<std::string>(&found->second)) {
-      return *val;
-    }
-    throw std::runtime_error("runtime config: " + std::string{key} + " holds a " + type_name(found->second) + ", which does not convert to the expected type");
-  } else if constexpr (std::is_same_v<T, bool>) {
-    note_consulted(key, value_type{fallback});
-  } else if constexpr (std::is_floating_point_v<T>) {
-    note_consulted(key, value_type{static_cast<double>(fallback)});
-  } else if constexpr (std::is_unsigned_v<T>) {
-    // Not through the variant's int64_t: an unsigned fallback above its max
-    // would wrap negative in the --knobs rendering.
-    note_consulted_raw(key, std::to_string(fallback));
-  } else {
-    note_consulted(key, value_type{static_cast<int64_t>(fallback)});
-  }
+  };
 
   auto found = values_.find(key);
   if (found == std::end(values_)) {
+    note(fallback);
     return fallback;
   }
-
   const auto& held = found->second;
-  if constexpr (std::is_same_v<T, bool>) {
+
+  if constexpr (std::is_same_v<T, std::string>) {
+    if (const auto* val = std::get_if<std::string>(&held)) {
+      note(*val);
+      return *val;
+    }
+  } else if constexpr (std::is_same_v<T, bool>) {
     if (const auto* val = std::get_if<bool>(&held)) {
+      note(*val);
       return *val;
     }
   } else if constexpr (std::is_floating_point_v<T>) {
     // An integer is a valid TOML spelling of a whole number of any type.
     if (const auto* val = std::get_if<double>(&held)) {
+      note(static_cast<T>(*val));
       return static_cast<T>(*val);
     }
     if (const auto* val = std::get_if<int64_t>(&held)) {
+      note(static_cast<T>(*val));
       return static_cast<T>(*val);
     }
-  } else if constexpr (std::is_integral_v<T>) { // the string case returned above; keep its branch un-instantiated here
+  } else if constexpr (std::is_integral_v<T>) {
     if (const auto* val = std::get_if<int64_t>(&held)) {
       // Range-check the narrowing rather than truncate silently.
       using limits = std::numeric_limits<T>;
@@ -167,6 +171,7 @@ T runtime_config::value(std::string_view key, T fallback) const
       if (below || above) {
         throw std::runtime_error("runtime config: " + std::string{key} + " = " + render(held) + " is out of range");
       }
+      note(static_cast<T>(*val));
       return static_cast<T>(*val);
     }
   }
