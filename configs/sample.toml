@@ -31,6 +31,16 @@ deadlock_cycle = 1000
 [ooo_cpu.cpu0]
 rob_size = 512
 fetch_width = 8
+# Module selection: any compiled module, by directory name (see the
+# "Selectable modules" section of --knobs). One module per kind; composition
+# stays a config.sh-time feature. The knob table below configures the
+# SELECTED module and must match it, or the run refuses to start.
+btb = "basic_btb"
+
+[ooo_cpu.cpu0.basic_btb]
+# The direct predictor's geometry (default 1024 x 8).
+sets = 2048
+ways = 8
 
 [ooo_cpu.cpu0.dib]
 sets = 64

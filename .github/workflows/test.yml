@@ -235,8 +235,11 @@ jobs:
         vcpkg/vcpkg install
         sudo apt-get install lcov
 
+    # The shipped configuration, not the built-in no-argument default: the
+    # runtime-config steps below drive configs/sample.toml, whose keys exist
+    # only for a build that carried them (DIB geometry, bimodal defaults).
     - name: Configure
-      run: ./config.sh
+      run: ./config.sh champsim_config.json
 
     - name: Make
       run: make
@@ -338,6 +341,43 @@ jobs:
         assert doc["meta"]["config_files"] == "configs/sample.toml", doc["meta"]
         print("runtime configuration validated")
         PY
+
+    # Selecting the perfect pair makes the swap's EFFECT structural: both
+    # oracles read the trace's own outcome/target, so total_mispredicts is 0
+    # by construction -- while the baked bimodal+basic_btb mispredicts. Two
+    # REAL predictors can tie on a 5000-instruction window (bimodal and gshare
+    # do, at 41), so real ones cannot carry this assertion. Module-knob
+    # consumption is covered by the sample.toml step above (basic_btb's
+    # geometry table with basic_btb selected).
+    - name: Runtime module selection
+      run: |
+        ./bin/champsim -w5000 -i5000 --set ooo_cpu.cpu0.branch_predictor=perfect_branch \
+          --set ooo_cpu.cpu0.btb=perfect_btb \
+          --toml modsel.toml -- <(curl -s https://dpc3.compas.cs.stonybrook.edu/champsim-traces/speccpu/400.perlbench-41B.champsimtrace.xz | xz -dc)
+        python3 - <<'PY'
+        import tomllib
+        doc = tomllib.load(open("modsel.toml", "rb"))
+        ov = doc["config_override"]
+        assert ov["ooo_cpu.cpu0.branch_predictor"] == "perfect_branch", ov
+        assert ov["ooo_cpu.cpu0.btb"] == "perfect_btb", ov
+        # The baked [config] still records the configure-time modules.
+        assert doc["config"]["ooo_cpu"]["cpu0"]["branch_predictor"] == "bimodal", doc["config"]["ooo_cpu"]["cpu0"]
+        core = doc["phase"]["simulation"]["roi"]["core"]["cpu0"]
+        base = tomllib.load(open("test.toml", "rb"))["phase"]["simulation"]["roi"]["core"]["cpu0"]
+        assert base["total_mispredicts"] > 0, base["mispredict"]
+        assert core["total_mispredicts"] == 0, core["mispredict"]
+        print("runtime module selection validated")
+        PY
+
+    - name: Reject an unknown module name
+      run: |
+        set +e
+        message=$(./bin/champsim -w5000 -i5000 --set ooo_cpu.cpu0.btb=no_such_btb -- /dev/null 2>&1)
+        status=$?
+        set -e
+        echo "$message"
+        test "$status" -ne 0 || { echo "expected an unknown module to exit non-zero"; exit 1; }
+        echo "$message" | grep -q "valid btb modules" || { echo "exited non-zero, but not because of the module registry"; exit 1; }
 
     - name: Reject an unknown runtime key
       run: |

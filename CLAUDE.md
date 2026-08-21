@@ -48,8 +48,8 @@ from. Keys use the statistics document's `[config]` language
 (`ooo_cpu.cpu0.rob_size`, `cache.cpu0_l1d.sets`, `pmem.tcas`, `sim.deadlock_cycle`);
 `--knobs` lists every key a binary accepts with its baked default, and an unknown key
 is fatal at startup. The configure-time JSON values are the defaults, so a run without
-`--config`/`--set` is bit-identical to the pre-knob behavior. Topology, module
-selection, and `NUM_CPUS`/`BLOCK_SIZE`/`PAGE_SIZE` remain `config.sh`-time —
+`--config`/`--set` is bit-identical to the pre-knob behavior. Topology and `NUM_CPUS`/`BLOCK_SIZE`/`PAGE_SIZE` remain `config.sh`-time
+(module selection became runtime in phase B, below) —
 `docs/runtime-config-map.md` maps which parameter lives where, and
 `configs/sample.toml` is a commented example. The machinery: a flat
 `champsim::runtime_config` store (`inc/runtime_config.h`, toml++ for reading only);
@@ -62,6 +62,25 @@ A run's document records the loaded files in `[meta].config_files` and every app
 key under `[config_override]`. Two knobs deliberately stay configure-time despite
 being scalars: `wq_check_full_addr` (also shapes generated channel constructors) and
 `vmem.randomization` (its emitted form is an empty `std::optional` when disabled).
+
+**Module selection is also runtime** (phase B): `ooo_cpu.<cpu>.branch_predictor`,
+`ooo_cpu.<cpu>.btb`, `cache.<name>.prefetcher`, `cache.<name>.replacement` select any
+compiled module by directory name, one per kind (a comma is rejected; composition
+stays configure-time — prefetchers are the planned list case). Mechanism: a generated
+name→factory registry (`module_registry<ID>` in `core_inst.inc`, definitions in
+`registry.cc.inc` via `src/generated_registry.cc`) whose products replace the baked
+type-erased pimpls **after construction, before any hook fires** — the one window
+where the swap is free (`install_*_module`). The baked pack is the default, so
+no-override runs are bit-identical. Modules may implement
+`configure(const champsim::runtime_config&, std::string_view prefix)` (SFINAE hook,
+`bound_to::has_configure`) to accept knobs from a sibling table named after the module
+(`[ooo_cpu.cpu0.basic_btb] sets = 2048`); the contract is that a module consults
+every knob it owns unconditionally — an unconsumed knob key is fatal after
+construction. `basic_btb` is the exemplar (direct-predictor geometry). BLBP's
+configure adoption is deferred: its tuned surface (`transfer`, `intervals`) is
+vector-valued and the store is scalar-only. ITTAGE/CBP6 internals are unreachable by
+construction (constexpr policy classes, vendored macros); CBP6's env toggles stay
+`getenv` for comparability with prior campaign runs.
 
 ### Tests
 
