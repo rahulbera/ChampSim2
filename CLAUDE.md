@@ -2,10 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-ChampSim is a trace-based, cycle-level microarchitecture simulator (C++17) driven by a
-Python configuration layer. A JSON config is compiled into generated C++ that is linked
-against the fixed simulator core and pluggable modules (branch predictors, BTBs,
-prefetchers, replacement policies).
+ChampSim is a trace-based, cycle-level microarchitecture simulator (C++17). On this
+branch it is **configured at run time from a TOML file**: the simulated machine is
+hand-written C++ linked against the simulator core and every compiled module (branch
+predictors, BTBs, prefetchers, replacement policies), and a run selects modules and
+sets every parameter from `--config`/`--set`. The upstream JSON configuration layer and
+its code generator are gone; `config.sh` only discovers modules.
 
 ## Build, configure, run
 
@@ -49,37 +51,55 @@ bin/champsim --trace-version 2 --heartbeat-frequency 1000000 \
 `--toml` writes the machine-readable statistics document (see below). Without it, only
 the plain-text report goes to stdout.
 
-Tier-1 scalar parameters can also be set **at run time**, without rebuilding:
-`--config <toml-file>` and `--set key=value` (both repeatable) apply strictly in
-command-line order, and the last definition of a key wins whichever source it came
-from. Keys use the statistics document's `[config]` language
-(`ooo_cpu.cpu0.rob_size`, `cache.cpu0_l1d.sets`, `pmem.tcas`, `sim.deadlock_cycle`);
-`--knobs` lists every key a binary accepts with its baked default, and an unknown key
-is fatal at startup. The configure-time JSON values are the defaults, so a run without
-`--config`/`--set` is bit-identical to the pre-knob behavior. Topology and `NUM_CPUS`/`BLOCK_SIZE`/`PAGE_SIZE` remain `config.sh`-time
-(module selection became runtime in phase B, below) —
-`docs/runtime-config-map.md` maps which parameter lives where, and
-`configs/sample.toml` is a commented example. The machinery: a flat
-`champsim::runtime_config` store (`inc/runtime_config.h`, toml++ for reading only);
-generated builder calls consult it with the JSON value as fallback
-(`.rob_size(cfg.value<std::size_t>("ooo_cpu.cpu0.rob_size", 352))`); a generated
-per-build manifest (`config_record<ID>::runtime_keys`, regex-extracted in
-`config/filewrite.py` from the very lines the compiler sees) validates keys before
-construction. The environment is constructed **after** `CLI11_PARSE` for this reason.
-A run's document records the loaded files in `[meta].config_files` and every applied
-key under `[config_override]`. Two knobs deliberately stay configure-time despite
-being scalars: `wq_check_full_addr` (also shapes generated channel constructors) and
-`vmem.randomization` (its emitted form is an empty `std::optional` when disabled).
+### Runtime configuration
+
+Every simulation parameter is set at run time. `--config <toml-file>` and
+`--set key=value` are both repeatable and apply **strictly in command-line order**, so
+the last definition of a key wins whichever source it came from. Keys use the
+statistics document's `[config]` language — `ooo_cpu.cpu0.rob_size`,
+`cache.cpu0_l1d.sets`, `ptw.cpu0_ptw.mshr_size`, `pmem.tcas`, `vmem.num_levels`,
+`sim.deadlock_cycle` — with component names lower-cased. `--knobs` lists every key a
+binary accepts, with the value the current invocation would use, plus the selectable
+modules per kind.
+
+The machinery is a flat `champsim::runtime_config` store (`inc/runtime_config.h`,
+toml++ for *reading* only — it alphabetizes on output, which is why the hand-written
+writer stays). `src/static_environment.cc` consults it for every builder argument, with
+the previous JSON value as the fallback (`.rob_size(cfg.value<std::size_t>(...
+, 352))`). Two things follow from there being no generated manifest any more:
+
+- **Validation is post-construction.** The store records which keys were *consulted*;
+  after construction, any user key never consulted is fatal, naming the offender. This
+  is uniform across scalars, module selections and module knobs. It also means a
+  key naming a component that does not exist (`ooo_cpu.cpu2.*` in a 1-core binary) is
+  caught, but only after the machine is built.
+- **`[config]` is the effective configuration** — every consulted key with the value
+  actually used, not a baked record. So a run's own statistics document is a valid
+  configuration source: `--config run.toml` on a previous run's `--toml` output
+  reproduces that run's machine. The loader recognises the document by
+  `[meta].schema_version` and reads its `[config]` table, ignoring the results;
+  an ordinary file has no such key and is read whole. `[meta].build_id` (an FNV-1a
+  hash of the effective configuration) still has to match, or the binaries are
+  different machines.
+
+The environment is constructed **after** `CLI11_PARSE` for this reason, and
+`--config`/`--set` use CLI11 `->trigger_on_parse()` so their callbacks fire in argv
+order. `configs/sample.toml` is a commented example; `configs/lnc.toml` models Intel
+Lion Cove, tagging each value `disclosed`/`derived`/`default` with numbered references.
+
+Two former knobs did **not** survive as runtime values: `wq_check_full_addr` (it also
+shaped the channel constructors, so an override would desynchronize two consumers) and
+`vmem.randomization` (its form is an empty `std::optional` when disabled, not a scalar).
 
 **Module selection is also runtime** (phase B): `ooo_cpu.<cpu>.branch_predictor`,
 `ooo_cpu.<cpu>.btb`, `cache.<name>.prefetcher`, `cache.<name>.replacement` select any
-compiled module by directory name, one per kind (a comma is rejected; composition
-stays configure-time — prefetchers are the planned list case). Mechanism: a generated
-name→factory registry (`module_registry<ID>` in `core_inst.inc`, definitions in
-`registry.cc.inc` via `src/generated_registry.cc`) whose products replace the baked
-type-erased pimpls **after construction, before any hook fires** — the one window
-where the swap is free (`install_*_module`). The baked pack is the default, so
-no-override runs are bit-identical. Modules may implement
+compiled module by directory name, one per kind (a comma is rejected; prefetchers are
+the planned list case). Mechanism: a discovered name→factory registry
+(`champsim::configured::make_*_module`, declared in `.csconfig/registry.inc` and
+defined in `registry.cc.inc` via the fixed TU `src/generated_registry.cc`) whose
+products replace the default type-erased pimpls **after construction, before any hook
+fires** — the one window where the swap is free (`install_*_module`). The
+`inc/defs.h` defaults apply when no key selects otherwise. Modules may implement
 `configure(const champsim::runtime_config&, std::string_view prefix)` (SFINAE hook,
 `bound_to::has_configure`) to accept knobs from a sibling table named after the module
 (`[ooo_cpu.cpu0.basic_btb] sets = 2048`); the contract is that a module consults
@@ -95,14 +115,16 @@ construction (constexpr policy classes, vendored macros); CBP6's env toggles sta
 ```bash
 make test                    # build + run the full Catch2 suite (test/bin/000-test-main)
 make test TEST_NUM=091       # run only tests from files whose name starts with 091 (Catch2 filename tag)
-make pytest                  # run the Python config-layer unit tests (test/python/, unittest)
+make pytest                  # run the Python module-discovery unit tests (test/python/, unittest)
 test/bin/000-test-main --order rand --warn NoAssertions --invisibles   # how CI invokes it directly
 ```
 
 C++ tests live in `test/cpp/src/NNN-name.cc`; the `NNN` prefix encodes the subsystem
 (see `test/cpp/README.txt`: 100s=front-end, 200s=OoO core, 400s=caches, 700s=DRAM, etc.).
-`test/config/compile-only/*.json` are configs that CI only builds, to catch config-layer
-regressions.
+`test/cpp/src/501-static-environment.cc` pins the hand-written machine: its component
+set, the cache order (which is the per-cycle `operate()` order), and the channel-count
+formula. There are no compile-only configs any more — the configuration layer they
+guarded is gone.
 
 ### Cleaning / regenerating
 
@@ -113,25 +135,37 @@ regressions.
 
 ## Architecture
 
-### Config-driven code generation (the non-obvious part)
+### Module discovery, and the machine that is not generated
 
-There is no hand-written `main()` wiring of components. `config.sh` → `config/` package
-(`parse.py`, `filewrite.py`, `instantiation_file.py`, `makefile.py`, `defaults.py`)
-reads the JSON and **generates** the concrete instantiation into **`.csconfig/`**
-(`core_inst.inc`, `core_inst.cc.inc`, `module_decl.inc`, `legacy_bridge.*` — see
-`config/filewrite.py`), plus `_configuration.mk` at the root (which defines
-`executable_name`, per-object flags, and module object lists that the top-level
-`Makefile` `include`s). `.csconfig/` is gitignored, so no generated source is ever a
-staging hazard. (`make clean` still deletes `inc/champsim_constants.h` and friends;
-those paths are vestigial — nothing writes them any more.) Multiple JSON files can be merged
-(`--join product|chain`) to produce several executables in one pass. To change the
-simulated machine (cache sizes, core width, number of cores, which module is active),
-edit JSON and re-run `config.sh` — do **not** edit generated files.
+There is no code generator and no hand-written `main()` wiring either. The machine is
+`champsim::static_environment` (`inc/static_environment.h`, `src/static_environment.cc`):
+one `operate()`-ordered component list built in a loop over `defs::num_cpus`, and a
+**named channel graph** — one channel per edge, its queue geometry taken from the
+*lower* component, which is why three separate channels feed the STLB. There are
+`num_cpus * 12 + 1` channels: twelve per-core edges plus **one shared LLC→DRAM edge**
+(shared because there is one LLC and one memory controller however many cores there
+are — getting this wrong is invisible at one core and wrong at two).
 
-By default `config.sh` compiles *all* modules found in the search paths
-(`--compile-all-modules`, default on); the JSON only selects which one is *active* per
-component. Extra module search roots: `--module-dir` / `--branch-dir` / `--btb-dir` /
-`--prefetcher-dir` / `--replacement-dir`.
+Construction order is load-bearing and fixed by member declaration order: channels →
+DRAM → vmem → PTWs → caches → cores, with every vector fully `reserve`d and filled
+before a pointer into it is handed out. Cache order is the per-cycle `operate()` order:
+`LLC` first, then each core's caches alphabetically (`DTLB, ITLB, L1D, L1I, L2C, STLB`).
+
+`config.sh` → `config/` package (`modules.py`, `module_registry.py`, `makefile.py`,
+`filewrite.py`, `cxx.py`, `util.py`) walks the four module directories and emits only
+what a header cannot know: `.csconfig/registry.inc` + `registry.cc.inc` (the
+name→factory tables) and `_configuration.mk` (module object lists the top-level
+`Makefile` includes). `.csconfig/` is gitignored, so no generated source is a staging
+hazard. Re-run it only after **adding or renaming a module**.
+
+Extra module search roots: `--module-dir` / `--branch-dir` / `--btb-dir` /
+`--prefetcher-dir` / `--replacement-dir`. Every discovered module is compiled into every
+binary; which one is *active* is a run-time key.
+
+**What this trades away:** any machine whose component set differs from the standard
+hierarchy — an extra cache level, a cache with two lower levels, a non-uniform per-core
+hierarchy — is now a C++ edit rather than a JSON edit. That was the deliberate choice:
+the shape is code, the parameters are configuration.
 
 ### Simulation model: `champsim::operable` + global clock
 
@@ -177,13 +211,15 @@ the owning `CACHE`/`O3_CPU` (e.g. `NUM_WAY`, `prefetch_line(...)`). See
 `docs/src/Modules.rst` for the full hook signatures; `branch/bimodal/` is the minimal
 reference example.
 
-To add a module: create `branch/mypred/mypred.{h,cc}` (or the relevant kind), reference it
-by name in the JSON (`"branch_predictor": "mypred"`), then `./config.sh <json> && make`.
+To add a module: create `branch/mypred/mypred.{h,cc}` (or the relevant kind), re-run
+`./config.sh` so it is discovered, `make`, then select it at run time with
+`--set ooo_cpu.cpu0.branch_predictor=mypred` (or from a TOML file). The directory
+basename is the module's name and must equal its class name.
 
-**Legacy modules** (older free-function style, marked by a `__legacy__` file in the module
-dir) are supported through generated `legacy_bridge.*` shims — the Makefile's `maybe_legacy_file`
-machinery. New modules should use the class-based interface above; none of the shipped
-modules currently use the legacy path.
+**Legacy modules are gone.** The `__legacy__` free-function style depended on
+`config/legacy.py` and the `legacy_bridge.*` generation, both deleted with the
+configuration layer; the Makefile machinery that drove them went with it. No shipped
+module used the path. Use the class-based interface above.
 
 ### Support libraries
 
@@ -210,8 +246,9 @@ the source.
 
 The oracle BTBs decompose target-prediction headroom by class (direct / indirect /
 return), so a predictor's capture can be stated as a fraction of what is attainable
-rather than as a raw MPKI. `cluster_configs/` holds one-binary-per-config JSONs for
-cluster batch runs.
+rather than as a raw MPKI. `cluster_configs/arms.toml` records the eight campaign arms
+as runtime `--set` values — one binary now serves every arm, where each used to need its
+own configure-and-build.
 
 ### The CBP6 adapter (`inc/cbp6/`)
 
@@ -318,52 +355,53 @@ success. The format differs from the old JSON in ways that matter to a parser:
 
 It also records **what produced the document**, not just what was measured:
 
-- `[meta]` carries `build_id`, `warmup_instructions`, `simulation_instructions`,
-  `trace_version`, and `command_line`. `build_id` is `0x` plus the 16-hex-digit
-  shake_128 digest that `config/filewrite.py` derives from the *whole* parsed
-  config — so it identifies the configuration exactly, and is printed
-  zero-padded because a digest may begin with a zero. `command_line` is `argv`
-  joined verbatim; the shell has already expanded process substitution and
-  globs, so it is a record of what the process received, **not** a re-runnable
-  command.
-- `[config]` is the parsed configuration the binary was generated from, rendered
-  by `config/config_record.py` and embedded as a `champsim::configured::config_record<ID>`
-  specialization in `.csconfig/core_inst.inc`. Component tables are lower-cased
-  the same way the stats tables are, so `[config.cache.cpu0_l1d]` joins directly
-  to `[phase.<name>.roi.cache.cpu0_l1d]` — CI asserts the two key sets are equal.
+- `[meta]` carries `schema_version`, `num_cpus`, `sim_stats`, `build_id`,
+  `warmup_instructions`, `simulation_instructions`, `trace_version`,
+  `config_files` and `command_line`. `build_id` is `0x` plus a 16-hex-digit
+  **FNV-1a hash of the effective configuration**, computed in
+  `src/toml_printer.cc` — not a hash of a generated blob, because there is no
+  generator any more. (std::hash was rejected: it is not stable across
+  platforms or runs, so two machines could not compare build ids.) It is
+  printed zero-padded because a digest may begin with a zero. `command_line` is
+  `argv` joined verbatim; the shell has already expanded process substitution
+  and globs, so it is a record of what the process received, **not** a
+  re-runnable command.
+- `[config]` is the **effective configuration**: every key the machine
+  consulted during construction, with the value actually used — the override if
+  one applied, else the built-in fallback. Component tables are lower-cased the
+  same way the stats tables are, so `[config.cache.cpu0_l1d]` joins directly to
+  `[phase.<name>.roi.cache.cpu0_l1d]` — CI asserts the two key sets are equal.
 
 Three things about `[config]` are not obvious:
 
-- **Module names are recovered from the config layer's internal `_*_data` keys,
-  not the plain ones.** `cpu0_L1I` has no `replacement` key at all in the shipped
-  config — the policy comes from `champsim::defaults::default_l1i` — so reading
-  only the plain key would silently omit the most useful field. Other
-  `_`-prefixed keys are dropped: `_offset_bits` is the C++ expression
-  `champsim::lg2(64)` and `_defaults` names a C++ object.
-- **It records what was *requested*, so C++-side defaults are absent.** The
-  generated instantiation starts from `champsim::defaults::default_core` and
-  overrides only what the config layer produced, so anything supplied purely by
-  `inc/defaults.hpp` (e.g. the PTW's PSCL geometry) never appears.
-- **The record may only be named inside `#ifndef CHAMPSIM_TEST_BUILD`.**
-  `src/main.cc` *is* linked into the test binary (`$(call get_base_objs,TEST)`),
-  where `CHAMPSIM_BUILD` expands to the non-literal `0xTEST`. `main.cc` therefore
-  reads the blob and passes it to the printer as a `toml_printer::run_info`;
-  `toml_printer.cc` names no generated symbol, which is what keeps it linkable
-  into the tests and preserves the static `format()` seam.
+- **It is a configuration source, not just a record.** `--config` on a run's own
+  `--toml` output reproduces that run's machine; the loader recognises the
+  document by `[meta].schema_version` and reads its `[config]` table, ignoring
+  the results. Pinned by `test/cpp/src/098-runtime-config.cc`.
+- **It records what was *consulted*, so a key absent from it is a key nothing
+  reads.** This is the same set validation uses: a user key never consulted is
+  fatal. Conversely, a knob a module only reads when selected appears only when
+  it is selected — which is why the hook contract requires a module to consult
+  every knob it owns unconditionally.
+- **`[config_override]` is what the configuration *sources* set**, not what
+  differs from the default. Feed a full `[config]` back in and all ~160 keys
+  appear there, correctly: the user did supply them.
 
 Tests are `test/cpp/src/099-toml-printer.cc`, which pin exact output via the
 static `format()` seam — the seam `json_printer` lacks, which is why it never
-had tests — and `test/python/test_config_record.py`, which pins the rendering
-rules and round-trips the shipped config through `tomllib`.
+had tests. `test/cpp/src/098-runtime-config.cc` covers the store, including the
+statistics-document round trip.
 
 ## Conventions
 
 - C++17, warnings-heavy (`global.options`: `-Wall -Wextra -Wshadow -Wpedantic -Wconversion -O3`).
   Modules additionally get `-Wno-unused-parameter -DCHAMPSIM_MODULE` (`module.options`).
-- Formatting is enforced by `.clang-format` (LLVM base, 160 col); the `lint` CI workflow
-  reformats `champsim_config.json vcpkg.json src inc prefetcher branch replacement btb
-  test tracer` **in place on push** — note `test/` is included, so a new test file gets
-  reformatted by CI unless you run clang-format first. `.clang-tidy` configures the checks.
+- Formatting is enforced by `.clang-format` (LLVM base, 160 col); the `lint` job in
+  `.github/workflows/main.yml` reformats `vcpkg.json src inc prefetcher branch
+  replacement btb test tracer` **in place on push**. Note the asymmetry: `test` is
+  formatted but is *not* in the job's `add:` list, so a test file's reformatting is
+  never committed back and recurs on every push — run clang-format on new test files
+  yourself. `.clang-tidy` configures the checks.
 - `.commit-profile` at the repo root records this branch's commit conventions for the
   `git-commit` skill: `<component>: imperative summary` subjects, `make test` to verify,
   and the clang-format invocation above. Never add AI co-author or tool-attribution

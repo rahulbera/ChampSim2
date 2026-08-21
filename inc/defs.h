@@ -14,7 +14,7 @@
  *
  * Everything else is configured at run time from a TOML file -- see
  * configs/README.md. Edit here and rebuild only to change the numbers below,
- * or the machine's shape in src/environment.cc.
+ * or the machine's shape in src/static_environment.cc.
  */
 namespace champsim::defs
 {
