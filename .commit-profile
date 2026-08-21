@@ -1,15 +1,16 @@
 # .commit-profile  --  commit conventions for the git-commit skill.
 #
-# Inferred from this branch's history (rbdev) and confirmed 2026-08-19. Edit or
-# delete to re-learn. Note that upstream ChampSim's own history is mixed
+# Inferred from this branch's history (rbdev) and re-confirmed 2026-08-21. Edit
+# or delete to re-learn. Note that upstream ChampSim's own history is mixed
 # ("chore: ...", "Fix/reversed caches (#687)", "Formatted with clang-format");
-# the convention below is this fork's, which is consistent across 43 commits.
+# the convention below is this fork's, consistent across all 83 commits since
+# the fork point (51588e1d).
 
 message:
   # `<component>: <imperative summary>`. The prefix is the SUBSYSTEM touched,
-  # not a conventional-commit type -- history uses stats, blbp, ittage, btb,
-  # cbp6, trace, heartbeat, cluster_configs, headroom alongside docs and test.
-  # Hence `custom` rather than `conventional`.
+  # not a conventional-commit type -- history uses config, sim, stats, blbp,
+  # ittage, btb, cbp6, trace, modules, heartbeat, cluster_configs, configs and
+  # headroom alongside docs and test. Hence `custom`, not `conventional`.
   format: custom
   template: |
     <component>: <imperative summary>
@@ -18,17 +19,27 @@ message:
     Record real constraints, measured numbers, and rejected alternatives when
     they mattered -- this history is the research log for the branch, and a
     later reader needs to know why a parameter is what it is.>
-  # 7 of 43 subjects exceed this today (longest 78); 72 is the target.
+  # 8 of 83 subjects exceed this today (median 57, longest 82); 72 is the
+  # target, not a hard limit.
   subject_max: 72
 
 trailers:
   # None required. History carries no Signed-off-by / DCO scheme.
+  #
+  # NEVER add an AI co-author or tool-attribution trailer -- no Co-Authored-By
+  # naming an assistant or model, no Claude-Session, no "generated with" line.
+  # This is unconditional and is not a profile option: the commit is authored
+  # by the user, and the message describes the change, not what produced it.
   require: []
 
 formatter:
   # No `make format` target exists; .clang-format (LLVM base, 160 col) is
   # enforced by the `lint` CI workflow, which reformats in place on push. Match
   # its file set exactly so a commit never loses a race with CI.
+  #
+  # `test` is in the list on purpose. CI formats it but does NOT list it in the
+  # job's `add:` paths, so CI's reformatting of a test file is never committed
+  # back and recurs on every push -- formatting it here is what actually lands.
   cmd: "git diff --name-only --diff-filter=ACM HEAD -- src inc prefetcher branch replacement btb test tracer | grep -E '\\.(cc|h|hpp|inc)$' | xargs -r clang-format -i"
 
 review:
@@ -39,13 +50,17 @@ verify:
   # under config/ or test/python/ changed -- that covers the Python config
   # layer, which `make test` does not touch.
   #
-  # Re-run ./config.sh after changing a JSON config or adding/renaming a
-  # module, or the build will not reflect it.
+  # Re-run ./config.sh only after ADDING OR RENAMING A MODULE -- that is the
+  # only thing it generates now. Every simulation parameter is set at run time
+  # from TOML, so a configuration change needs no reconfigure and no rebuild;
+  # changing inc/defs.h or src/static_environment.cc needs a rebuild but not a
+  # reconfigure.
   cmd: "make test"
 
 staging:
   # Belt-and-suspenders over .gitignore. Everything config.sh generates lands
   # in .csconfig/, so there are no stray generated sources in the tree.
+  # Statistics documents written by --toml are results, never source.
   exclude:
     - ".csconfig/"
     - "bin/"
@@ -57,3 +72,5 @@ staging:
     - "**/*.d"
     - "**/__pycache__/"
     - "*.log"
+    - "*.toml.out"
+    - "stats.toml"
