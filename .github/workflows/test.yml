@@ -292,26 +292,35 @@ jobs:
         # an int is not.
         for key in ("ipc", "mpki", "cyc_wpki", "branch_prediction_accuracy", "dib_hit_rate"):
             assert isinstance(core[key], float), (key, core[key])
-        # [config] records the parsed configuration the binary was generated
-        # from, and [meta] the parameters of this run, so a result file states
-        # what produced it.
+        # [config] is the EFFECTIVE configuration -- every key the machine
+        # consulted, with the value used -- and [meta] the parameters of this
+        # run, so a result file states what produced it.
         meta = doc["meta"]
         assert meta["warmup_instructions"] == 5000, meta
         assert meta["simulation_instructions"] == 5000, meta
         assert meta["trace_version"] == 1, meta
+        assert meta["num_cpus"] == 1, meta
         assert "--toml" in meta["command_line"], meta
-        # 0x + the 16-hex-digit shake_128 digest, leading zeros intact.
+        # No --config/--set on this leg, so nothing was overridden. An empty
+        # table, not a missing one: absence would be indistinguishable from a
+        # printer that dropped the section.
+        assert doc["config_override"] == {}, doc["config_override"]
+        assert meta["config_files"] == "", meta
+        # 0x + a 16-hex-digit FNV-1a hash of the effective configuration,
+        # leading zeros intact.
         assert re.fullmatch(r"0x[0-9a-f]{16}", meta["build_id"]), meta
 
         cfg = doc["config"]
-        assert cfg["executable_name"] == "champsim", cfg
-        assert cfg["block_size"] == 64, cfg
+        # Only components exist at the root now: there is no configuration file
+        # for the document to echo, so an "executable_name" or "block_size" key
+        # here would mean the printer had invented one.
+        assert set(cfg) == {"cache", "ooo_cpu", "pmem", "ptw", "sim", "vmem"}, sorted(cfg)
         assert cfg["ooo_cpu"]["cpu0"]["branch_predictor"], cfg["ooo_cpu"]["cpu0"]
         assert cfg["ooo_cpu"]["cpu0"]["btb"], cfg["ooo_cpu"]["cpu0"]
-        # The replacement policy of cpu0_l1i comes from a C++ default and has no
-        # plain key in the JSON at all; it is recovered from the module data, so
-        # its absence here means that recovery regressed.
+        # Module selections are consulted keys like any other, so every cache
+        # reports the policy and prefetcher it actually ran with.
         assert cfg["cache"]["cpu0_l1i"]["replacement"], cfg["cache"]["cpu0_l1i"]
+        assert cfg["cache"]["cpu0_l1i"]["prefetcher"], cfg["cache"]["cpu0_l1i"]
         # The whole point of lower-casing component names the same way in both
         # sections: a consumer can join a cache's configuration to its stats.
         assert set(cfg["cache"]) == set(phase["roi"]["cache"]), (sorted(cfg["cache"]), sorted(phase["roi"]["cache"]))
@@ -341,7 +350,8 @@ jobs:
 
     # Selecting the perfect pair makes the swap's EFFECT structural: both
     # oracles read the trace's own outcome/target, so total_mispredicts is 0
-    # by construction -- while the baked bimodal+basic_btb mispredicts. Two
+    # by construction -- while the inc/defs.h default pair
+    # (hashed_perceptron + basic_btb) mispredicts. Two
     # REAL predictors can tie on a 5000-instruction window (bimodal and gshare
     # do, at 41), so real ones cannot carry this assertion. Module-knob
     # consumption is covered by the sample.toml step above (basic_btb's
@@ -364,6 +374,45 @@ jobs:
         assert base["total_mispredicts"] > 0, base["mispredict"]
         assert core["total_mispredicts"] == 0, core["mispredict"]
         print("runtime module selection validated")
+        PY
+
+    # A statistics document is a configuration source: --config on a previous
+    # run's --toml output must reproduce that run. This is the provenance
+    # claim the document makes, so it is checked end-to-end rather than only
+    # at the store's unit level (098-runtime-config.cc).
+    - name: Reproduce a run from its own statistics document
+      run: |
+        ./bin/champsim -w5000 -i5000 --config test.toml --toml repro.toml \
+          -- <(curl -s https://dpc3.compas.cs.stonybrook.edu/champsim-traces/speccpu/400.perlbench-41B.champsimtrace.xz | xz -dc)
+        python3 - <<'PY'
+        import math
+        import tomllib
+        first = tomllib.load(open("test.toml", "rb"))
+        again = tomllib.load(open("repro.toml", "rb"))
+
+        # An undefined ratio is emitted as a real `nan`, and nan != nan -- so a
+        # plain == on these documents reports a difference where there is none.
+        def differences(lhs, rhs, path=""):
+            if isinstance(lhs, dict) and isinstance(rhs, dict):
+                for key in sorted(set(lhs) | set(rhs)):
+                    if key not in lhs or key not in rhs:
+                        yield f"{path}.{key} is present in only one document"
+                    else:
+                        yield from differences(lhs[key], rhs[key], f"{path}.{key}")
+            elif isinstance(lhs, float) and isinstance(rhs, float) and math.isnan(lhs) and math.isnan(rhs):
+                return
+            elif lhs != rhs:
+                yield f"{path}: {lhs!r} != {rhs!r}"
+
+        # The machine is identical: same effective configuration, same id.
+        assert not list(differences(first["config"], again["config"])), list(differences(first["config"], again["config"]))
+        assert again["meta"]["build_id"] == first["meta"]["build_id"], (again["meta"], first["meta"])
+        # And so are the results it produced.
+        assert not list(differences(first["phase"], again["phase"])), list(differences(first["phase"], again["phase"]))
+        # Every key came from the document, so all of them are overrides now --
+        # the file did set them.
+        assert again["config_override"], again["config_override"]
+        print("statistics-document round trip validated")
         PY
 
     - name: Reject an unknown module name
