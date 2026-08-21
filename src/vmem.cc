@@ -39,10 +39,10 @@ VirtualMemory::VirtualMemory(champsim::data::bytes page_table_page_size, std::si
       champsim::lowest_address_for_size(champsim::data::bytes{PAGE_SIZE + champsim::ipow(pte_page_size.count(), static_cast<unsigned>(pt_levels))})};
   champsim::data::bits required_bits{LOG2_PAGE_SIZE + champsim::lg2(last_vpage.to<uint64_t>())};
   if (required_bits > champsim::address::bits) {
-    fmt::print("[VMEM] WARNING: virtual memory configuration would require {} bits of addressing.\n", required_bits); // LCOV_EXCL_LINE
+    fmt::print(stderr, "[VMEM] WARNING: virtual memory configuration would require {} bits of addressing.\n", required_bits); // LCOV_EXCL_LINE
   }
   if (required_bits > champsim::data::bits{champsim::lg2(dram.size().count())}) {
-    fmt::print("[VMEM] WARNING: physical memory size is smaller than virtual memory size.\n"); // LCOV_EXCL_LINE
+    fmt::print(stderr, "[VMEM] WARNING: physical memory size is smaller than virtual memory size.\n"); // LCOV_EXCL_LINE
   }
   populate_pages();
   shuffle_pages();
@@ -96,7 +96,7 @@ void VirtualMemory::ppage_pop()
 {
   ppage_free_list.pop_front();
   if (available_ppages() == 0) {
-    fmt::print("[VMEM] WARNING: Out of physical memory, freeing ppages\n");
+    fmt::print(stderr, "[VMEM] WARNING: Out of physical memory, freeing ppages\n");
     populate_pages();
     shuffle_pages();
   }

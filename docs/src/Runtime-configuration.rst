@@ -48,8 +48,15 @@ A module may accept its own knobs from a table named after it:
     ways = 8
 
 ``bin/champsim --knobs`` lists every key a binary accepts, with the value the
-current invocation would use, and the modules selectable per kind. A key that
-nothing consumes is a fatal error at startup, not a silent no-op.
+current invocation would use, and the modules selectable per kind. Its output
+is a valid TOML document -- the module list is commented -- so it doubles as a
+starting configuration file:
+
+.. code-block:: console
+
+    $ bin/champsim --knobs > my.toml
+
+A key that nothing consumes is a fatal error at startup, not a silent no-op.
 
 What is not runtime-configurable
 ================================

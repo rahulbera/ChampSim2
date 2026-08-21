@@ -415,6 +415,18 @@ jobs:
         print("statistics-document round trip validated")
         PY
 
+    # --knobs is documented as the authoritative list of what a binary
+    # accepts, so it has to be machine-readable: a stray warning on stdout
+    # (the VMEM one fires during the probe) used to make it unparseable.
+    - name: --knobs emits a usable configuration file
+      run: |
+        ./bin/champsim --knobs > knobs.toml
+        python3 -c "import tomllib; d = tomllib.load(open('knobs.toml','rb')); assert sorted(d) == ['cache','ooo_cpu','pmem','ptw','sim','vmem'], sorted(d)"
+        # And what it emits is accepted straight back as configuration.
+        ./bin/champsim -w5000 -i5000 --config knobs.toml \
+          -- <(curl -s https://dpc3.compas.cs.stonybrook.edu/champsim-traces/speccpu/400.perlbench-41B.champsimtrace.xz | xz -dc)
+        echo "--knobs round trip validated"
+
     - name: Reject an unknown module name
       run: |
         set +e

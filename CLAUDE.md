@@ -60,7 +60,11 @@ statistics document's `[config]` language — `ooo_cpu.cpu0.rob_size`,
 `cache.cpu0_l1d.sets`, `ptw.cpu0_ptw.mshr_size`, `pmem.tcas`, `vmem.num_levels`,
 `sim.deadlock_cycle` — with component names lower-cased. `--knobs` lists every key a
 binary accepts, with the value the current invocation would use, plus the selectable
-modules per kind.
+modules per kind; its output is valid TOML (the module list is commented), so
+`--knobs > my.toml` is how you get a complete starting configuration. Note that
+`--knobs` builds the machine to probe it, which is why ChampSim's construction-time
+warnings had to move to stderr — anything on stdout that is not the report corrupts
+both this listing and the statistics report itself.
 
 The machinery is a flat `champsim::runtime_config` store (`inc/runtime_config.h`,
 toml++ for *reading* only — it alphabetizes on output, which is why the hand-written

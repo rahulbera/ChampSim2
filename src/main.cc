@@ -201,10 +201,13 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     for (const auto& [knob_key, effective] : runtime_cfg.consulted()) {
       fmt::print("{} = {}\n", knob_key, effective);
     }
+    // Commented, so that the whole listing is a valid TOML document:
+    //     bin/champsim --knobs > my.toml
+    // gives a complete, editable starting configuration.
     using registry = champsim::configured::module_registry;
-    fmt::print("\nSelectable modules (per component, via the keys above):\n");
+    fmt::print("\n# Selectable modules (per component, via the keys above):\n");
     const auto print_names = [](std::string_view kind, const auto& names) {
-      fmt::print("{}: {}\n", kind, fmt::join(names, ", "));
+      fmt::print("# {}: {}\n", kind, fmt::join(names, ", "));
     };
     print_names("branch_predictor", registry::branch_predictor);
     print_names("btb", registry::btb);

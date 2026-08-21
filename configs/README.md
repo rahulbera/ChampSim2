@@ -6,8 +6,10 @@ does nothing but discover modules.
 
 - One `--config` may be followed by more, and by `--set key=value`; sources
   apply strictly in command-line order, and the last definition of a key wins.
-- `bin/<executable> --knobs` lists every key that binary accepts with its
-  baked default. Unknown keys are fatal at startup.
+- `bin/<executable> --knobs` lists every key that binary accepts with the
+  value the current invocation would use. Its output is a valid TOML document
+  (the module list is commented), so `--knobs > my.toml` gives a complete
+  starting configuration. Unknown keys are fatal at startup.
 - Every simulation parameter is runtime-configurable: the
   `branch_predictor`/`btb`/`prefetcher`/`replacement` keys select any compiled
   module by directory name (one per kind), and a module's internal knobs live
