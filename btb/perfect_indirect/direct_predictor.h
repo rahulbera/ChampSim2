@@ -9,7 +9,7 @@
 #include "msl/lru_table.h"
 
 // Copied from btb/basic_btb/. ChampSim compiles EVERY module into EVERY binary
-// (config.sh --compile-all-modules, default on), so an unqualified copy of these
+// (config.sh discovers and compiles every module it finds), so an unqualified copy of these
 // classes collides at link time with basic_btb's. The namespace gives this copy
 // distinct symbols; the code inside is unmodified.
 namespace perfect_indirect_impl

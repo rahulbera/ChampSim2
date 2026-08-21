@@ -39,9 +39,6 @@ struct environment {
 
 namespace configured
 {
-template <unsigned long long ID>
-struct generated_environment;
-
 // The runtime module registry: per-kind name arrays and factories producing
 // the type-erased module pimpls, emitted by config.sh
 // (config/module_registry.py) from the modules it discovers and defined in the

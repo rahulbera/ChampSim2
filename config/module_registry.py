@@ -59,9 +59,8 @@ def registry_class_lines(module_info):
     the generated registry TU).
     '''
     # Standalone header: it declares only the registry, so it carries its own
-    # includes rather than relying on core_inst.inc's, and its own guard so
-    # that the definitions can include it without depending on include order
-    # (clang-format sorts includes within a block).
+    # includes, and its own guard so that the definitions can include it
+    # without depending on include order.
     yield '#ifndef CHAMPSIM_GENERATED_REGISTRY_INC'
     yield '#define CHAMPSIM_GENERATED_REGISTRY_INC'
     yield '#include <array>'
@@ -85,10 +84,12 @@ def registry_impl_lines(module_info):
     The factory definitions for registry.cc.inc: include every registered
     module's headers, then one name -> make_unique chain per kind. An unknown
     name throws listing the valid names; a comma is rejected as multi-module
-    (runtime selection is single-module -- composition stays configure-time).
+    (runtime selection is single-module; prefetcher lists are the planned
+    extension).
     '''
-    # The declaration, guarded, so include order cannot matter. core_inst.inc
-    # is NOT included here: it has no guard, and the fixed TU includes it once.
+    # The declaration, guarded, so include order cannot matter -- clang-format
+    # sorts includes within a block, which put these definitions before the
+    # declaration once already.
     yield '#include "registry.inc"'
     yield '#include <memory>'
     yield '#include <stdexcept>'
