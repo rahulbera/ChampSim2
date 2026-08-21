@@ -44,6 +44,7 @@
 #include "chrono.h"
 #include "modules.h"
 #include "operable.h"
+#include "runtime_config.h"
 #include "util/to_underlying.h" // for to_underlying
 #include "waitable.h"
 
@@ -224,6 +225,10 @@ public:
   struct prefetcher_module_concept {
     virtual ~prefetcher_module_concept() = default;
 
+    // Deliver runtime-configuration values after construction, before any
+    // other hook. prefix names this instance's knob table.
+    virtual void impl_configure(const champsim::runtime_config& cfg, std::string_view prefix) = 0;
+
     virtual void bind(CACHE* cache) = 0;
 
     virtual void impl_prefetcher_initialize() = 0;
@@ -238,6 +243,8 @@ public:
 
   struct replacement_module_concept {
     virtual ~replacement_module_concept() = default;
+
+    virtual void impl_configure(const champsim::runtime_config& cfg, std::string_view prefix) = 0;
 
     virtual void bind(CACHE* cache) = 0;
 
@@ -255,6 +262,8 @@ public:
   struct prefetcher_module_model final : prefetcher_module_concept {
     std::tuple<Ps...> intern_;
     explicit prefetcher_module_model(CACHE* cache) : intern_(Ps{cache}...) { (void)cache; /* silence -Wunused-but-set-parameter when sizeof...(Ps) == 0 */ }
+
+    void impl_configure(const champsim::runtime_config& cfg, std::string_view prefix) final;
     void bind(CACHE* cache)
     {
       std::apply([cache = cache](auto&... p) { (..., p.bind(cache)); }, intern_);
@@ -277,6 +286,8 @@ public:
 
     std::tuple<Rs...> intern_;
     explicit replacement_module_model(CACHE* cache) : intern_(Rs{cache}...) { (void)cache; /* silence -Wunused-but-set-parameter when sizeof...(Rs) == 0 */ }
+
+    void impl_configure(const champsim::runtime_config& cfg, std::string_view prefix) final;
     void bind(CACHE* cache)
     {
       std::apply([cache = cache](auto&... r) { (..., r.bind(cache)); }, intern_);
@@ -294,6 +305,18 @@ public:
 
   std::unique_ptr<prefetcher_module_concept> pref_module_pimpl;
   std::unique_ptr<replacement_module_concept> repl_module_pimpl;
+
+  // Runtime module selection seam; see O3_CPU::install_branch_module.
+  void install_prefetcher_module(std::unique_ptr<prefetcher_module_concept> mod)
+  {
+    pref_module_pimpl = std::move(mod);
+    pref_module_pimpl->bind(this);
+  }
+  void install_replacement_module(std::unique_ptr<replacement_module_concept> mod)
+  {
+    repl_module_pimpl = std::move(mod);
+    repl_module_pimpl->bind(this);
+  }
 
   // NOLINTBEGIN(readability-make-member-function-const): legacy modules use non-const hooks
   void impl_prefetcher_initialize() const;
@@ -330,6 +353,18 @@ public:
   CACHE& operator=(const CACHE&) = delete;
   CACHE& operator=(CACHE&&);
 };
+
+template <typename... Ps>
+void CACHE::prefetcher_module_model<Ps...>::impl_configure(const champsim::runtime_config& cfg, std::string_view prefix)
+{
+  [[maybe_unused]] auto process_one = [&](auto& p) {
+    using namespace champsim::modules;
+    if constexpr (prefetcher::template has_configure<decltype(p), const champsim::runtime_config&, std::string_view>)
+      p.configure(cfg, prefix);
+  };
+
+  std::apply([&](auto&... p) { (..., process_one(p)); }, intern_);
+}
 
 template <typename... Ps>
 void CACHE::prefetcher_module_model<Ps...>::impl_prefetcher_initialize()
@@ -421,6 +456,18 @@ void CACHE::prefetcher_module_model<Ps...>::impl_prefetcher_branch_operate(champ
   };
 
   std::apply([&](auto&... p) { (..., process_one(p)); }, intern_);
+}
+
+template <typename... Rs>
+void CACHE::replacement_module_model<Rs...>::impl_configure(const champsim::runtime_config& cfg, std::string_view prefix)
+{
+  [[maybe_unused]] auto process_one = [&](auto& r) {
+    using namespace champsim::modules;
+    if constexpr (replacement::template has_configure<decltype(r), const champsim::runtime_config&, std::string_view>)
+      r.configure(cfg, prefix);
+  };
+
+  std::apply([&](auto&... r) { (..., process_one(r)); }, intern_);
 }
 
 template <typename... Rs>

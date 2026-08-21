@@ -41,6 +41,19 @@ struct bound_to {
   T* intern_;
   explicit bound_to(T* bind_arg) { bind(bind_arg); }
   void bind(T* bind_arg) { intern_ = bind_arg; }
+
+  // The runtime-configuration hook, common to all four module kinds. Exactly
+  // one signature is probed -- configure(const champsim::runtime_config&,
+  // std::string_view) -- so a near-miss overload is a compile-time no-match,
+  // never a double call (the pattern the widened update_btb/last_branch_result
+  // probes have to guard against).
+  template <typename U, typename... Args>
+  static auto configure_member_impl(int) -> decltype(std::declval<U>().configure(std::declval<Args>()...), std::true_type{});
+  template <typename, typename...>
+  static auto configure_member_impl(long) -> std::false_type;
+
+  template <typename U, typename... Args>
+  constexpr static bool has_configure = decltype(configure_member_impl<U, Args...>(0))::value;
 };
 
 struct branch_predictor : public bound_to<O3_CPU> {

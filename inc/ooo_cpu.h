@@ -42,6 +42,7 @@
 #include "modules.h"
 #include "operable.h"
 #include "register_allocator.h"
+#include "runtime_config.h"
 #include "util/lru_table.h"
 #include "util/to_underlying.h"
 
@@ -196,6 +197,10 @@ public:
   struct branch_module_concept {
     virtual ~branch_module_concept() = default;
 
+    // Deliver runtime-configuration values after construction, before any
+    // other hook. prefix names this instance's knob table.
+    virtual void impl_configure(const champsim::runtime_config& cfg, std::string_view prefix) = 0;
+
     virtual void impl_initialize_branch_predictor() = 0;
     virtual void impl_last_branch_result(champsim::address ip, champsim::address target, bool taken, uint8_t branch_type) = 0;
     virtual bool impl_predict_branch(champsim::address ip, champsim::address predicted_target, bool always_taken, uint8_t branch_type) = 0;
@@ -208,6 +213,8 @@ public:
   struct btb_module_concept {
     virtual ~btb_module_concept() = default;
 
+    virtual void impl_configure(const champsim::runtime_config& cfg, std::string_view prefix) = 0;
+
     virtual void impl_initialize_btb() = 0;
     virtual void impl_update_btb(champsim::address ip, champsim::address predicted_target, bool taken, uint8_t branch_type) = 0;
     virtual std::pair<champsim::address, bool> impl_btb_prediction(champsim::address ip, uint8_t branch_type) = 0;
@@ -217,6 +224,8 @@ public:
   struct branch_module_model final : branch_module_concept {
     std::tuple<Bs...> intern_;
     explicit branch_module_model(O3_CPU* cpu) : intern_(Bs{cpu}...) { (void)cpu; /* silence -Wunused-but-set-parameter when sizeof...(Bs) == 0 */ }
+
+    void impl_configure(const champsim::runtime_config& cfg, std::string_view prefix) final;
 
     void impl_initialize_branch_predictor() final;
     void impl_last_branch_result(champsim::address ip, champsim::address target, bool taken, uint8_t branch_type) final;
@@ -232,6 +241,8 @@ public:
     std::tuple<Ts...> intern_;
     explicit btb_module_model(O3_CPU* cpu) : intern_(Ts{cpu}...) { (void)cpu; /* silence -Wunused-but-set-parameter when sizeof...(Ts) == 0 */ }
 
+    void impl_configure(const champsim::runtime_config& cfg, std::string_view prefix) final;
+
     void impl_initialize_btb() final;
     void impl_update_btb(champsim::address ip, champsim::address predicted_target, bool taken, uint8_t branch_type) final;
     [[nodiscard]] std::pair<champsim::address, bool> impl_btb_prediction(champsim::address ip, uint8_t branch_type) final;
@@ -239,6 +250,13 @@ public:
 
   std::unique_ptr<branch_module_concept> branch_module_pimpl;
   std::unique_ptr<btb_module_concept> btb_module_pimpl;
+
+  // Runtime module selection: the generated environment constructor replaces
+  // the baked pimpl before any hook has fired. Safe exactly then -- module
+  // state (including function-local statics in the CBP6/BLBP wrappers) is
+  // created by hook calls, none of which have happened yet.
+  void install_branch_module(std::unique_ptr<branch_module_concept> mod) { branch_module_pimpl = std::move(mod); }
+  void install_btb_module(std::unique_ptr<btb_module_concept> mod) { btb_module_pimpl = std::move(mod); }
 
   // NOLINTBEGIN(readability-make-member-function-const): legacy modules use non-const hooks
   void impl_initialize_branch_predictor() const;
@@ -273,6 +291,18 @@ public:
 };
 
 template <typename... Bs>
+void O3_CPU::branch_module_model<Bs...>::impl_configure(const champsim::runtime_config& cfg, std::string_view prefix)
+{
+  [[maybe_unused]] auto process_one = [&](auto& b) {
+    using namespace champsim::modules;
+    if constexpr (branch_predictor::template has_configure<decltype(b), const champsim::runtime_config&, std::string_view>)
+      b.configure(cfg, prefix);
+  };
+
+  std::apply([&](auto&... b) { (..., process_one(b)); }, intern_);
+}
+
+template <typename... Bs>
 void O3_CPU::branch_module_model<Bs...>::impl_initialize_branch_predictor()
 {
   [[maybe_unused]] auto process_one = [&](auto& b) {
@@ -285,7 +315,8 @@ void O3_CPU::branch_module_model<Bs...>::impl_initialize_branch_predictor()
 }
 
 template <typename... Bs>
-void O3_CPU::branch_module_model<Bs...>::impl_branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type)
+void O3_CPU::branch_module_model<Bs...>::impl_branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address branch_target, bool taken,
+                                                                     uint8_t branch_type)
 {
   auto process_one = [&](auto& b) {
     using namespace champsim::modules;
@@ -379,6 +410,18 @@ bool O3_CPU::branch_module_model<Bs...>::impl_predict_branch(champsim::address i
     return std::apply([&](auto&... b) { return (..., process_one(b)); }, intern_);
   }
   return return_type{};
+}
+
+template <typename... Ts>
+void O3_CPU::btb_module_model<Ts...>::impl_configure(const champsim::runtime_config& cfg, std::string_view prefix)
+{
+  [[maybe_unused]] auto process_one = [&](auto& b) {
+    using namespace champsim::modules;
+    if constexpr (btb::template has_configure<decltype(b), const champsim::runtime_config&, std::string_view>)
+      b.configure(cfg, prefix);
+  };
+
+  std::apply([&](auto&... b) { (..., process_one(b)); }, intern_);
 }
 
 template <typename... Ts>
