@@ -1,4 +1,7 @@
 import unittest
+import config.modules
+import tempfile
+import os
 
 import config.module_registry
 
@@ -7,22 +10,19 @@ MODULE_INFO = {
     'branch': {
         # Deliberately NOT in sorted order: the emitter must sort, not inherit
         # dict-insertion order, or the generated file churns between runs.
-        'branchDgshare': {'name': 'branchDgshare', 'path': 'branch/gshare', 'legacy': False, 'class': 'gshare'},
-        'branchDbimodal': {'name': 'branchDbimodal', 'path': 'branch/bimodal', 'legacy': False, 'class': 'bimodal'},
+        'branchDgshare': {'name': 'branchDgshare', 'path': 'branch/gshare', 'class': 'gshare'},
+        'branchDbimodal': {'name': 'branchDbimodal', 'path': 'branch/bimodal', 'class': 'bimodal'},
     },
     'btb': {
-        'btbDbasic_btb': {'name': 'btbDbasic_btb', 'path': 'btb/basic_btb', 'legacy': False, 'class': 'basic_btb'},
+        'btbDbasic_btb': {'name': 'btbDbasic_btb', 'path': 'btb/basic_btb', 'class': 'basic_btb'},
     },
     'pref': {
-        'prefetcherDno': {'name': 'prefetcherDno', 'path': 'prefetcher/no', 'legacy': False, 'class': 'no'},
-        'prefetcherDold': {'name': 'prefetcherDold', 'path': 'prefetcher/old', 'legacy': True, 'class': 'old'},
+        'prefetcherDno': {'name': 'prefetcherDno', 'path': 'prefetcher/no', 'class': 'no'},
     },
     'repl': {
-        'replacementDlru': {'name': 'replacementDlru', 'path': 'replacement/lru', 'legacy': False, 'class': 'lru'},
+        'replacementDlru': {'name': 'replacementDlru', 'path': 'replacement/lru', 'class': 'lru'},
     },
 }
-
-
 class RegistryClassTest(unittest.TestCase):
     def lines(self):
         return list(config.module_registry.registry_class_lines(MODULE_INFO))
@@ -50,13 +50,6 @@ class RegistryClassTest(unittest.TestCase):
         text = ' '.join(self.lines())
         for factory in ('make_branch', 'make_btb', 'make_prefetcher', 'make_replacement'):
             self.assertIn(factory, text)
-
-    def test_a_legacy_module_is_not_registered(self):
-        # Legacy modules go through generated free-function shims, not the
-        # class-based model the registry instantiates.
-        text = ' '.join(self.lines())
-        self.assertNotIn('"old"', text)
-
 
 class RegistryImplTest(unittest.TestCase):
     def lines(self):
@@ -88,61 +81,6 @@ class RegistryImplTest(unittest.TestCase):
         self.assertIn('branch/bimodal', text)
         self.assertIn('#include', text)
 
-    def test_legacy_modules_are_skipped_entirely(self):
-        text = ' '.join(self.lines())
-        self.assertNotIn('prefetcher/old', text)
-
-
-class SelectionEmissionTest(unittest.TestCase):
-    def cpu_lines(self, cpu):
-        return list(config.module_registry.module_selection_lines(
-            'cores', 0, 'ooo_cpu.cpu0',
-            [('branch_predictor', 'install_branch_module', 'make_branch', cpu['_branch_predictor_data']),
-             ('btb', 'install_btb_module', 'make_btb', cpu['_btb_data'])]))
-
-    def test_single_module_emits_lookup_swap_and_configure(self):
-        cpu = {'_branch_predictor_data': [{'class': 'bimodal', 'legacy': False}],
-               '_btb_data': [{'class': 'basic_btb', 'legacy': False}]}
-        text = ' '.join(self.cpu_lines(cpu))
-        self.assertIn('cfg.value<std::string>("ooo_cpu.cpu0.branch_predictor", "bimodal")', text)
-        self.assertIn('cores.at(0).install_branch_module(champsim::configured::module_registry::make_branch(sel, &cores.at(0)))', text)
-        # configure runs for the SELECTED module -- baked or swapped -- with the
-        # module-name table as its prefix.
-        self.assertIn('impl_configure(cfg, std::string{"ooo_cpu.cpu0."} + sel)', text)
-
-    def test_the_swap_fires_only_when_the_selection_differs_from_the_baked_pack(self):
-        # Pins the guard's DIRECTION: inverting != to == would swap on every
-        # default run and skip every override.
-        cpu = {'_branch_predictor_data': [{'class': 'bimodal', 'legacy': False}],
-               '_btb_data': [{'class': 'basic_btb', 'legacy': False}]}
-        text = ' '.join(self.cpu_lines(cpu))
-        self.assertIn('if (sel != "bimodal") {', text)
-        self.assertIn('if (sel != "basic_btb") {', text)
-
-    def test_a_multi_module_pack_keeps_its_joined_default(self):
-        cpu = {'_branch_predictor_data': [{'class': 'a', 'legacy': False}, {'class': 'b', 'legacy': False}],
-               '_btb_data': [{'class': 'basic_btb', 'legacy': False}]}
-        text = ' '.join(self.cpu_lines(cpu))
-        self.assertIn('cfg.value<std::string>("ooo_cpu.cpu0.branch_predictor", "a,b")', text)
-
-    def test_a_composed_pack_gets_configure_only_after_a_swap(self):
-        # A standing composed pack has no knob table (a shared prefix would
-        # collide), but a runtime override installs a SINGLE module, which must
-        # then receive its table -- otherwise its knobs are fatally unconsumed.
-        cpu = {'_branch_predictor_data': [{'class': 'a', 'legacy': False}, {'class': 'b', 'legacy': False}],
-               '_btb_data': [{'class': 'basic_btb', 'legacy': False}]}
-        lines = self.cpu_lines(cpu)
-        text = '\n'.join(lines)
-        bp_block = text[:text.index('btb')]
-        self.assertIn('impl_configure', bp_block)
-        # ... but only inside the swap branch, never for the standing pack:
-        configure_at = bp_block.index('impl_configure')
-        guard_at = bp_block.index('if (sel != "a,b")')
-        close_at = bp_block.index('}', bp_block.index('install_branch_module'))
-        self.assertTrue(guard_at < configure_at < close_at + len('}'))
-
-
-class JoinSafetyTest(unittest.TestCase):
     def test_the_header_is_guarded_and_the_impl_includes_it(self):
         # Include order must not matter: clang-format sorts includes within a
         # block, so the definitions cannot rely on a declaration included
@@ -162,3 +100,21 @@ class JoinSafetyTest(unittest.TestCase):
         text = ' '.join(config.module_registry.registry_impl_lines(MODULE_INFO))
         self.assertNotIn('core_inst.inc', text)
         self.assertNotIn('module_decl.inc', text)
+
+
+class LegacyMarkerTest(unittest.TestCase):
+    def test_a_legacy_marker_is_rejected_at_discovery(self):
+        # The free-function module style needed config/legacy.py and Makefile
+        # rules that are gone. Discovery has to refuse the marker: compiling
+        # the sources and leaving the class unregistered would produce a module
+        # that builds fine and can never be selected.
+        with tempfile.TemporaryDirectory() as root:
+            module = os.path.join(root, 'branch', 'oldpred')
+            os.makedirs(module)
+            open(os.path.join(module, '__legacy__'), 'w').close()
+            open(os.path.join(module, 'oldpred.cc'), 'w').close()
+
+            context = config.modules.ModuleSearchContext([os.path.join(root, 'branch')])
+            with self.assertRaises(RuntimeError) as caught:
+                context.find_all()
+            self.assertIn('no longer supported', str(caught.exception))

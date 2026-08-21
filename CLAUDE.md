@@ -223,7 +223,9 @@ basename is the module's name and must equal its class name.
 **Legacy modules are gone.** The `__legacy__` free-function style depended on
 `config/legacy.py` and the `legacy_bridge.*` generation, both deleted with the
 configuration layer; the Makefile machinery that drove them went with it. No shipped
-module used the path. Use the class-based interface above.
+module used the path. `config.sh` now *rejects* a `__legacy__` marker with a message
+naming the directory — without that it would compile the sources and leave the class
+unregistered, giving a module that builds and can never be selected.
 
 ### Support libraries
 

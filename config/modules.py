@@ -27,12 +27,19 @@ class ModuleSearchContext:
 
     def data_from_path(self, path):
         name = get_module_name(path)
-        is_legacy = ('__legacy__' in [*itertools.chain(*(f for _,_,f in os.walk(path)))])
+        if '__legacy__' in [*itertools.chain(*(f for _,_,f in os.walk(path)))]:
+            # The free-function module style needed config/legacy.py to
+            # generate a bridge, and Makefile rules to build it. Both are gone.
+            # Without this the sources still compile but the class is never
+            # registered, so the module is silently unselectable at run time.
+            raise RuntimeError(
+                f"{path} is marked __legacy__, and legacy modules are no longer supported. "
+                "Port it to the class-based interface in inc/modules.h."
+            )
         retval = {
             'name': name,
             'path': path,
-            'legacy': is_legacy,
-            'class': 'champsim::modules::generated::'+name if is_legacy else os.path.basename(path)
+            'class': os.path.basename(path)
         }
 
         if self.verbose:
@@ -55,7 +62,10 @@ class ModuleSearchContext:
         return self.data_from_path(path)
 
     def find_all(self):
-        base_dirs = [next(os.walk(p)) for p in self.paths]
+        # Sorted: os.walk yields directory entries in filesystem order, which
+        # makes _configuration.mk and the registry differ between machines for
+        # no reason.
+        base_dirs = [(b, sorted(d), f) for b, d, f in (next(os.walk(p)) for p in self.paths)]
         files = itertools.starmap(os.path.join, itertools.chain(*(zip(itertools.repeat(b), d) for b,d,_ in base_dirs)))
         return [self.data_from_path(f) for f in files]
 

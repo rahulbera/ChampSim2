@@ -18,7 +18,6 @@ We encourage you to read below to see if ChampSim is right for your research, cl
    Bandwidth
    Core-model
    Cache-model
-   Legacy-modules
 
 ChampSim is commonly used as the basis for academic research.
 See a list of publications that use ChampSim :ref:`here <Publications>`.

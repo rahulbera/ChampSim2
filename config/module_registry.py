@@ -5,7 +5,7 @@ O3_CPU/CACHE already dispatch through. This is what lets a runtime key
 (--set ooo_cpu.cpu0.branch_predictor=...) select a module without rebuilding.
 
 Runtime module names are directory basenames, which equal the class names for
-every non-legacy module (config.modules derives the class from the directory).
+every discovered module (config.modules derives the class from the directory).
 Legacy modules go through generated free-function shims rather than the
 class-based model the registry instantiates, so they are not registered.
 '''
@@ -49,7 +49,7 @@ def module_include_files(datas):
 
 def registered(module_info, kind):
     ''' The registerable modules of one kind, sorted by name for stable output. '''
-    return sorted((v for v in module_info.get(kind, {}).values() if not v.get('legacy', False)), key=lambda v: v['class'])
+    return sorted(module_info.get(kind, {}).values(), key=lambda v: v['class'])
 
 def registry_class_lines(module_info):
     '''
@@ -115,34 +115,3 @@ def registry_impl_lines(module_info):
         yield '}'
         yield ''
 
-def module_selection_lines(member, index, cfg_prefix, entries):
-    '''
-    Constructor-body statements for one component: per module kind, look up the
-    selection key (default: the baked pack, comma-joined), install the
-    registry's product when it differs, and deliver configure() to the selected
-    module with its knob table as the prefix. A composed pack gets no
-    configure() call -- a prefix shared across the pack would collide knobs --
-    and a legacy pack is left entirely alone.
-    '''
-    for key_suffix, install, factory, datas in entries:
-        if any(d.get('legacy', False) for d in datas):
-            continue
-        baked = ','.join(d['class'] for d in datas)
-        yield '{'
-        yield f'const auto sel = cfg.value<std::string>("{cfg_prefix}.{key_suffix}", "{baked}");'
-        if len(datas) == 1:
-            # Single-module pack: configure the selected module -- baked or
-            # swapped -- with its knob table as the prefix.
-            yield f'if (sel != "{baked}") {{'
-            yield f'  {member}.at({index}).{install}(champsim::configured::module_registry::{factory}(sel, &{member}.at({index})));'
-            yield '}'
-            yield f'{member}.at({index}).{PIMPL_MEMBERS[factory]}->impl_configure(cfg, std::string{{"{cfg_prefix}."}} + sel);'
-        else:
-            # Composed baked pack: no knob table when it stands (a shared
-            # prefix would collide knobs), but a runtime override installs a
-            # SINGLE module, which then gets its table like any other.
-            yield f'if (sel != "{baked}") {{'
-            yield f'  {member}.at({index}).{install}(champsim::configured::module_registry::{factory}(sel, &{member}.at({index})));'
-            yield f'  {member}.at({index}).{PIMPL_MEMBERS[factory]}->impl_configure(cfg, std::string{{"{cfg_prefix}."}} + sel);'
-            yield '}'
-        yield '}'

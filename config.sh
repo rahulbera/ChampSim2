@@ -62,17 +62,23 @@ if __name__ == '__main__':
     # What still has to be generated is what a header cannot know -- which
     # modules exist on disk -- so this emits the registry that maps a module
     # name to a factory, and the makefile fragment listing their objects.
-    config.filewrite.write_discovery(
-        executable_name=args.executable_name,
-        bindir_name=bindir_name,
-        objdir_name=objdir_name,
-        makedir_name=args.makedir,
-        module_dir=args.module_dir,
-        branch_dir=args.branch_dir,
-        btb_dir=args.btb_dir,
-        pref_dir=args.prefetcher_dir,
-        repl_dir=args.replacement_dir,
-        verbose=args.verbose
-    )
+    try:
+        config.filewrite.write_discovery(
+            executable_name=args.executable_name,
+            bindir_name=bindir_name,
+            objdir_name=objdir_name,
+            makedir_name=args.makedir,
+            module_dir=args.module_dir,
+            branch_dir=args.branch_dir,
+            btb_dir=args.btb_dir,
+            pref_dir=args.prefetcher_dir,
+            repl_dir=args.replacement_dir,
+            verbose=args.verbose
+        )
+    except RuntimeError as err:
+        # A problem with the modules on disk is the user's to fix, so say what
+        # it is rather than showing them a traceback into the config package.
+        print(f'ERROR: {err}', file=sys.stderr)
+        sys.exit(1)
 
 # vim: set filetype=python:
