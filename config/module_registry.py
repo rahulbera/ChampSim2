@@ -43,7 +43,11 @@ def registry_class_lines(module_info):
     the generated registry TU).
     '''
     # Standalone header: it declares only the registry, so it carries its own
-    # includes rather than relying on core_inst.inc's.
+    # includes rather than relying on core_inst.inc's, and its own guard so
+    # that the definitions can include it without depending on include order
+    # (clang-format sorts includes within a block).
+    yield '#ifndef CHAMPSIM_GENERATED_REGISTRY_INC'
+    yield '#define CHAMPSIM_GENERATED_REGISTRY_INC'
     yield '#include <array>'
     yield '#include <memory>'
     yield '#include <string_view>'
@@ -58,6 +62,7 @@ def registry_class_lines(module_info):
     for kind, keyname, factory, concept, _, owner in KINDS:
         yield f'static std::unique_ptr<{concept}> {factory}(std::string_view name, {owner}* owner);'
     yield '};'
+    yield '#endif'
 
 def registry_impl_lines(module_info):
     '''
@@ -66,9 +71,9 @@ def registry_impl_lines(module_info):
     name throws listing the valid names; a comma is rejected as multi-module
     (runtime selection is single-module -- composition stays configure-time).
     '''
-    # core_inst.inc is NOT included here: this fragment is joined once per
-    # configured executable, and core_inst.inc has no include guard -- the
-    # fixed TU (src/generated_registry.cc) includes it exactly once instead.
+    # The declaration, guarded, so include order cannot matter. core_inst.inc
+    # is NOT included here: it has no guard, and the fixed TU includes it once.
+    yield '#include "registry.inc"'
     yield '#include <memory>'
     yield '#include <stdexcept>'
     yield '#include <string>'

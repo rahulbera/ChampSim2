@@ -140,6 +140,16 @@ class SelectionEmissionTest(unittest.TestCase):
 
 
 class JoinSafetyTest(unittest.TestCase):
+    def test_the_header_is_guarded_and_the_impl_includes_it(self):
+        # Include order must not matter: clang-format sorts includes within a
+        # block, so the definitions cannot rely on a declaration included
+        # before them by hand.
+        header = '\n'.join(config.module_registry.registry_class_lines(MODULE_INFO))
+        self.assertIn('#ifndef CHAMPSIM_GENERATED_REGISTRY_INC', header)
+        self.assertIn('#endif', header)
+        impl = '\n'.join(config.module_registry.registry_impl_lines(MODULE_INFO))
+        self.assertIn('#include "registry.inc"', impl)
+
     def test_the_impl_fragment_does_not_include_core_inst(self):
         # Regression: a multi-executable configure joins one registry fragment
         # per build id into one file; core_inst.inc has no include guard, so a
