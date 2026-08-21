@@ -441,12 +441,12 @@ TEST_CASE("Names that do not collide are still lower-cased")
 }
 
 // The [config] section and the run parameters in [meta] exist so a statistics
-// document states which machine, and which run, produced it. The configuration
-// itself is compiled away into literals by config.sh, so it reaches the printer
-// as an already-rendered TOML blob (config/config_record.py) carried on the
-// generated environment. The printer's job is to splice it, not to build it --
-// which is what keeps toml_printer.cc free of any generated symbol, and so
-// linkable into the test binary.
+// document states which machine, and which run, produced it. [config] is the
+// EFFECTIVE configuration: the key/value pairs the machine consulted while it
+// was built, handed to the printer as a flat list on run_info. The printer
+// builds the tree from that list and hashes it into [meta].build_id, naming no
+// generated symbol to do so -- which is what keeps toml_printer.cc linkable
+// into this test binary, and the static format() seam testable at all.
 
 TEST_CASE("The run parameters are recorded in the meta table")
 {

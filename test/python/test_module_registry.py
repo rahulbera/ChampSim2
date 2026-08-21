@@ -150,10 +150,12 @@ class JoinSafetyTest(unittest.TestCase):
         impl = '\n'.join(config.module_registry.registry_impl_lines(MODULE_INFO))
         self.assertIn('#include "registry.inc"', impl)
 
-    def test_the_impl_fragment_does_not_include_core_inst(self):
-        # Regression: a multi-executable configure joins one registry fragment
-        # per build id into one file; core_inst.inc has no include guard, so a
-        # per-fragment include is a redefinition error. The fixed TU includes
-        # it exactly once instead.
+    def test_the_impl_fragment_includes_only_its_own_declaration(self):
+        # The fragment is compiled by a fixed TU (src/generated_registry.cc),
+        # so the only generated header it may pull in is the guarded
+        # registry.inc. An unguarded generated header included from here was a
+        # redefinition error once already; both named below are now deleted,
+        # which is exactly why nothing should reintroduce an include of one.
         text = ' '.join(config.module_registry.registry_impl_lines(MODULE_INFO))
         self.assertNotIn('core_inst.inc', text)
+        self.assertNotIn('module_decl.inc', text)
