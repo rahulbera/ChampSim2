@@ -1,0 +1,23 @@
+# The eight campaign arms as runtime configurations against ONE binary.
+#
+#     bin/champsim --set ooo_cpu.cpu0.btb=<btb> ... trace.xz
+#
+# Every arm shares cbp6_tagescl64 as its conditional predictor and differs
+# only in the BTB, so a sweep is one binary and eight --set values rather than
+# eight builds. Verified: each arm below reproduces its dedicated binary's
+# statistics exactly (237 leaves, 400.perlbench).
+#
+# This file documents the mapping; cluster_run.py passes the values directly.
+
+[arms]
+cbp_tagescl64      = "basic_btb"
+cbp_blbp64         = "blbp_64kb"
+cbp_blbp64t        = "blbp_64kb_tuned"
+cbp_ittage64       = "ittage_64kb"
+cbp_idealbtb       = "ideal_btb"
+cbp_ideal_ibtb     = "ideal_btb_pibtb"
+cbp_ideal_ibtb_ras = "ideal_btb_pibtb_pras"
+cbp_perfind        = "perfect_indirect"
+
+[common]
+branch_predictor = "cbp6_tagescl64"
