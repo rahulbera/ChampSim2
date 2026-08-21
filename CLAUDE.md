@@ -88,9 +88,26 @@ The environment is constructed **after** `CLI11_PARSE` for this reason, and
 order. `configs/sample.toml` is a commented example; `configs/lnc.toml` models Intel
 Lion Cove, tagging each value `disclosed`/`derived`/`default` with numbered references.
 
-Two former knobs did **not** survive as runtime values: `wq_check_full_addr` (it also
-shaped the channel constructors, so an override would desynchronize two consumers) and
-`vmem.randomization` (its form is an empty `std::optional` when disabled, not a scalar).
+**Every parameter the deleted `champsim_config.json` carried is still settable** — 143
+of its 147 leaf keys are runtime knobs, and the other four are compile-time by design
+(`block_size`, `page_size`, `num_cores` in `inc/defs.h`; `executable_name` in the
+makefile). `501-static-environment.cc` pins that list, so a parameter cannot quietly
+stop being configurable; two had, and that test is why they were found.
+
+The two that needed more than a scalar lookup:
+
+- **`cache.<name>.prefetch_activate`** is a *set* of access types, held as the JSON's
+  own comma-separated string (`"LOAD,PREFETCH"`) and parsed against
+  `access_type_names`. An unrecognised name is fatal, so a typo cannot silently
+  disable prefetching on a cache.
+- **`vmem.randomization`**'s meaning depends on its *type*, which is the JSON's rule
+  preserved exactly: `false` disables page-frame shuffling, any integer is the seed,
+  and `true` means seed 1. `runtime_config::holds<T>` is what lets the environment
+  tell those apart.
+
+`wq_check_full_addr` is the one thing that never was a JSON key: it is a per-edge
+property of the channel graph (`match_offset`), not a per-component scalar, so it lives
+in `src/static_environment.cc` with the rest of the wiring.
 
 **Module selection is also runtime** (phase B): `ooo_cpu.<cpu>.branch_predictor`,
 `ooo_cpu.<cpu>.btb`, `cache.<name>.prefetcher`, `cache.<name>.replacement` select any

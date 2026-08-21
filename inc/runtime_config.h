@@ -56,6 +56,17 @@ public:
   // else -> string. Throws std::runtime_error on a malformed assignment.
   void set(std::string_view assignment);
 
+  // Whether the key is present AND holds exactly T. For the one parameter
+  // whose meaning depends on its type: vmem.randomization is `false` to
+  // disable and an integer seed otherwise, which is the JSON's own rule.
+  // Peeking does not count as consulting -- the value<T>() that follows does.
+  template <typename T>
+  [[nodiscard]] bool holds(std::string_view key) const
+  {
+    const auto found = values_.find(key);
+    return found != std::end(values_) && std::holds_alternative<T>(found->second);
+  }
+
   // The configured value, or the fallback when the key is absent. int64 -> T
   // conversions are range-checked; double -> integer, string -> anything, and
   // int -> bool never convert (they would truncate or reinterpret silently).

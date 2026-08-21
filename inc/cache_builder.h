@@ -231,6 +231,13 @@ public:
   self_type& prefetch_activate(Elems... pref_act_elems);
 
   /**
+   * Specify the ``access_type`` values that should activate the prefetcher, as
+   * an already-built mask. Non-template, so it wins overload resolution over
+   * the variadic form above, which cannot accept a vector.
+   */
+  self_type& prefetch_activate(std::vector<access_type> pref_act_mask);
+
+  /**
    * Specify the upper levels to this cache.
    */
   self_type& upper_levels(std::vector<champsim::channel*>&& uls_);
@@ -516,6 +523,13 @@ template <typename... Elems>
 auto champsim::cache_builder<P, R>::prefetch_activate(Elems... pref_act_elems) -> self_type&
 {
   m_pref_act_mask = {pref_act_elems...};
+  return *this;
+}
+
+template <typename P, typename R>
+auto champsim::cache_builder<P, R>::prefetch_activate(std::vector<access_type> pref_act_mask) -> self_type&
+{
+  m_pref_act_mask = std::move(pref_act_mask);
   return *this;
 }
 

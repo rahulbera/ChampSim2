@@ -4,8 +4,15 @@
 #include <cctype>
 #include <iterator>
 #include <limits>
+#include <optional>
+#include <stdexcept>
+#include <string>
 #include <string_view>
+#include <vector>
+#include <fmt/format.h>
+#include <fmt/ranges.h>
 
+#include "access_type.h"
 #include "champsim.h"
 #include "defaults.hpp"
 #include "msl/bits.h"
@@ -66,6 +73,54 @@ champsim::channel queue(const champsim::runtime_config& cfg, const std::string& 
 champsim::chrono::picoseconds period(const champsim::runtime_config& cfg, const std::string& key, double mhz)
 {
   return champsim::chrono::picoseconds{static_cast<champsim::chrono::picoseconds::rep>(1000000.0 / cfg.positive_value<double>(key, mhz))};
+}
+
+// The access types that activate a cache's prefetcher, as a comma-separated
+// list of access_type names -- the JSON's own format ("LOAD,PREFETCH"), kept
+// because the store holds scalars and this parameter is a set.
+std::vector<access_type> prefetch_activate(const champsim::runtime_config& cfg, const std::string& prefix)
+{
+  const auto key = prefix + ".prefetch_activate";
+  const auto spelled = cfg.value<std::string>(key, "LOAD,PREFETCH");
+
+  std::vector<access_type> mask{};
+  std::string_view rest{spelled};
+  while (!std::empty(rest)) {
+    const auto comma = rest.find(',');
+    auto name = rest.substr(0, comma);
+    rest = (comma == std::string_view::npos) ? std::string_view{} : rest.substr(comma + 1);
+
+    // Tolerate spaces around the separator; reject anything else by name, so a
+    // typo cannot silently disable prefetching on a cache.
+    while (!std::empty(name) && name.front() == ' ') {
+      name.remove_prefix(1);
+    }
+    while (!std::empty(name) && name.back() == ' ') {
+      name.remove_suffix(1);
+    }
+    if (std::empty(name)) {
+      continue;
+    }
+
+    const auto found = std::find(std::begin(access_type_names), std::end(access_type_names), name);
+    if (found == std::end(access_type_names)) {
+      throw std::runtime_error{
+          fmt::format("runtime config: {} = '{}': '{}' is not an access type (expected one of {})", key, spelled, name, fmt::join(access_type_names, ", "))};
+    }
+    mask.push_back(static_cast<access_type>(std::distance(std::begin(access_type_names), found)));
+  }
+  return mask;
+}
+
+// Page-frame randomization: `false` disables it, and any integer is the seed
+// (`true` means 1). That type-dependent meaning is the JSON's, preserved so a
+// configuration carried over from it behaves identically.
+std::optional<uint64_t> randomization(const champsim::runtime_config& cfg)
+{
+  if (cfg.holds<bool>("vmem.randomization")) {
+    return cfg.value<bool>("vmem.randomization", true) ? std::optional<uint64_t>{1} : std::nullopt;
+  }
+  return std::optional<uint64_t>{cfg.value<uint64_t>("vmem.randomization", 1)};
 }
 
 // The simulation's time quantum: do_phase() ticks the shared clock by the
@@ -145,7 +200,7 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
            cfg.positive_value<std::size_t>("pmem.ranks", 1), cfg.positive_value<std::size_t>("pmem.bankgroups", 8),
            cfg.positive_value<std::size_t>("pmem.banks", 4), cfg.positive_value<std::size_t>("pmem.refreshes_per_period", 8192)),
       vmem(champsim::data::bytes{cfg.positive_value<champsim::data::bytes::rep>("vmem.pte_page_size", 4096)}, cfg.value<std::size_t>("vmem.num_levels", 5),
-           compute_time_quantum(cfg) * cfg.value<champsim::chrono::picoseconds::rep>("vmem.minor_fault_penalty", 200), DRAM, 1)
+           compute_time_quantum(cfg) * cfg.value<champsim::chrono::picoseconds::rep>("vmem.minor_fault_penalty", 200), DRAM, randomization(cfg))
 {
   ptws.reserve(defs::num_cpus);
   for (std::size_t cpu = 0; cpu < defs::num_cpus; ++cpu) {
@@ -188,7 +243,7 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                           .tag_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>("cache.llc.max_tag_check", 1)})
                           .fill_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>("cache.llc.max_fill", 1)})
                           .offset_bits(champsim::data::bits{champsim::lg2(BLOCK_SIZE)})
-                          .prefetch_activate(access_type::LOAD, access_type::PREFETCH)
+                          .prefetch_activate(prefetch_activate(cfg, "cache.llc"))
                           .clock_period(period(cfg, "cache.llc.frequency", 4000))
                           .prefetch_as_load(cfg.value<bool>("cache.llc.prefetch_as_load", false))
                           .virtual_prefetch(cfg.value<bool>("cache.llc.virtual_prefetch", false)));
@@ -215,6 +270,7 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .tag_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(dtlb + ".max_tag_check", 2)})
                             .fill_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(dtlb + ".max_fill", 2)})
                             .offset_bits(champsim::data::bits{page_bits})
+                            .prefetch_activate(prefetch_activate(cfg, dtlb))
                             .clock_period(period(cfg, dtlb + ".frequency", 4000))
                             .prefetch_as_load(cfg.value<bool>(dtlb + ".prefetch_as_load", false)));
 
@@ -230,6 +286,7 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .tag_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(itlb + ".max_tag_check", 2)})
                             .fill_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(itlb + ".max_fill", 2)})
                             .offset_bits(champsim::data::bits{page_bits})
+                            .prefetch_activate(prefetch_activate(cfg, itlb))
                             .clock_period(period(cfg, itlb + ".frequency", 4000))
                             .prefetch_as_load(cfg.value<bool>(itlb + ".prefetch_as_load", false)));
 
@@ -246,7 +303,7 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .tag_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(l1d + ".max_tag_check", 2)})
                             .fill_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(l1d + ".max_fill", 2)})
                             .offset_bits(champsim::data::bits{block_bits})
-                            .prefetch_activate(access_type::LOAD, access_type::PREFETCH)
+                            .prefetch_activate(prefetch_activate(cfg, l1d))
                             .clock_period(period(cfg, l1d + ".frequency", 4000))
                             .prefetch_as_load(cfg.value<bool>(l1d + ".prefetch_as_load", false))
                             .virtual_prefetch(cfg.value<bool>(l1d + ".virtual_prefetch", false)));
@@ -264,7 +321,7 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .tag_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(l1i + ".max_tag_check", 2)})
                             .fill_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(l1i + ".max_fill", 2)})
                             .offset_bits(champsim::data::bits{block_bits})
-                            .prefetch_activate(access_type::LOAD, access_type::PREFETCH)
+                            .prefetch_activate(prefetch_activate(cfg, l1i))
                             .clock_period(period(cfg, l1i + ".frequency", 4000))
                             .prefetch_as_load(cfg.value<bool>(l1i + ".prefetch_as_load", false))
                             .virtual_prefetch(cfg.value<bool>(l1i + ".virtual_prefetch", true)));
@@ -282,7 +339,7 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .tag_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(l2c + ".max_tag_check", 1)})
                             .fill_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(l2c + ".max_fill", 1)})
                             .offset_bits(champsim::data::bits{block_bits})
-                            .prefetch_activate(access_type::LOAD, access_type::PREFETCH)
+                            .prefetch_activate(prefetch_activate(cfg, l2c))
                             .clock_period(period(cfg, l2c + ".frequency", 4000))
                             .prefetch_as_load(cfg.value<bool>(l2c + ".prefetch_as_load", false))
                             .virtual_prefetch(cfg.value<bool>(l2c + ".virtual_prefetch", false)));
@@ -299,6 +356,7 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .tag_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(stlb + ".max_tag_check", 1)})
                             .fill_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(stlb + ".max_fill", 1)})
                             .offset_bits(champsim::data::bits{page_bits})
+                            .prefetch_activate(prefetch_activate(cfg, stlb))
                             .clock_period(period(cfg, stlb + ".frequency", 4000))
                             .prefetch_as_load(cfg.value<bool>(stlb + ".prefetch_as_load", false)));
   }

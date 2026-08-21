@@ -3,6 +3,8 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <fmt/format.h>
+#include <fmt/ranges.h>
 
 #include "runtime_config.h"
 #include "static_environment.h"
@@ -188,4 +190,181 @@ TEST_CASE("A geometry knob of zero is refused, not crashed on")
       REQUIRE_THROWS_WITH(champsim::static_environment{cfg}, Catch::Matchers::ContainsSubstring(key));
     }
   }
+}
+
+TEST_CASE("Every parameter the deleted JSON configuration carried is still a knob")
+{
+  // The migration's contract: nothing the old champsim_config.json could set
+  // may have become unreachable. These are its 147 leaf keys translated into
+  // runtime-key spelling, minus the four that are compile-time by design
+  // (block_size, page_size, num_cores -> inc/defs.h; executable_name -> the
+  // makefile) and sim.heartbeat_frequency, which main() reads rather than the
+  // environment.
+  //
+  // Two of these were genuinely dropped for a while and are the reason this
+  // test exists: every cache's prefetch_activate (a SET of access types, which
+  // the scalar store holds as the JSON's own comma-separated string) and
+  // vmem.randomization (whose meaning depends on its type -- false disables,
+  // an integer is the seed).
+  const std::vector<std::string> from_json{
+      "cache.cpu0_dtlb.latency",
+      "cache.cpu0_dtlb.max_fill",
+      "cache.cpu0_dtlb.max_tag_check",
+      "cache.cpu0_dtlb.mshr_size",
+      "cache.cpu0_dtlb.pq_size",
+      "cache.cpu0_dtlb.prefetch_as_load",
+      "cache.cpu0_dtlb.rq_size",
+      "cache.cpu0_dtlb.sets",
+      "cache.cpu0_dtlb.ways",
+      "cache.cpu0_dtlb.wq_size",
+      "cache.cpu0_itlb.latency",
+      "cache.cpu0_itlb.max_fill",
+      "cache.cpu0_itlb.max_tag_check",
+      "cache.cpu0_itlb.mshr_size",
+      "cache.cpu0_itlb.pq_size",
+      "cache.cpu0_itlb.prefetch_as_load",
+      "cache.cpu0_itlb.rq_size",
+      "cache.cpu0_itlb.sets",
+      "cache.cpu0_itlb.ways",
+      "cache.cpu0_itlb.wq_size",
+      "cache.cpu0_l1d.latency",
+      "cache.cpu0_l1d.max_fill",
+      "cache.cpu0_l1d.max_tag_check",
+      "cache.cpu0_l1d.mshr_size",
+      "cache.cpu0_l1d.pq_size",
+      "cache.cpu0_l1d.prefetch_activate",
+      "cache.cpu0_l1d.prefetch_as_load",
+      "cache.cpu0_l1d.prefetcher",
+      "cache.cpu0_l1d.rq_size",
+      "cache.cpu0_l1d.sets",
+      "cache.cpu0_l1d.virtual_prefetch",
+      "cache.cpu0_l1d.ways",
+      "cache.cpu0_l1d.wq_size",
+      "cache.cpu0_l1i.latency",
+      "cache.cpu0_l1i.max_fill",
+      "cache.cpu0_l1i.max_tag_check",
+      "cache.cpu0_l1i.mshr_size",
+      "cache.cpu0_l1i.pq_size",
+      "cache.cpu0_l1i.prefetch_activate",
+      "cache.cpu0_l1i.prefetch_as_load",
+      "cache.cpu0_l1i.prefetcher",
+      "cache.cpu0_l1i.rq_size",
+      "cache.cpu0_l1i.sets",
+      "cache.cpu0_l1i.virtual_prefetch",
+      "cache.cpu0_l1i.ways",
+      "cache.cpu0_l1i.wq_size",
+      "cache.cpu0_l2c.latency",
+      "cache.cpu0_l2c.max_fill",
+      "cache.cpu0_l2c.max_tag_check",
+      "cache.cpu0_l2c.mshr_size",
+      "cache.cpu0_l2c.pq_size",
+      "cache.cpu0_l2c.prefetch_activate",
+      "cache.cpu0_l2c.prefetch_as_load",
+      "cache.cpu0_l2c.prefetcher",
+      "cache.cpu0_l2c.rq_size",
+      "cache.cpu0_l2c.sets",
+      "cache.cpu0_l2c.virtual_prefetch",
+      "cache.cpu0_l2c.ways",
+      "cache.cpu0_l2c.wq_size",
+      "cache.cpu0_stlb.latency",
+      "cache.cpu0_stlb.max_fill",
+      "cache.cpu0_stlb.max_tag_check",
+      "cache.cpu0_stlb.mshr_size",
+      "cache.cpu0_stlb.pq_size",
+      "cache.cpu0_stlb.prefetch_as_load",
+      "cache.cpu0_stlb.rq_size",
+      "cache.cpu0_stlb.sets",
+      "cache.cpu0_stlb.ways",
+      "cache.cpu0_stlb.wq_size",
+      "cache.llc.frequency",
+      "cache.llc.latency",
+      "cache.llc.max_fill",
+      "cache.llc.max_tag_check",
+      "cache.llc.mshr_size",
+      "cache.llc.pq_size",
+      "cache.llc.prefetch_activate",
+      "cache.llc.prefetch_as_load",
+      "cache.llc.prefetcher",
+      "cache.llc.replacement",
+      "cache.llc.rq_size",
+      "cache.llc.sets",
+      "cache.llc.virtual_prefetch",
+      "cache.llc.ways",
+      "cache.llc.wq_size",
+      "ooo_cpu.cpu0.branch_predictor",
+      "ooo_cpu.cpu0.btb",
+      "ooo_cpu.cpu0.decode_buffer_size",
+      "ooo_cpu.cpu0.decode_latency",
+      "ooo_cpu.cpu0.decode_width",
+      "ooo_cpu.cpu0.dib.sets",
+      "ooo_cpu.cpu0.dib.ways",
+      "ooo_cpu.cpu0.dib.window_size",
+      "ooo_cpu.cpu0.dispatch_buffer_size",
+      "ooo_cpu.cpu0.dispatch_latency",
+      "ooo_cpu.cpu0.dispatch_width",
+      "ooo_cpu.cpu0.execute_latency",
+      "ooo_cpu.cpu0.execute_width",
+      "ooo_cpu.cpu0.fetch_width",
+      "ooo_cpu.cpu0.frequency",
+      "ooo_cpu.cpu0.ifetch_buffer_size",
+      "ooo_cpu.cpu0.lq_size",
+      "ooo_cpu.cpu0.lq_width",
+      "ooo_cpu.cpu0.mispredict_penalty",
+      "ooo_cpu.cpu0.register_file_size",
+      "ooo_cpu.cpu0.retire_width",
+      "ooo_cpu.cpu0.rob_size",
+      "ooo_cpu.cpu0.schedule_latency",
+      "ooo_cpu.cpu0.scheduler_size",
+      "ooo_cpu.cpu0.sq_size",
+      "ooo_cpu.cpu0.sq_width",
+      "pmem.bank_columns",
+      "pmem.bank_rows",
+      "pmem.bankgroups",
+      "pmem.banks",
+      "pmem.channel_width",
+      "pmem.channels",
+      "pmem.data_rate",
+      "pmem.ranks",
+      "pmem.refresh_period",
+      "pmem.refreshes_per_period",
+      "pmem.rq_size",
+      "pmem.tcas",
+      "pmem.tras",
+      "pmem.trcd",
+      "pmem.trp",
+      "pmem.wq_size",
+      "ptw.cpu0_ptw.max_read",
+      "ptw.cpu0_ptw.max_write",
+      "ptw.cpu0_ptw.mshr_size",
+      "ptw.cpu0_ptw.pscl2_set",
+      "ptw.cpu0_ptw.pscl2_way",
+      "ptw.cpu0_ptw.pscl3_set",
+      "ptw.cpu0_ptw.pscl3_way",
+      "ptw.cpu0_ptw.pscl4_set",
+      "ptw.cpu0_ptw.pscl4_way",
+      "ptw.cpu0_ptw.pscl5_set",
+      "ptw.cpu0_ptw.pscl5_way",
+      "ptw.cpu0_ptw.rq_size",
+      "vmem.minor_fault_penalty",
+      "vmem.num_levels",
+      "vmem.pte_page_size",
+      "vmem.randomization",
+  };
+
+  champsim::runtime_config cfg{};
+  champsim::static_environment env{cfg};
+
+  std::set<std::string> consulted{};
+  for (const auto& [key, value] : cfg.consulted()) {
+    consulted.insert(key);
+  }
+
+  std::vector<std::string> unreachable{};
+  for (const auto& key : from_json) {
+    if (consulted.find(key) == std::end(consulted)) {
+      unreachable.push_back(key);
+    }
+  }
+  INFO("no longer configurable: " << fmt::format("{}", fmt::join(unreachable, ", ")));
+  REQUIRE(std::empty(unreachable));
 }
