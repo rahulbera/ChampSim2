@@ -30,6 +30,7 @@
 #include "champsim.h"
 #ifndef CHAMPSIM_TEST_BUILD
 #include "core_inst.inc"
+#include "registry.inc"
 #endif
 #include "defaults.hpp"
 #include "environment.h"
@@ -215,7 +216,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     for (const auto& [knob_key, effective] : runtime_cfg.consulted()) {
       fmt::print("{} = {}\n", knob_key, effective);
     }
-    using registry = champsim::configured::module_registry<CHAMPSIM_BUILD>;
+    using registry = champsim::configured::module_registry;
     fmt::print("\nSelectable modules (per component, via the keys above):\n");
     const auto print_names = [](std::string_view kind, const auto& names) {
       fmt::print("{}: {}\n", kind, fmt::join(names, ", "));

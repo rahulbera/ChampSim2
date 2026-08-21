@@ -473,12 +473,12 @@ def get_instantiation_lines(cores, caches, ptws, pmem, vmem, build_id):
     # config/module_registry.py.
     for index, cpu in enumerate(cores):
         yield from module_registry.module_selection_lines(
-            build_id, 'cores', index, store_prefix('ooo_cpu', cpu['name']),
+            'cores', index, store_prefix('ooo_cpu', cpu['name']),
             [('branch_predictor', 'install_branch_module', 'make_branch', cpu.get('_branch_predictor_data', [])),
              ('btb', 'install_btb_module', 'make_btb', cpu.get('_btb_data', []))])
     for index, cache in enumerate(caches):
         yield from module_registry.module_selection_lines(
-            build_id, 'caches', index, store_prefix('cache', cache['name']),
+            'caches', index, store_prefix('cache', cache['name']),
             [('prefetcher', 'install_prefetcher_module', 'make_prefetcher', cache.get('_prefetcher_data', [])),
              ('replacement', 'install_replacement_module', 'make_replacement', cache.get('_replacement_data', []))])
     yield '}'

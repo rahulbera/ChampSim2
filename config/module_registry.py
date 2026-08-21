@@ -35,15 +35,22 @@ def registered(module_info, kind):
     ''' The registerable modules of one kind, sorted by name for stable output. '''
     return sorted((v for v in module_info.get(kind, {}).values() if not v.get('legacy', False)), key=lambda v: v['class'])
 
-def registry_class_lines(build_id, module_info):
+def registry_class_lines(module_info):
     '''
-    The module_registry<ID> specialization for core_inst.inc: per-kind
+    The module_registry definition for the generated header: per-kind
     constexpr name arrays (used by --knobs and by main's validation of
     module-knob table prefixes) and the four factory declarations (defined in
     the generated registry TU).
     '''
-    yield 'template <>'
-    yield f'struct champsim::configured::module_registry<0x{build_id}> {{'
+    # Standalone header: it declares only the registry, so it carries its own
+    # includes rather than relying on core_inst.inc's.
+    yield '#include <array>'
+    yield '#include <memory>'
+    yield '#include <string_view>'
+    yield '#include "cache.h"'
+    yield '#include "environment.h"'
+    yield '#include "ooo_cpu.h"'
+    yield 'struct champsim::configured::module_registry {'
     for kind, keyname, factory, concept, _, owner in KINDS:
         names = [v['class'] for v in registered(module_info, kind)]
         joined = ', '.join(f'"{n}"' for n in names)
@@ -52,7 +59,7 @@ def registry_class_lines(build_id, module_info):
         yield f'static std::unique_ptr<{concept}> {factory}(std::string_view name, {owner}* owner);'
     yield '};'
 
-def registry_impl_lines(build_id, module_info):
+def registry_impl_lines(module_info):
     '''
     The factory definitions for registry.cc.inc: include every registered
     module's headers, then one name -> make_unique chain per kind. An unknown
@@ -73,7 +80,7 @@ def registry_impl_lines(build_id, module_info):
     for kind, keyname, factory, concept, model, owner in KINDS:
         mods = registered(module_info, kind)
         names = ', '.join(v['class'] for v in mods)
-        yield f'std::unique_ptr<{concept}> champsim::configured::module_registry<0x{build_id}>::{factory}(std::string_view name, {owner}* owner)'
+        yield f'std::unique_ptr<{concept}> champsim::configured::module_registry::{factory}(std::string_view name, {owner}* owner)'
         yield '{'
         yield "  if (name.find(',') != std::string_view::npos) {"
         yield f'    throw std::runtime_error("runtime module selection takes one module (got \'" + std::string{{name}} + "\'); compose multiple modules at config.sh time");'
@@ -86,7 +93,7 @@ def registry_impl_lines(build_id, module_info):
         yield '}'
         yield ''
 
-def module_selection_lines(build_id, member, index, cfg_prefix, entries):
+def module_selection_lines(member, index, cfg_prefix, entries):
     '''
     Constructor-body statements for one component: per module kind, look up the
     selection key (default: the baked pack, comma-joined), install the
@@ -105,7 +112,7 @@ def module_selection_lines(build_id, member, index, cfg_prefix, entries):
             # Single-module pack: configure the selected module -- baked or
             # swapped -- with its knob table as the prefix.
             yield f'if (sel != "{baked}") {{'
-            yield f'  {member}.at({index}).{install}(champsim::configured::module_registry<0x{build_id}>::{factory}(sel, &{member}.at({index})));'
+            yield f'  {member}.at({index}).{install}(champsim::configured::module_registry::{factory}(sel, &{member}.at({index})));'
             yield '}'
             yield f'{member}.at({index}).{PIMPL_MEMBERS[factory]}->impl_configure(cfg, std::string{{"{cfg_prefix}."}} + sel);'
         else:
@@ -113,7 +120,7 @@ def module_selection_lines(build_id, member, index, cfg_prefix, entries):
             # prefix would collide knobs), but a runtime override installs a
             # SINGLE module, which then gets its table like any other.
             yield f'if (sel != "{baked}") {{'
-            yield f'  {member}.at({index}).{install}(champsim::configured::module_registry<0x{build_id}>::{factory}(sel, &{member}.at({index})));'
+            yield f'  {member}.at({index}).{install}(champsim::configured::module_registry::{factory}(sel, &{member}.at({index})));'
             yield f'  {member}.at({index}).{PIMPL_MEMBERS[factory]}->impl_configure(cfg, std::string{{"{cfg_prefix}."}} + sel);'
             yield '}'
         yield '}'

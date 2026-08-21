@@ -1,6 +1,11 @@
 // NOLINTBEGIN(readability-magic-numbers,cppcoreguidelines-avoid-magic-numbers): generated magic numbers
 
 #include "core_inst.inc"
+
+// The generated constructor selects modules through the registry.
+#if __has_include("registry.inc")
+#include "registry.inc"
+#endif
 #include "environment.h"
 
 #if __has_include("legacy_bridge.h")

@@ -25,11 +25,20 @@ MODULE_INFO = {
 
 class RegistryClassTest(unittest.TestCase):
     def lines(self):
-        return list(config.module_registry.registry_class_lines('deadbeef', MODULE_INFO))
+        return list(config.module_registry.registry_class_lines(MODULE_INFO))
 
-    def test_the_specialization_is_keyed_by_build_id(self):
+    def test_the_registry_is_a_plain_struct(self):
         text = '\n'.join(self.lines())
-        self.assertIn('struct champsim::configured::module_registry<0xdeadbeef>', text)
+        self.assertIn('struct champsim::configured::module_registry', text)
+        self.assertNotIn('<0x', text)
+
+    def test_the_header_is_self_contained(self):
+        # It is included on its own, so it cannot lean on another generated
+        # file's includes.
+        text = '\n'.join(self.lines())
+        for header in ('<array>', '<memory>', '<string_view>', '"environment.h"', '"cache.h"', '"ooo_cpu.h"'):
+            with self.subTest(header=header):
+                self.assertIn(f'#include {header}', text)
 
     def test_names_are_sorted_per_kind(self):
         text = ' '.join(self.lines())
@@ -51,7 +60,7 @@ class RegistryClassTest(unittest.TestCase):
 
 class RegistryImplTest(unittest.TestCase):
     def lines(self):
-        return list(config.module_registry.registry_impl_lines('deadbeef', MODULE_INFO))
+        return list(config.module_registry.registry_impl_lines(MODULE_INFO))
 
     def test_each_module_maps_to_its_model(self):
         text = ' '.join(self.lines())
@@ -84,7 +93,7 @@ class RegistryImplTest(unittest.TestCase):
 class SelectionEmissionTest(unittest.TestCase):
     def cpu_lines(self, cpu):
         return list(config.module_registry.module_selection_lines(
-            'deadbeef', 'cores', 0, 'ooo_cpu.cpu0',
+            'cores', 0, 'ooo_cpu.cpu0',
             [('branch_predictor', 'install_branch_module', 'make_branch', cpu['_branch_predictor_data']),
              ('btb', 'install_btb_module', 'make_btb', cpu['_btb_data'])]))
 
@@ -93,7 +102,7 @@ class SelectionEmissionTest(unittest.TestCase):
                '_btb_data': [{'class': 'basic_btb', 'legacy': False}]}
         text = ' '.join(self.cpu_lines(cpu))
         self.assertIn('cfg.value<std::string>("ooo_cpu.cpu0.branch_predictor", "bimodal")', text)
-        self.assertIn('cores.at(0).install_branch_module(champsim::configured::module_registry<0xdeadbeef>::make_branch(sel, &cores.at(0)))', text)
+        self.assertIn('cores.at(0).install_branch_module(champsim::configured::module_registry::make_branch(sel, &cores.at(0)))', text)
         # configure runs for the SELECTED module -- baked or swapped -- with the
         # module-name table as its prefix.
         self.assertIn('impl_configure(cfg, std::string{"ooo_cpu.cpu0."} + sel)', text)
@@ -136,5 +145,5 @@ class JoinSafetyTest(unittest.TestCase):
         # per build id into one file; core_inst.inc has no include guard, so a
         # per-fragment include is a redefinition error. The fixed TU includes
         # it exactly once instead.
-        text = ' '.join(config.module_registry.registry_impl_lines('deadbeef', MODULE_INFO))
+        text = ' '.join(config.module_registry.registry_impl_lines(MODULE_INFO))
         self.assertNotIn('core_inst.inc', text)

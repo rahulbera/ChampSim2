@@ -54,12 +54,12 @@ struct generated_environment;
 template <unsigned long long ID>
 struct config_record;
 
-// The runtime module registry for this build: per-kind name arrays and
-// factories producing the type-erased module pimpls, specialized alongside
-// generated_environment by config.sh (config/module_registry.py) and defined
-// in the generated registry translation unit. Lets a runtime configuration
-// key select any compiled module without rebuilding.
-template <unsigned long long ID>
+// The runtime module registry: per-kind name arrays and factories producing
+// the type-erased module pimpls, emitted by config.sh
+// (config/module_registry.py) from the modules it discovers and defined in the
+// generated registry translation unit. Lets a runtime configuration key select
+// any compiled module without rebuilding. One configuration per binary, so it
+// is a plain struct rather than a per-build specialization.
 struct module_registry;
 
 template <typename R, typename... PTWs>

@@ -9,6 +9,7 @@
 // that file, and core_inst.inc has no include guard.
 #include "core_inst.inc"
 #include "registry.cc.inc"
+#include "registry.inc"
 #endif
 
 // NOLINTEND(readability-magic-numbers,cppcoreguidelines-avoid-magic-numbers)

@@ -169,7 +169,9 @@ class Fragment:
 
         instantiation_lines = list(get_instantiation_lines(build_id=build_id, **elements))
 
-        # Only compiled modules are linkable, so only they are registered.
+        # Only compiled modules are linkable, so only they are registered. The
+        # registry describes the modules DISCOVERED, not any one configuration,
+        # so it is accumulated here and emitted once by finish().
         compiled_module_info = {kind: util.subdict(kind_info, modules_to_compile) for kind, kind_info in module_info.items()}
 
         fileparts = [
@@ -184,10 +186,8 @@ class Fragment:
             (os.path.join(objdir_name, 'core_inst.inc'), cxx_file(itertools.chain(
                 get_instantiation_header(len(elements['cores']), config_file, build_id=build_id),
                 get_config_record_cxx(build_id, get_config_record_lines(executable_basename, elements, config_file),
-                                      runtime_keys=runtime_keys(instantiation_lines)),
-                registry_class_lines(build_id, compiled_module_info)
+                                      runtime_keys=runtime_keys(instantiation_lines))
             ))),
-            (os.path.join(objdir_name, 'registry.cc.inc'), cxx_file(registry_impl_lines(build_id, compiled_module_info))),
             (os.path.join(objdir_name, 'core_inst.cc.inc'), cxx_file(instantiation_lines)),
 
             # Makefile generation
@@ -220,6 +220,8 @@ class FileWriter:
     '''
     def __init__(self, bindir_name=None, objdir_name=None, makedir_name=None, verbose=False):
         self.fragments = []
+        self.module_census = {}
+        self.objdir_name = objdir_name
         self.bindir_name = bindir_name
         self.objdir_name = objdir_name
         self.makedir_name = makedir_name
@@ -240,6 +242,13 @@ class FileWriter:
         :param srcdir_name: the directory to search for source files
         :param objdir_name: the directory to place object files
         '''
+        # The registry describes the modules discovered, which is a property of
+        # the search paths rather than of any one configuration; accumulate the
+        # union and emit it once in finish().
+        _, _, modules_to_compile, module_info, _ = parsed_config
+        for kind, kind_info in module_info.items():
+            self.module_census.setdefault(kind, {}).update(util.subdict(kind_info, modules_to_compile))
+
         self.fragments.append(Fragment.from_config(
             parsed_config,
             bindir_name=bindir_name or self.bindir_name,
@@ -258,6 +267,12 @@ class FileWriter:
 
     def finish(self):
         ''' Write all accumulated configurations to their files. '''
+        if self.module_census:
+            objdir = os.path.abspath(self.objdir_name)
+            self.fragments.append(Fragment([
+                (os.path.join(objdir, 'registry.inc'), cxx_file(registry_class_lines(self.module_census))),
+                (os.path.join(objdir, 'registry.cc.inc'), cxx_file(registry_impl_lines(self.module_census)))
+            ]))
         FileWriter.write_fragments(*self.fragments)
 
     def __exit__(self, exc_type, exc_value, traceback):
