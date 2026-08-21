@@ -123,10 +123,15 @@ latency = 1                     # default
 # STLB: 4096 entries, +7 cycles over the L1 TLBs [1]
 [cache.cpu0_stlb]
 sets = 256                      # derived [1]
-ways = 16                       # default
+ways = 16                       # derived [1]  (256 x 16 = the 4096 entries)
 latency = 7                     # disclosed [1]
 
 # Platform, not core: LPDDR5X-8533 [6]
 [pmem]
 data_rate = 8533                # disclosed [6]
+# The two are a coupled pair -- ChampSim's stock 3200/1600 is the 2:1 DDR
+# relation between the bus and the memory controller's command clock. Setting
+# data_rate alone leaves the controller at its 1600 MHz default, modelling an
+# 8533 MT/s bus driven by a controller less than half its speed.
+frequency = 4266                # derived [6]  (8533 / 2)
 channels = 1                    # default

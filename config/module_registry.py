@@ -48,8 +48,26 @@ def module_include_files(datas):
     yield from (f'#include "{header}"' for header in sorted(candidates))
 
 def registered(module_info, kind):
-    ''' The registerable modules of one kind, sorted by name for stable output. '''
-    return sorted(module_info.get(kind, {}).values(), key=lambda v: v['class'])
+    '''
+    The registerable modules of one kind, sorted by name for stable output.
+
+    A module is selected at run time by its class name, which is its directory
+    basename, so two modules of one kind cannot share one. They can otherwise
+    arise easily -- a --branch-dir root holding a directory named like a
+    shipped one -- and the result is silent: the registry emits the name twice,
+    the first factory branch wins, and the module the user pointed at is simply
+    never reachable.
+    '''
+    entries = sorted(module_info.get(kind, {}).values(), key=lambda v: v['class'])
+    seen = {}
+    for entry in entries:
+        clash = seen.setdefault(entry['class'], entry['path'])
+        if clash != entry['path']:
+            raise RuntimeError(
+                f"two {kind} modules are both named '{entry['class']}': {clash} and {entry['path']}. "
+                "A module is selected by its directory basename, so the names must differ."
+            )
+    return entries
 
 def registry_class_lines(module_info):
     '''

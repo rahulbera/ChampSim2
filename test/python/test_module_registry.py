@@ -118,3 +118,24 @@ class LegacyMarkerTest(unittest.TestCase):
             with self.assertRaises(RuntimeError) as caught:
                 context.find_all()
             self.assertIn('no longer supported', str(caught.exception))
+
+
+class NameCollisionTest(unittest.TestCase):
+    def test_two_modules_of_a_kind_cannot_share_a_basename(self):
+        # A module is selected at run time by its directory basename, so a
+        # duplicate is unreachable: the registry emits the name twice and the
+        # first factory branch wins. Silent before this check.
+        info = {'branch': {
+            'branchDbimodal': {'name': 'branchDbimodal', 'path': 'branch/bimodal', 'class': 'bimodal'},
+            'elsewhereDbimodal': {'name': 'elsewhereDbimodal', 'path': '/other/branch/bimodal', 'class': 'bimodal'},
+        }}
+        with self.assertRaises(RuntimeError) as caught:
+            config.module_registry.registered(info, 'branch')
+        message = str(caught.exception)
+        self.assertIn('bimodal', message)
+        # Both paths named, or the user cannot tell which two collided.
+        self.assertIn('branch/bimodal', message)
+        self.assertIn('/other/branch/bimodal', message)
+
+    def test_the_same_module_seen_once_is_not_a_collision(self):
+        config.module_registry.registered(MODULE_INFO, 'branch')
