@@ -1,0 +1,134 @@
+# Intel Lion Cove (LNC) P-core -- Lunar Lake instantiation.
+#
+#     ./config.sh configs/lnc.json && make
+#     bin/lnc --config configs/lnc.toml [--set KEY=VALUE ...] trace.xz
+#
+# Tags: disclosed = stated by a reference below; derived = computed from one
+# (capacity/associativity -> set count, load-to-use -> per-level latency);
+# default = ChampSim default, not an LNC figure.
+#
+# References
+#   [1] https://chipsandcheese.com/p/lion-cove-intels-p-core-roars
+#   [2] https://chipsandcheese.com/p/intels-lion-cove-architecture-preview
+#   [3] https://handwiki.org/wiki/Engineering:Lion_Cove
+#   [4] https://hardwaretimes.com/skylake-vs-sunny-cove-vs-golden-cove-vs-redwood-cove-vs-lion-cove-intel-p-core-architectures/
+#   [5] https://chipsandcheese.com/p/analyzing-lion-coves-memory-subsystem
+#   [6] https://www.intel.com/content/www/us/en/products/sku/240961/intel-core-ultra-9-processor-288v-12m-cache-up-to-5-10-ghz/specifications.html
+#
+# Notes
+#  * LNC's 4-level data hierarchy is modelled as 3: the 192 KB 12-way 9-cycle
+#    "L1" [3] is omitted per instruction, so cpu0_l1d IS LNC's 48 KB L0D.
+#  * ChampSim latencies ADD along the path, so each level here is the disclosed
+#    load-to-use minus the level above it.
+#  * Lunar Lake, not Arrow Lake: its L2 (2.5 MB, 10-way) is the configuration
+#    whose disclosed capacity and associativity both hold with a power-of-two
+#    set count, which ChampSim requires. Arrow Lake is 3 MB / 84-cycle L3 [3].
+#  * Load/store queue and register-file sizes are NOT disclosed for LNC ([4]
+#    lists them as unknown); values circulating online are Golden Cove's.
+#  * lnc.json carries only compile-time parameters plus a key skeleton at stock
+#    ChampSim values: a knob is runtime-overridable only if the configure-time
+#    config named it. Every LNC value lives here, so a run's [config] records
+#    the stock machine and [config_override] records exactly this file.
+
+[ooo_cpu.cpu0]
+frequency = 5100                # disclosed [6]
+rob_size = 576                  # disclosed [1][3][4]
+fetch_width = 8                 # derived [2] (48 B/cycle fetch)
+decode_width = 8                # disclosed [1][3][4]
+dispatch_width = 8              # disclosed [3][4] (rename/allocate)
+execute_width = 18              # disclosed [1][3] (execution ports)
+retire_width = 12               # disclosed [3][4]
+lq_width = 3                    # disclosed [4] (load AGUs)
+sq_width = 3                    # disclosed [4] (store AGUs)
+ifetch_buffer_size = 192        # disclosed [1][3] (op queue)
+lq_size = 128                   # default
+sq_size = 72                    # default
+register_file_size = 128        # default
+decode_buffer_size = 32         # default
+dispatch_buffer_size = 32       # default
+scheduler_size = 128            # default
+mispredict_penalty = 1          # default
+decode_latency = 1              # default
+dispatch_latency = 1            # default
+schedule_latency = 0            # default
+execute_latency = 0             # default
+branch_predictor = "bimodal"    # default
+btb = "basic_btb"               # default
+
+# Op cache: 5250 entries, 12-way [1][3]. ChampSim's DIB is indexed by
+# instruction window, not uops, so ways match and sets are the nearest
+# power of two.
+[ooo_cpu.cpu0.dib]
+sets = 512                      # derived [1][3]
+ways = 12                       # disclosed [3]
+window_size = 16                # default
+
+# L0I: 64 KB, 16-way, 4 cycles [3]
+[cache.cpu0_l1i]
+sets = 64                       # derived [3]
+ways = 16                       # disclosed [3]
+latency = 4                     # disclosed [1]
+mshr_size = 8                   # default
+rq_size = 64                    # default
+wq_size = 64                    # default
+pq_size = 32                    # default
+prefetcher = "no"               # default
+replacement = "lru"             # default
+
+# L0D: 48 KB, 12-way, 4 cycles [1][3]
+[cache.cpu0_l1d]
+sets = 64                       # derived [3]
+ways = 12                       # disclosed [3]
+latency = 4                     # disclosed [1][3]
+mshr_size = 16                  # default
+rq_size = 64                    # default
+wq_size = 64                    # default
+pq_size = 8                     # default
+prefetcher = "no"               # default
+replacement = "lru"             # default
+
+# L2: 2.5 MB, 10-way, 17-cycle load-to-use [3]
+[cache.cpu0_l2c]
+sets = 4096                     # derived [3]
+ways = 10                       # disclosed [3]
+latency = 13                    # derived [3] (17 - 4)
+mshr_size = 80                  # disclosed [1] (L2 miss queue)
+rq_size = 32                    # default
+wq_size = 32                    # default
+pq_size = 16                    # default
+prefetcher = "no"               # default
+replacement = "lru"             # default
+
+# L3 slice: 3 MB, 12-way, 51-cycle load-to-use [1][3]
+[cache.llc]
+sets = 4096                     # derived [1][3]
+ways = 12                       # disclosed [3]
+latency = 34                    # derived [3] (51 - 17)
+mshr_size = 64                  # default
+rq_size = 32                    # default
+wq_size = 32                    # default
+pq_size = 32                    # default
+prefetcher = "no"               # default
+replacement = "lru"             # default
+
+# DTLB: 128 entries [1][3]
+[cache.cpu0_dtlb]
+sets = 32                       # derived [1]
+ways = 4                        # default
+latency = 1                     # default
+
+[cache.cpu0_itlb]
+sets = 16                       # default
+ways = 4                        # default
+latency = 1                     # default
+
+# STLB: 4096 entries, +7 cycles over the L1 TLBs [1]
+[cache.cpu0_stlb]
+sets = 256                      # derived [1]
+ways = 16                       # default
+latency = 7                     # disclosed [1]
+
+# Platform, not core: LPDDR5X-8533 [6]
+[pmem]
+data_rate = 8533                # disclosed [6]
+channels = 1                    # default
