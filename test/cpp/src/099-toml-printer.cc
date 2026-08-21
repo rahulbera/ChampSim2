@@ -164,29 +164,20 @@ TEST_CASE("An empty cache emits the full per-CPU access matrix")
                                     "issued = 0",
                                     "useful = 0",
                                     "useless = 0",
-                                    "fill = 0",
-                                    "",
-                                    "[cache.test_cache.cpu0]",
-                                    "load_hit = 0",
-                                    "load_miss = 0",
-                                    "load_miss_merge = 0",
-                                    "load_fill = 0",
-                                    "rfo_hit = 0",
-                                    "rfo_miss = 0",
-                                    "rfo_miss_merge = 0",
-                                    "rfo_fill = 0",
-                                    "prefetch_hit = 0",
-                                    "prefetch_miss = 0",
-                                    "prefetch_miss_merge = 0",
-                                    "prefetch_fill = 0",
-                                    "write_hit = 0",
-                                    "write_miss = 0",
-                                    "write_miss_merge = 0",
-                                    "write_fill = 0",
-                                    "translation_hit = 0",
-                                    "translation_miss = 0",
-                                    "translation_miss_merge = 0",
-                                    "translation_fill = 0"};
+                                    "fill = 0"};
+
+  // One table per CPU, so the key names do not change with the core count --
+  // that is the property this pins, and spelling out cpu0 alone would instead
+  // pin the core count.
+  for (std::size_t cpu = 0; cpu < NUM_CPUS; ++cpu) {
+    expected.push_back("");
+    expected.push_back("[cache.test_cache.cpu" + std::to_string(cpu) + "]");
+    for (const auto* type : {"load", "rfo", "prefetch", "write", "translation"}) {
+      for (const auto* field : {"hit", "miss", "miss_merge", "fill"}) {
+        expected.push_back(std::string{type} + "_" + field + " = 0");
+      }
+    }
+  }
 
   REQUIRE_THAT(champsim::toml_printer::format(given, "cache.test_cache"), Catch::Matchers::RangeEquals(expected));
 }
@@ -312,7 +303,9 @@ TEST_CASE("The document opens with a meta table declaring the schema version")
   REQUIRE_THAT(lines.at(0), Catch::Matchers::StartsWith("#"));
   REQUIRE(std::find(std::begin(lines), std::end(lines), "[meta]") != std::end(lines));
   REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"schema_version = 1"}));
-  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"num_cpus = 1"}));
+  // Reported, not assumed: [meta].num_cpus states the machine's core count, so
+  // pinning the literal 1 would pin the build rather than the printer.
+  REQUIRE_THAT(lines, Catch::Matchers::Contains("num_cpus = " + std::to_string(NUM_CPUS)));
 }
 
 TEST_CASE("A phase is keyed by its lower-cased name but preserves the original")

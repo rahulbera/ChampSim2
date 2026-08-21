@@ -44,9 +44,6 @@ use -- is set in that TOML file or with `--set key=value` on the command line.
 (which caches exist and how they are wired) is C++ in `src/static_environment.cc`,
 and `NUM_CPUS`, `BLOCK_SIZE` and `PAGE_SIZE` are in `inc/defs.h`; changing
 either is a code edit and a rebuild.
-$ make
-$ bin/champsim --warmup-instructions 200000000 --simulation-instructions 500000000 600.perlbench_s-210B.champsimtrace.xz
-```
 
 # How to create traces
 

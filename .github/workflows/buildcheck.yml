@@ -65,15 +65,39 @@ jobs:
       run: |
         curl -s --remote-name-all https://dpc3.compas.cs.stonybrook.edu/champsim-traces/speccpu/400.perlbench-41B.champsimtrace.xz https://dpc3.compas.cs.stonybrook.edu/champsim-traces/speccpu/401.bzip2-226B.champsimtrace.xz
 
+    # NUM_CPUS is compile-time by design -- multi-core is a separate binary --
+    # so a 2-core build is an edit to inc/defs.h, where the JSON configuration
+    # this job used to pass to config.sh had a "num_cores" key. Without this
+    # the job builds the single-core default and then hands it two traces.
+    - name: Select a two-core machine
+      run: |
+        sed -i 's/num_cpus = 1;/num_cpus = 2;/' inc/defs.h
+        grep -q 'num_cpus = 2;' inc/defs.h
+
     - name: Configure
       run: ./config.sh
 
     - name: Make
       run: make
 
-    # TODO run an actual set of checks
     - name: Run tests
       run: ./bin/champsim -w50000000 -i50000000 --toml=multi_core_result.toml -- 400.perlbench-41B.champsimtrace.xz 401.bzip2-226B.champsimtrace.xz
+
+    - name: Check the document describes a two-core run
+      run: |
+        python3 - <<'PY'
+        import tomllib
+        doc = tomllib.load(open("multi_core_result.toml", "rb"))
+        assert doc["meta"]["num_cpus"] == 2, doc["meta"]
+        roi = doc["phase"]["simulation"]["roi"]
+        assert set(roi["core"]) == {"cpu0", "cpu1"}, sorted(roi["core"])
+        # One LLC and one memory controller however many cores there are: the
+        # LLC-to-DRAM channel is shared, and getting that wrong is invisible at
+        # one core.
+        assert "llc" in roi["cache"], sorted(roi["cache"])
+        assert {"cpu0_l1d", "cpu1_l1d"} <= set(roi["cache"]), sorted(roi["cache"])
+        print("two-core document validated")
+        PY
 
     # We upload the generated files under github actions assets
     - name: Upload Results

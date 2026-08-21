@@ -33,7 +33,18 @@ TEST_CASE("Cache order is the per-cycle operate order, LLC first then per-core a
   for (const CACHE& cache : env.cache_view()) {
     names.push_back(cache.NAME);
   }
-  REQUIRE(names == std::vector<std::string>{"LLC", "cpu0_DTLB", "cpu0_ITLB", "cpu0_L1D", "cpu0_L1I", "cpu0_L2C", "cpu0_STLB"});
+
+  // Parameterised over the core count like the rest of this file: the order is
+  // the LLC, then each core's six caches alphabetically. Spelling the
+  // single-core list out here made this the one assertion that a two-core
+  // inc/defs.h turned red for a reason unrelated to what it checks.
+  std::vector<std::string> expected{"LLC"};
+  for (std::size_t cpu = 0; cpu < champsim::defs::num_cpus; ++cpu) {
+    for (const auto* level : {"DTLB", "ITLB", "L1D", "L1I", "L2C", "STLB"}) {
+      expected.push_back(champsim::static_environment::cache_name(cpu, level));
+    }
+  }
+  REQUIRE(names == expected);
 }
 
 TEST_CASE("Every operable appears exactly once, cores then caches then PTWs then DRAM")
