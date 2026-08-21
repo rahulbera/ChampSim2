@@ -59,8 +59,10 @@
 namespace champsim::ittage
 {
 // ---------------------------------------------------------------------------
-// Copied verbatim from btb/basic_btb/direct_predictor.{h,cc}, made inline and
-// namespaced. Unmodified: an ITTAGE configuration must differ from basic_btb
+// Copied verbatim from btb/basic_btb/direct_predictor.{h,cc} as of the
+// campaign, made inline and namespaced (basic_btb has since gained a
+// runtime-geometry resize() this shell deliberately lacks -- the write-up pins
+// the fixed 1024x8 geometry). Unmodified: an ITTAGE configuration must differ from basic_btb
 // only in the indirect path, or the comparison measures two things at once.
 // ---------------------------------------------------------------------------
 struct direct_predictor {

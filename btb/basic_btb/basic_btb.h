@@ -6,6 +6,7 @@
 #include "indirect_predictor.h"
 #include "modules.h"
 #include "return_stack.h"
+#include "runtime_config.h"
 
 class basic_btb : champsim::modules::btb
 {
@@ -18,6 +19,7 @@ public:
   basic_btb() : btb(nullptr) {}
 
   // void initialize_btb();
+  void configure(const champsim::runtime_config& cfg, std::string_view prefix);
   std::pair<champsim::address, bool> btb_prediction(champsim::address ip);
   void update_btb(champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type);
 };

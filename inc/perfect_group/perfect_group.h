@@ -89,7 +89,9 @@ namespace champsim::perfect_group
 enum class group { direct_btb, ras, ideal_btb, ideal_ibtb, ideal_ibtb_ras };
 
 // ---------------------------------------------------------------------------
-// Copied verbatim from btb/basic_btb/, made inline and namespaced. ChampSim
+// Copied verbatim from btb/basic_btb/ as of the campaign, made inline and
+// namespaced (basic_btb has since gained a runtime-geometry resize() this
+// shell deliberately lacks). ChampSim
 // compiles every module into every binary, so a second non-inline definition
 // would collide at link time with basic_btb's. Unmodified: an oracle must
 // differ from basic_btb ONLY on its own group.

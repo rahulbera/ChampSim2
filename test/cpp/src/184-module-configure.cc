@@ -1,6 +1,7 @@
 #include <catch.hpp>
 #include <string>
 
+#include "../../../btb/basic_btb/basic_btb.h"
 #include "mocks.hpp"
 #include "ooo_cpu.h"
 #include "runtime_config.h"
@@ -100,4 +101,52 @@ TEST_CASE("An installed replacement pimpl takes over from the constructed one")
   uut.branch_module_pimpl->impl_branch_predictor_final_stats();
 
   REQUIRE(counting_final_bp::final_calls == 1);
+}
+
+TEST_CASE("basic_btb's direct-predictor geometry is runtime-configurable")
+{
+  // The tier-2 exemplar: the direct predictor's table is a runtime-sized
+  // lru_table fed by constexpr defaults; configure() rebuilds it from the
+  // module's knob table before any lookup.
+  do_nothing_MRC mock_L1I;
+  do_nothing_MRC mock_L1D;
+  O3_CPU uut{champsim::core_builder{}.btb<basic_btb>().fetch_queues(&mock_L1I.queues).data_queues(&mock_L1D.queues)};
+
+  champsim::runtime_config cfg{};
+  // Asymmetric on purpose: 4 sets x 1 way. Swapping the two knobs (1 set x 4
+  // ways) keeps both entries resident and fails the eviction assertion below,
+  // so a sets/ways mix-up in configure() or resize() cannot survive.
+  cfg.set("ooo_cpu.cpu0.basic_btb.sets=4");
+  cfg.set("ooo_cpu.cpu0.basic_btb.ways=1");
+  uut.btb_module_pimpl->impl_configure(cfg, "ooo_cpu.cpu0.basic_btb");
+
+  // Both IPs land in set 0 of 4 (the tag/index drop the low bits), so with one
+  // way the second update evicts the first; at default 1024x8 -- or with the
+  // knobs swapped -- both would be resident.
+  const champsim::address first{0x1000};
+  const champsim::address second{0x2000};
+  const champsim::address target_a{0x111100};
+  const champsim::address target_b{0x222200};
+  uut.btb_module_pimpl->impl_update_btb(first, target_a, true, BRANCH_CONDITIONAL);
+  uut.btb_module_pimpl->impl_update_btb(second, target_b, true, BRANCH_CONDITIONAL);
+
+  REQUIRE(uut.btb_module_pimpl->impl_btb_prediction(first, {}).first == champsim::address{});
+  REQUIRE(uut.btb_module_pimpl->impl_btb_prediction(second, {}).first == target_b);
+}
+
+TEST_CASE("basic_btb rejects a zero-way or zero-set geometry")
+{
+  // lru_table validates sets itself but never ways; a zero-way table would
+  // silently never hit, so the knob must fail instead.
+  do_nothing_MRC mock_L1I;
+  do_nothing_MRC mock_L1D;
+  O3_CPU uut{champsim::core_builder{}.btb<basic_btb>().fetch_queues(&mock_L1I.queues).data_queues(&mock_L1D.queues)};
+
+  champsim::runtime_config cfg{};
+  cfg.set("ooo_cpu.cpu0.basic_btb.ways=0");
+  REQUIRE_THROWS(uut.btb_module_pimpl->impl_configure(cfg, "ooo_cpu.cpu0.basic_btb"));
+
+  champsim::runtime_config cfg2{};
+  cfg2.set("ooo_cpu.cpu0.basic_btb.sets=0");
+  REQUIRE_THROWS(uut.btb_module_pimpl->impl_configure(cfg2, "ooo_cpu.cpu0.basic_btb"));
 }

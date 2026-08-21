@@ -41,7 +41,9 @@
 namespace champsim::blbp
 {
 // ---------------------------------------------------------------------------
-// Copied verbatim from btb/basic_btb/ (same rationale as inc/ittage/ittage_btb.h:
+// Copied verbatim from btb/basic_btb/ as of the campaign (basic_btb has
+// since gained a runtime-geometry resize() the shells deliberately lack:
+// their write-ups pin the fixed 1024x8 geometry) (same rationale as inc/ittage/ittage_btb.h:
 // every module links into every binary, so a second non-inline definition would
 // collide; and the comparison is honest only if everything except the indirect
 // path is identical).

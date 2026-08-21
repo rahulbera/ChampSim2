@@ -46,3 +46,16 @@ void basic_btb::update_btb(champsim::address ip, champsim::address branch_target
 
   direct.update(ip, branch_target, branch_type);
 }
+
+void basic_btb::configure(const champsim::runtime_config& cfg, std::string_view prefix)
+{
+  // The direct predictor's table is runtime-sized; the constexpr defaults are
+  // the shipped 64KB-class geometry. Runs before any lookup, so rebuilding the
+  // empty table loses nothing.
+  // positive_value: lru_table validates sets itself but never ways, and a
+  // zero-way table silently never hits -- a sweep point that must fail, not
+  // report a degenerate predictor's numbers.
+  const auto sets = cfg.positive_value<std::size_t>(std::string{prefix} + ".sets", direct_predictor::sets);
+  const auto ways = cfg.positive_value<std::size_t>(std::string{prefix} + ".ways", direct_predictor::ways);
+  direct.resize(sets, ways);
+}
