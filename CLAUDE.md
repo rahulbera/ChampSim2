@@ -11,12 +11,9 @@ its code generator are gone; `config.sh` only discovers modules.
 
 ## Build, configure, run
 
-`config.sh` **discovers modules** (which is all it still does — modules are added by
-creating a directory, and no header can know that) and emits the registry plus the
-makefile fragment naming their objects. There is **no JSON configuration**: the
-simulated machine is written in C++ (`src/static_environment.cc`), its compile-time
-constants are in `inc/defs.h`, and every other parameter is set at run time from a TOML
-file.
+Modules are added by creating a directory and no header can know that, which is the
+whole of what `config.sh` still generates: the registry naming them, plus the makefile
+fragment listing their objects.
 
 ```bash
 git submodule update --init          # first-time only: fetch vcpkg
@@ -132,9 +129,10 @@ guarded is gone.
 
 ### Cleaning / regenerating
 
-- `make clean` — remove object/dep files and generated headers.
-- `make configclean` — also remove `_configuration.mk`, legacy bridge files, and
-  `compile_commands.json`.
+- `make clean` — remove object and dep files. It also deletes
+  `inc/champsim_constants.h` and `inc/cache_modules.h`; **those paths are vestigial**,
+  nothing has written them for two migrations, and looking for what does is a dead end.
+- `make configclean` — also remove `_configuration.mk` and `compile_commands.json`.
 - `make compile_commands` — regenerate `compile_commands.json` (per module/src/test) for clangd.
 
 ## Architecture
@@ -156,11 +154,17 @@ before a pointer into it is handed out. Cache order is the per-cycle `operate()`
 `LLC` first, then each core's caches alphabetically (`DTLB, ITLB, L1D, L1I, L2C, STLB`).
 
 `config.sh` → `config/` package (`modules.py`, `module_registry.py`, `makefile.py`,
-`filewrite.py`, `cxx.py`, `util.py`) walks the four module directories and emits only
-what a header cannot know: `.csconfig/registry.inc` + `registry.cc.inc` (the
-name→factory tables) and `_configuration.mk` (module object lists the top-level
-`Makefile` includes). `.csconfig/` is gitignored, so no generated source is a staging
-hazard. Re-run it only after **adding or renaming a module**.
+`filewrite.py`, `util.py`) walks the four module directories and emits only what a
+header cannot know: `.csconfig/registry.inc` + `registry.cc.inc` (the name→factory
+tables) and `_configuration.mk` (module object lists the top-level `Makefile`
+includes). `.csconfig/` is gitignored, so no generated source is a staging hazard.
+Re-run it only after **adding or renaming a module**.
+
+A module is selected by its **directory basename**, so two modules of one kind cannot
+share one — `config.sh` rejects that, naming both paths, because the registry would
+otherwise emit the name twice and the first factory silently win. A `__legacy__` marker
+is rejected outright for the same reason: the bridge generator is gone, so the sources
+would compile and the class would never be registered.
 
 Extra module search roots: `--module-dir` / `--branch-dir` / `--btb-dir` /
 `--prefetcher-dir` / `--replacement-dir`. Every discovered module is compiled into every
@@ -170,6 +174,23 @@ binary; which one is *active* is a run-time key.
 hierarchy — an extra cache level, a cache with two lower levels, a non-uniform per-core
 hierarchy — is now a C++ edit rather than a JSON edit. That was the deliberate choice:
 the shape is code, the parameters are configuration.
+
+**This machine was proved equivalent to the generated one it replaced**, at one core and
+at two: 281 `[config]` leaves and 695 statistic leaves, zero differences. Both paths
+coexist only at `225930b8`, behind `-DCHAMPSIM_STATIC_ENV`, so that is where to rebuild
+the reference if the channel graph is ever suspected. Two traps make the comparison lie
+before it tells the truth: configure the reference from `champsim_config.json`, not a
+minimal JSON (otherwise its channel queues fall back to `_queue_factor` — L1D rq 32/pq 32
+instead of 64/8), and pin the branch predictor on both sides, because the
+baked default changed (next paragraph).
+
+**The default branch predictor changed with the migration.** The deleted
+`champsim_config.json` selected `bimodal`, overriding the `hashed_perceptron` that
+`inc/defaults.hpp` bakes; `inc/defs.h` now names the C++ default, so a
+configuration-free run predicts better than it used to — 4.46 MPKI against bimodal's
+8.38 on 400.perlbench. Every campaign selects its predictor explicitly, so no campaign
+number moves, but a default-build baseline does, and any comparison against a
+pre-migration run must pin `ooo_cpu.<cpu>.branch_predictor`.
 
 ### Simulation model: `champsim::operable` + global clock
 
@@ -300,6 +321,29 @@ builds break on the machine where it is hardest to notice. Keep such code in `sr
 - **Beware the arithmetic mean of per-trace percentage reductions.** Several SPEC traces
   have near-zero MPKI; one scored −286% off a 0.009 MPKI baseline and inverted a ranking.
   Pool the counts and take one ratio instead.
+- **`inc/defs.h`'s module defaults must name what `inc/defaults.hpp` bakes.**
+  `select_modules` *skips* the registry when a selection equals the default, trusting the
+  builder already installed it. A mismatch compiles, runs, and makes `[config]` report a
+  module the run did not use. `test/python/test_defaults_agree.py` is the only thing
+  tying the two files together.
+- **A duration in *cycles* scales by `static_environment::time_quantum(cfg)`, never a
+  literal.** `do_phase` ticks by the smallest `clock_period` among the operables, so the
+  quantum depends on every frequency key. vmem's minor-fault penalty used a baked 250 ps
+  (`1e6/4000`), which was right only until something overrode a frequency — then every
+  page fault was proportionally too expensive, silently. If you add a component with a
+  clock, add its frequency key to that sweep; `501-static-environment.cc` pins the
+  computed quantum against the constructed machine's actual minimum.
+- **Geometry knobs read through `positive_value`; queue sizes deliberately do not.**
+  Thirteen keys used to kill the process at zero (SIGFPE in the DRAM divisors, SIGABRT in
+  the cache asserts) and the two DIB knobs silently built a structure that can never hit.
+  `pq_size = 0` is the shipped TLB configuration, which is why queues are exempt.
+- **Vendored ITTAGE has undefined behaviour in its RNG.** `inc/ittage/ittage.hpp:246,248`
+  left-shift a negative `int` in `MYRANDOM`; UBSan flags it on any `ittage_64kb` run, so
+  the ITTAGE campaign's numbers were produced with it. GCC emits the expected
+  two's-complement result, and casting through `unsigned` would be bit-identical, but it
+  is vendored competition code — do not change it without deciding what happens to the
+  recorded results. It is the *only* UB the simulator reports: ASan+UBSan across all
+  eight campaign arms is otherwise clean.
 
 ### Added to the core
 
