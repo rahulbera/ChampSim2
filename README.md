@@ -26,52 +26,24 @@ vcpkg/vcpkg install
 
 # Compile
 
-ChampSim takes a JSON configuration script. Examine `champsim_config.json` for a fully-specified example. All options described in this file are optional and will be replaced with defaults if not specified. The configuration scrip can also be run without input, in which case an empty file is assumed.
+ChampSim is configured at **run time** from a TOML file; there is no JSON
+configuration script. `config.sh` only discovers the modules present on disk
+and emits the registry and makefile fragment that name them, so it is run once
+per checkout and again only when a module is added or renamed.
+
 ```
-$ ./config.sh <configuration file>
+$ ./config.sh
 $ make
+$ bin/champsim --config configs/sample.toml --warmup-instructions 200000000 --simulation-instructions 500000000 trace.champsimtrace.xz
 ```
 
-# Download DPC-3 trace
-
-Traces used for the 3rd Data Prefetching Championship (DPC-3) can be found here. (https://dpc3.compas.cs.stonybrook.edu/champsim-traces/speccpu/) A set of traces used for the 2nd Cache Replacement Championship (CRC-2) can be found from this link. (http://bit.ly/2t2nkUj)
-
-Storage for these traces is kindly provided by Daniel Jimenez (Texas A&M University) and Mike Ferdman (Stony Brook University). If you find yourself frequently using ChampSim, it is highly encouraged that you maintain your own repository of traces, in case the links ever break.
-
-# Run simulation
-
-Execute the binary directly.
-```
-$ bin/champsim --warmup-instructions 200000000 --simulation-instructions 500000000 ~/path/to/traces/600.perlbench_s-210B.champsimtrace.xz
-```
-
-The number of warmup and simulation instructions given will be the number of instructions retired. Note that the statistics printed at the end of the simulation include only the simulation phase.
-
-# Add your own branch predictor, data prefetchers, and replacement policy
-**Copy an empty template**
-```
-$ mkdir prefetcher/mypref
-$ cp prefetcher/no_l2c/no.cc prefetcher/mypref/mypref.cc
-```
-
-**Work on your algorithms with your favorite text editor**
-```
-$ vim prefetcher/mypref/mypref.cc
-```
-
-**Compile and test**
-Add your prefetcher to the configuration file.
-```
-{
-    "L2C": {
-        "prefetcher": "mypref"
-    }
-}
-```
-Note that the example prefetcher is an L2 prefetcher. You might design a prefetcher for a different level.
-
-```
-$ ./config.sh <configuration file>
+Every simulation parameter -- cache geometry, core widths, latencies, DRAM
+timings, and which branch predictor, BTB, prefetcher and replacement policy to
+use -- is set in that TOML file or with `--set key=value` on the command line.
+`bin/champsim --knobs` lists every key a binary accepts. The machine's *shape*
+(which caches exist and how they are wired) is C++ in `src/static_environment.cc`,
+and `NUM_CPUS`, `BLOCK_SIZE` and `PAGE_SIZE` are in `inc/defs.h`; changing
+either is a code edit and a rebuild.
 $ make
 $ bin/champsim --warmup-instructions 200000000 --simulation-instructions 500000000 600.perlbench_s-210B.champsimtrace.xz
 ```

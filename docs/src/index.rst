@@ -12,8 +12,7 @@ We encourage you to read below to see if ChampSim is right for your research, cl
 
    Modules
    Module-support-library
-   Creating-a-configuration-file
-   Configuration-API
+   Runtime-configuration
    Address-operations
    Byte-sizes
    Bandwidth
