@@ -29,9 +29,18 @@ inline constexpr std::size_t page_size = 4096;
 // --heartbeat-frequency flag both override it at run time.
 inline constexpr std::uint64_t heartbeat_frequency = 10000000;
 
-// The modules a binary uses unless a runtime key selects another. These are
-// the champsim::defaults packs; changing them here changes what a
-// configuration-free run simulates.
+// The modules a binary uses unless a runtime key selects another. These MUST
+// name what inc/defaults.hpp bakes into the builders: static_environment skips
+// the registry when a selection equals the value here, so a mismatch would
+// make [config] report a module the run did not use.
+//
+// NOTE, for anyone comparing against results from before the migration: the
+// deleted champsim_config.json selected "bimodal", overriding the C++ default
+// below. A configuration-free run therefore predicts better than it used to --
+// on 400.perlbench, 4.46 MPKI against bimodal's 8.38. Every campaign selects
+// its predictor explicitly, so none of their numbers move; a default-build
+// baseline does. Set ooo_cpu.<cpu>.branch_predictor = "bimodal" to get the old
+// behaviour back without editing this file.
 inline constexpr const char* default_branch_predictor = "hashed_perceptron";
 inline constexpr const char* default_btb = "basic_btb";
 inline constexpr const char* default_prefetcher = "no";

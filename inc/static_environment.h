@@ -53,6 +53,14 @@ public:
 
   [[nodiscard]] std::size_t channels_built() const { return std::size(channels); }
 
+  // The clock tick do_phase() will use: the SMALLEST clock_period among the
+  // operables. Durations given in cycles (the minor fault penalty) must be
+  // scaled by it, so it is computed from the configuration before any
+  // component exists. Exposed so a test can pin it against the constructed
+  // machine's actual minimum -- if this sweep ever misses a component, the
+  // two diverge silently and only cycle-denominated durations are wrong.
+  static chrono::picoseconds time_quantum(const runtime_config& cfg);
+
 private:
   // Runtime module selection, run once at the end of construction: before any
   // hook has fired, which is the only window in which replacing a module's

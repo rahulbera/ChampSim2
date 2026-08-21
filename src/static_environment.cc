@@ -67,7 +67,36 @@ champsim::chrono::picoseconds period(const champsim::runtime_config& cfg, const 
 {
   return champsim::chrono::picoseconds{static_cast<champsim::chrono::picoseconds::rep>(1000000.0 / cfg.positive_value<double>(key, mhz))};
 }
+
+// The simulation's time quantum: do_phase() ticks the shared clock by the
+// SMALLEST clock_period among the operables, so a duration expressed in cycles
+// has to be scaled by this and not by any one component's period.
+//
+// The configuration layer computed the equivalent once, at configure time,
+// from the whole parsed config. Reproducing it needs every frequency key --
+// hence the sweep. A literal would be right only while nothing overrides a
+// frequency: raise one component to 5000 MHz and a baked 250 ps overstates
+// every cycle-denominated duration by 25%, silently.
+champsim::chrono::picoseconds compute_time_quantum(const champsim::runtime_config& cfg)
+{
+  auto shortest = period(cfg, "pmem.frequency", 1600.0);
+  const auto consider = [&cfg, &shortest](const std::string& key) {
+    shortest = std::min(shortest, period(cfg, key, 4000));
+  };
+
+  for (std::size_t cpu = 0; cpu < champsim::defs::num_cpus; ++cpu) {
+    consider(core_key(cpu) + ".frequency");
+    consider(ptw_key(cpu) + ".frequency");
+    for (const auto* level : {"DTLB", "ITLB", "L1D", "L1I", "L2C", "STLB"}) {
+      consider(cache_key(cpu, level) + ".frequency");
+    }
+  }
+  consider("cache.llc.frequency");
+  return shortest;
+}
 } // namespace
+
+champsim::chrono::picoseconds champsim::static_environment::time_quantum(const runtime_config& cfg) { return compute_time_quantum(cfg); }
 
 std::string champsim::static_environment::core_name(std::size_t cpu) { return "cpu" + std::to_string(cpu); }
 std::string champsim::static_environment::cache_name(std::size_t cpu, std::string_view level) { return "cpu" + std::to_string(cpu) + "_" + std::string{level}; }
@@ -108,14 +137,15 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
       }()),
       DRAM(period(cfg, "pmem.data_rate", 3200), period(cfg, "pmem.frequency", 1600.0), cfg.value<std::size_t>("pmem.trp", 24),
            cfg.value<std::size_t>("pmem.trcd", 24), cfg.value<std::size_t>("pmem.tcas", 24), cfg.value<std::size_t>("pmem.tras", 52),
-           champsim::chrono::microseconds{static_cast<champsim::chrono::microseconds::rep>(1000.0 * cfg.value<double>("pmem.refresh_period", 32))},
+           champsim::chrono::microseconds{static_cast<champsim::chrono::microseconds::rep>(1000.0 * cfg.positive_value<double>("pmem.refresh_period", 32))},
            std::vector<channel*>{&channels.at(llc_to_dram_chan(defs::num_cpus))}, cfg.value<std::size_t>("pmem.rq_size", 64),
-           cfg.value<std::size_t>("pmem.wq_size", 64), cfg.value<std::size_t>("pmem.channels", 1),
-           champsim::data::bytes{cfg.value<champsim::data::bytes::rep>("pmem.channel_width", 8)}, cfg.value<std::size_t>("pmem.bank_rows", 65536),
-           cfg.value<std::size_t>("pmem.bank_columns", 1024), cfg.value<std::size_t>("pmem.ranks", 1), cfg.value<std::size_t>("pmem.bankgroups", 8),
-           cfg.value<std::size_t>("pmem.banks", 4), cfg.value<std::size_t>("pmem.refreshes_per_period", 8192)),
-      vmem(champsim::data::bytes{cfg.value<champsim::data::bytes::rep>("vmem.pte_page_size", 4096)}, cfg.value<std::size_t>("vmem.num_levels", 5),
-           champsim::chrono::picoseconds{250 * cfg.value<champsim::chrono::picoseconds::rep>("vmem.minor_fault_penalty", 200)}, DRAM, 1)
+           cfg.value<std::size_t>("pmem.wq_size", 64), cfg.positive_value<std::size_t>("pmem.channels", 1),
+           champsim::data::bytes{cfg.positive_value<champsim::data::bytes::rep>("pmem.channel_width", 8)},
+           cfg.positive_value<std::size_t>("pmem.bank_rows", 65536), cfg.positive_value<std::size_t>("pmem.bank_columns", 1024),
+           cfg.positive_value<std::size_t>("pmem.ranks", 1), cfg.positive_value<std::size_t>("pmem.bankgroups", 8),
+           cfg.positive_value<std::size_t>("pmem.banks", 4), cfg.positive_value<std::size_t>("pmem.refreshes_per_period", 8192)),
+      vmem(champsim::data::bytes{cfg.positive_value<champsim::data::bytes::rep>("vmem.pte_page_size", 4096)}, cfg.value<std::size_t>("vmem.num_levels", 5),
+           compute_time_quantum(cfg) * cfg.value<champsim::chrono::picoseconds::rep>("vmem.minor_fault_penalty", 200), DRAM, 1)
 {
   ptws.reserve(defs::num_cpus);
   for (std::size_t cpu = 0; cpu < defs::num_cpus; ++cpu) {
@@ -150,8 +180,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             return upper;
                           }())
                           .lower_level(&channels.at(llc_to_dram_chan(defs::num_cpus)))
-                          .sets(cfg.value<uint32_t>("cache.llc.sets", 2048))
-                          .ways(cfg.value<uint32_t>("cache.llc.ways", 16))
+                          .sets(cfg.positive_value<uint32_t>("cache.llc.sets", 2048))
+                          .ways(cfg.positive_value<uint32_t>("cache.llc.ways", 16))
                           .pq_size(cfg.value<uint32_t>("cache.llc.pq_size", 32))
                           .mshr_size(cfg.value<uint32_t>("cache.llc.mshr_size", 64))
                           .latency(cfg.value<uint64_t>("cache.llc.latency", 20))
@@ -177,8 +207,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .name(cache_name(cpu, "DTLB"))
                             .upper_levels({&channels.at(chan(cpu, l1d_to_dtlb))})
                             .lower_level(&channels.at(chan(cpu, dtlb_to_stlb)))
-                            .sets(cfg.value<uint32_t>(dtlb + ".sets", 16))
-                            .ways(cfg.value<uint32_t>(dtlb + ".ways", 4))
+                            .sets(cfg.positive_value<uint32_t>(dtlb + ".sets", 16))
+                            .ways(cfg.positive_value<uint32_t>(dtlb + ".ways", 4))
                             .pq_size(cfg.value<uint32_t>(dtlb + ".pq_size", 0))
                             .mshr_size(cfg.value<uint32_t>(dtlb + ".mshr_size", 8))
                             .latency(cfg.value<uint64_t>(dtlb + ".latency", 1))
@@ -192,8 +222,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .name(cache_name(cpu, "ITLB"))
                             .upper_levels({&channels.at(chan(cpu, l1i_to_itlb))})
                             .lower_level(&channels.at(chan(cpu, itlb_to_stlb)))
-                            .sets(cfg.value<uint32_t>(itlb + ".sets", 16))
-                            .ways(cfg.value<uint32_t>(itlb + ".ways", 4))
+                            .sets(cfg.positive_value<uint32_t>(itlb + ".sets", 16))
+                            .ways(cfg.positive_value<uint32_t>(itlb + ".ways", 4))
                             .pq_size(cfg.value<uint32_t>(itlb + ".pq_size", 0))
                             .mshr_size(cfg.value<uint32_t>(itlb + ".mshr_size", 8))
                             .latency(cfg.value<uint64_t>(itlb + ".latency", 1))
@@ -208,8 +238,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .upper_levels({&channels.at(chan(cpu, ptw_to_l1d)), &channels.at(chan(cpu, core_to_l1d))})
                             .lower_level(&channels.at(chan(cpu, l1d_to_l2c)))
                             .lower_translate(&channels.at(chan(cpu, l1d_to_dtlb)))
-                            .sets(cfg.value<uint32_t>(l1d + ".sets", 64))
-                            .ways(cfg.value<uint32_t>(l1d + ".ways", 12))
+                            .sets(cfg.positive_value<uint32_t>(l1d + ".sets", 64))
+                            .ways(cfg.positive_value<uint32_t>(l1d + ".ways", 12))
                             .pq_size(cfg.value<uint32_t>(l1d + ".pq_size", 8))
                             .mshr_size(cfg.value<uint32_t>(l1d + ".mshr_size", 16))
                             .latency(cfg.value<uint64_t>(l1d + ".latency", 5))
@@ -226,8 +256,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .upper_levels({&channels.at(chan(cpu, core_to_l1i))})
                             .lower_level(&channels.at(chan(cpu, l1i_to_l2c)))
                             .lower_translate(&channels.at(chan(cpu, l1i_to_itlb)))
-                            .sets(cfg.value<uint32_t>(l1i + ".sets", 64))
-                            .ways(cfg.value<uint32_t>(l1i + ".ways", 8))
+                            .sets(cfg.positive_value<uint32_t>(l1i + ".sets", 64))
+                            .ways(cfg.positive_value<uint32_t>(l1i + ".ways", 8))
                             .pq_size(cfg.value<uint32_t>(l1i + ".pq_size", 32))
                             .mshr_size(cfg.value<uint32_t>(l1i + ".mshr_size", 8))
                             .latency(cfg.value<uint64_t>(l1i + ".latency", 4))
@@ -244,8 +274,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .upper_levels({&channels.at(chan(cpu, l1d_to_l2c)), &channels.at(chan(cpu, l1i_to_l2c))})
                             .lower_level(&channels.at(chan(cpu, l2c_to_llc)))
                             .lower_translate(&channels.at(chan(cpu, l2c_to_stlb)))
-                            .sets(cfg.value<uint32_t>(l2c + ".sets", 1024))
-                            .ways(cfg.value<uint32_t>(l2c + ".ways", 8))
+                            .sets(cfg.positive_value<uint32_t>(l2c + ".sets", 1024))
+                            .ways(cfg.positive_value<uint32_t>(l2c + ".ways", 8))
                             .pq_size(cfg.value<uint32_t>(l2c + ".pq_size", 16))
                             .mshr_size(cfg.value<uint32_t>(l2c + ".mshr_size", 32))
                             .latency(cfg.value<uint64_t>(l2c + ".latency", 10))
@@ -261,8 +291,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .name(cache_name(cpu, "STLB"))
                             .upper_levels({&channels.at(chan(cpu, dtlb_to_stlb)), &channels.at(chan(cpu, itlb_to_stlb)), &channels.at(chan(cpu, l2c_to_stlb))})
                             .lower_level(&channels.at(chan(cpu, stlb_to_ptw)))
-                            .sets(cfg.value<uint32_t>(stlb + ".sets", 128))
-                            .ways(cfg.value<uint32_t>(stlb + ".ways", 12))
+                            .sets(cfg.positive_value<uint32_t>(stlb + ".sets", 128))
+                            .ways(cfg.positive_value<uint32_t>(stlb + ".ways", 12))
                             .pq_size(cfg.value<uint32_t>(stlb + ".pq_size", 0))
                             .mshr_size(cfg.value<uint32_t>(stlb + ".mshr_size", 16))
                             .latency(cfg.value<uint64_t>(stlb + ".latency", 8))
@@ -306,8 +336,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                            .schedule_latency(cfg.value<unsigned>(key + ".schedule_latency", 0))
                            .execute_latency(cfg.value<unsigned>(key + ".execute_latency", 0))
                            .clock_period(period(cfg, key + ".frequency", 4000))
-                           .dib_set(cfg.value<std::size_t>(key + ".dib.sets", 32))
-                           .dib_way(cfg.value<std::size_t>(key + ".dib.ways", 8))
+                           .dib_set(cfg.positive_value<std::size_t>(key + ".dib.sets", 32))
+                           .dib_way(cfg.positive_value<std::size_t>(key + ".dib.ways", 8))
                            .dib_window(cfg.value<std::size_t>(key + ".dib.window_size", 16)));
   }
 
