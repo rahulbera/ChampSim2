@@ -18,7 +18,6 @@ namespace
 // matching component names and printing &channels.at(N).
 enum edge : std::size_t {
   ptw_to_l1d,
-  llc_to_dram,
   dtlb_to_stlb,
   itlb_to_stlb,
   l1d_to_l2c,
@@ -30,10 +29,14 @@ enum edge : std::size_t {
   l2c_to_stlb,
   core_to_l1i,
   core_to_l1d,
-  edge_count
+  per_core_edge_count
 };
 
-constexpr std::size_t chan(std::size_t cpu, edge which) { return (cpu * static_cast<std::size_t>(edge_count)) + static_cast<std::size_t>(which); }
+constexpr std::size_t chan(std::size_t cpu, edge which) { return (cpu * static_cast<std::size_t>(per_core_edge_count)) + static_cast<std::size_t>(which); }
+
+// The LLC -> DRAM edge is SHARED: one LLC and one memory controller, so one
+// channel however many cores there are. It sits after the per-core block.
+constexpr std::size_t llc_to_dram_chan(std::size_t cpus) { return cpus * static_cast<std::size_t>(per_core_edge_count); }
 
 std::string lower(std::string text)
 {
@@ -68,7 +71,7 @@ std::string champsim::static_environment::ptw_name(std::size_t cpu) { return "cp
 champsim::static_environment::static_environment(const runtime_config& cfg)
     : channels([&cfg] {
         std::vector<channel> made{};
-        made.reserve(defs::num_cpus * static_cast<std::size_t>(edge_count));
+        made.reserve((defs::num_cpus * static_cast<std::size_t>(per_core_edge_count)) + 1);
         for (std::size_t cpu = 0; cpu < defs::num_cpus; ++cpu) {
           const auto l1i = cache_key(cpu, "L1I");
           const auto l1d = cache_key(cpu, "L1D");
@@ -80,9 +83,6 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
           const auto page_bits = champsim::lg2(PAGE_SIZE);
 
           made.push_back(queue(cfg, l1d, 64, 8, 64, block_bits, true));
-          // The DRAM feeder is unbounded: the memory controller has its own queues.
-          made.push_back(channel{std::numeric_limits<std::size_t>::max(), std::numeric_limits<std::size_t>::max(), std::numeric_limits<std::size_t>::max(),
-                                 champsim::data::bits{block_bits}, false});
           made.push_back(queue(cfg, stlb, 32, 0, 32, page_bits, false));
           made.push_back(queue(cfg, stlb, 32, 0, 32, page_bits, false));
           made.push_back(queue(cfg, l2c, 32, 16, 32, block_bits, false));
@@ -95,23 +95,20 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
           made.push_back(queue(cfg, l1i, 64, 32, 64, block_bits, true));
           made.push_back(queue(cfg, l1d, 64, 8, 64, block_bits, true));
         }
+        // The shared LLC -> DRAM feeder, unbounded: the memory controller keeps
+        // its own queues.
+        made.push_back(channel{std::numeric_limits<std::size_t>::max(), std::numeric_limits<std::size_t>::max(), std::numeric_limits<std::size_t>::max(),
+                               champsim::data::bits{champsim::lg2(BLOCK_SIZE)}, false});
         return made;
       }()),
-      DRAM(
-          period(cfg, "pmem.data_rate", 3200), period(cfg, "pmem.frequency", 1600.0), cfg.value<std::size_t>("pmem.trp", 24),
-          cfg.value<std::size_t>("pmem.trcd", 24), cfg.value<std::size_t>("pmem.tcas", 24), cfg.value<std::size_t>("pmem.tras", 52),
-          champsim::chrono::microseconds{static_cast<champsim::chrono::microseconds::rep>(1000.0 * cfg.value<double>("pmem.refresh_period", 32))},
-          [this] {
-            std::vector<channel*> upper{};
-            for (std::size_t cpu = 0; cpu < defs::num_cpus; ++cpu) {
-              upper.push_back(&channels.at(chan(cpu, llc_to_dram)));
-            }
-            return upper;
-          }(),
-          cfg.value<std::size_t>("pmem.rq_size", 64), cfg.value<std::size_t>("pmem.wq_size", 64), cfg.value<std::size_t>("pmem.channels", 1),
-          champsim::data::bytes{cfg.value<champsim::data::bytes::rep>("pmem.channel_width", 8)}, cfg.value<std::size_t>("pmem.bank_rows", 65536),
-          cfg.value<std::size_t>("pmem.bank_columns", 1024), cfg.value<std::size_t>("pmem.ranks", 1), cfg.value<std::size_t>("pmem.bankgroups", 8),
-          cfg.value<std::size_t>("pmem.banks", 4), cfg.value<std::size_t>("pmem.refreshes_per_period", 8192)),
+      DRAM(period(cfg, "pmem.data_rate", 3200), period(cfg, "pmem.frequency", 1600.0), cfg.value<std::size_t>("pmem.trp", 24),
+           cfg.value<std::size_t>("pmem.trcd", 24), cfg.value<std::size_t>("pmem.tcas", 24), cfg.value<std::size_t>("pmem.tras", 52),
+           champsim::chrono::microseconds{static_cast<champsim::chrono::microseconds::rep>(1000.0 * cfg.value<double>("pmem.refresh_period", 32))},
+           std::vector<channel*>{&channels.at(llc_to_dram_chan(defs::num_cpus))}, cfg.value<std::size_t>("pmem.rq_size", 64),
+           cfg.value<std::size_t>("pmem.wq_size", 64), cfg.value<std::size_t>("pmem.channels", 1),
+           champsim::data::bytes{cfg.value<champsim::data::bytes::rep>("pmem.channel_width", 8)}, cfg.value<std::size_t>("pmem.bank_rows", 65536),
+           cfg.value<std::size_t>("pmem.bank_columns", 1024), cfg.value<std::size_t>("pmem.ranks", 1), cfg.value<std::size_t>("pmem.bankgroups", 8),
+           cfg.value<std::size_t>("pmem.banks", 4), cfg.value<std::size_t>("pmem.refreshes_per_period", 8192)),
       vmem(champsim::data::bytes{cfg.value<champsim::data::bytes::rep>("vmem.pte_page_size", 4096)}, cfg.value<std::size_t>("vmem.num_levels", 5),
            champsim::chrono::picoseconds{250 * cfg.value<champsim::chrono::picoseconds::rep>("vmem.minor_fault_penalty", 200)}, DRAM, 1)
 {
@@ -147,7 +144,7 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             }
                             return upper;
                           }())
-                          .lower_level(&channels.at(chan(0, llc_to_dram)))
+                          .lower_level(&channels.at(llc_to_dram_chan(defs::num_cpus)))
                           .sets(cfg.value<uint32_t>("cache.llc.sets", 2048))
                           .ways(cfg.value<uint32_t>("cache.llc.ways", 16))
                           .pq_size(cfg.value<uint32_t>("cache.llc.pq_size", 32))

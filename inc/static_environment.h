@@ -45,6 +45,14 @@ public:
   static std::string cache_name(std::size_t cpu, std::string_view level);
   static std::string ptw_name(std::size_t cpu);
 
+  // The channel count for a given core count: twelve edges per core plus the
+  // ONE shared LLC -> DRAM feeder. Exposed so a test can pin the formula --
+  // a per-core feeder is indistinguishable from a shared one at a single core,
+  // and would leave DRAM polling a channel nothing ever writes.
+  static constexpr std::size_t channel_count(std::size_t cpus) { return (cpus * 12) + 1; }
+
+  [[nodiscard]] std::size_t channels_built() const { return std::size(channels); }
+
 private:
   std::vector<channel> channels;
   MEMORY_CONTROLLER DRAM;

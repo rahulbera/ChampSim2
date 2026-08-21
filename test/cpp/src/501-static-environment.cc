@@ -51,6 +51,22 @@ TEST_CASE("Every operable appears exactly once, cores then caches then PTWs then
   REQUIRE(std::size(unique) == std::size(operables));
 }
 
+TEST_CASE("The LLC-to-DRAM feeder is one shared channel, not one per core")
+{
+  // Twelve edges per core plus ONE shared feeder. A per-core feeder is
+  // invisible at a single core -- every statistic matches -- but leaves the
+  // memory controller polling a channel that nothing ever writes. The
+  // generated topology has exactly one DRAM edge at any core count (25
+  // channels at two cores, not 26).
+  champsim::runtime_config cfg{};
+  champsim::static_environment env{cfg};
+
+  REQUIRE(env.channels_built() == champsim::static_environment::channel_count(champsim::defs::num_cpus));
+  STATIC_REQUIRE(champsim::static_environment::channel_count(1) == 13);
+  STATIC_REQUIRE(champsim::static_environment::channel_count(2) == 25);
+  STATIC_REQUIRE(champsim::static_environment::channel_count(4) == 49);
+}
+
 TEST_CASE("The runtime store configures the hand-written machine")
 {
   champsim::runtime_config cfg{};
