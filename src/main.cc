@@ -183,6 +183,11 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     const auto stored_heartbeat = runtime_cfg.positive_value<uint64_t>("sim.heartbeat_frequency", configured_heartbeat_frequency);
     if (heartbeat_option->count() == 0) {
       heartbeat_frequency = stored_heartbeat;
+    } else {
+      // The flag won. [config] states what the run used, so it must report the
+      // flag's value and not the key's -- otherwise a document that claims to
+      // reproduce its run would replay it at a different heartbeat.
+      runtime_cfg.override_effective("sim.heartbeat_frequency", heartbeat_frequency);
     }
     sim_knobs.deadlock_cycle = runtime_cfg.positive_value<int>("sim.deadlock_cycle", sim_knobs.deadlock_cycle);
     sim_knobs.livelock_period = runtime_cfg.positive_value<uint64_t>("sim.livelock_period", sim_knobs.livelock_period);
@@ -193,6 +198,25 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     return 1;
   }
   configured_environment& gen_environment = *built_environment;
+
+  // Every key the machine understands has now been read, so a key nothing
+  // consulted is one this binary has no use for: a typo, or a knob aimed at a
+  // component or module that is not part of this machine. This is the whole
+  // of key validation -- scalars, module selections and module knobs alike.
+  //
+  // Ahead of --knobs deliberately: --knobs is what a user reaches for to check
+  // whether a key is real, so accepting a bad one there and exiting 0 answers
+  // the question wrongly.
+  {
+    const auto complaints = runtime_cfg.unconsulted_keys();
+    if (!std::empty(complaints)) {
+      for (const auto& complaint : complaints) {
+        fmt::print(stderr, "ERROR: {}\n", complaint);
+      }
+      fmt::print(stderr, "Run --knobs with no other configuration to list every key this binary accepts.\n");
+      return 1;
+    }
+  }
 
   if (list_knobs) {
     // Reported after construction, so these are the keys this machine actually
@@ -220,21 +244,6 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   if (std::size(trace_names) != NUM_CPUS) {
     fmt::print(stderr, "ERROR: expected {} trace(s), got {}.\n", NUM_CPUS, std::size(trace_names));
     return 1;
-  }
-
-  // Every key the machine understands has now been read, so a key nothing
-  // consulted is one this binary has no use for: a typo, or a knob aimed at a
-  // component or module that is not part of this machine. This is the whole
-  // of key validation -- scalars, module selections and module knobs alike.
-  {
-    const auto complaints = runtime_cfg.unconsulted_keys();
-    if (!std::empty(complaints)) {
-      for (const auto& complaint : complaints) {
-        fmt::print(stderr, "ERROR: {}\n", complaint);
-      }
-      fmt::print(stderr, "Run with --knobs to list every key this binary accepts.\n");
-      return 1;
-    }
   }
 
   if (hide_heartbeat) {

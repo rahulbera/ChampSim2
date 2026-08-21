@@ -101,6 +101,17 @@ public:
   // this back is how --knobs enumerates the binary's knobs.
   [[nodiscard]] std::vector<std::pair<std::string, std::string>> consulted() const;
 
+  // Record that a key's EFFECTIVE value is not the one the store holds,
+  // because something outside the store won a precedence contest for it --
+  // today only --heartbeat-frequency over sim.heartbeat_frequency. The key
+  // stays consulted (it is not unknown, it merely lost), and [config], which
+  // states what the run actually used, reports the winner.
+  template <typename T>
+  void override_effective(std::string_view key, T effective) const
+  {
+    note_consulted(key, value_type{static_cast<int64_t>(effective)});
+  }
+
 private:
   [[nodiscard]] static std::string render(const value_type& val);
   void note_consulted(std::string_view key, const value_type& fallback) const;

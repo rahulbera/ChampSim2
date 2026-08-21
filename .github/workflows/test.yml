@@ -421,6 +421,13 @@ jobs:
     - name: --knobs emits a usable configuration file
       run: |
         ./bin/champsim --knobs > knobs.toml
+        # --knobs is what a user reaches for to check whether a key is real,
+        # so it must not accept a bad one and exit 0.
+        set +e
+        ./bin/champsim --knobs --set pmem.NOSUCHKEY=1 > /dev/null 2>&1
+        status=$?
+        set -e
+        test "$status" -ne 0 || { echo "--knobs accepted an unknown key"; exit 1; }
         python3 -c "import tomllib; d = tomllib.load(open('knobs.toml','rb')); assert sorted(d) == ['cache','ooo_cpu','pmem','ptw','sim','vmem'], sorted(d)"
         # And what it emits is accepted straight back as configuration.
         ./bin/champsim -w5000 -i5000 --config knobs.toml \
