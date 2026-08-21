@@ -394,6 +394,7 @@ def get_instantiation_lines(cores, caches, ptws, pmem, vmem, build_id):
     '''
     Generate the lines for a C++ file that instantiates a configuration.
     '''
+    from . import module_registry
     reject_folded_name_collisions(cores, caches, ptws)
     classname = f'champsim::configured::generated_environment<0x{build_id}>'
     ul_pairs = get_upper_levels(cores, caches, ptws)
@@ -467,6 +468,19 @@ def get_instantiation_lines(cores, caches, ptws, pmem, vmem, build_id):
     yield from cache_instantiation_body
     yield from core_instantiation_body
     yield '{'
+    # Runtime module selection: swap the type-erased pimpls before any hook has
+    # fired, then deliver configure() to the selected module. See
+    # config/module_registry.py.
+    for index, cpu in enumerate(cores):
+        yield from module_registry.module_selection_lines(
+            build_id, 'cores', index, store_prefix('ooo_cpu', cpu['name']),
+            [('branch_predictor', 'install_branch_module', 'make_branch', cpu.get('_branch_predictor_data', [])),
+             ('btb', 'install_btb_module', 'make_btb', cpu.get('_btb_data', []))])
+    for index, cache in enumerate(caches):
+        yield from module_registry.module_selection_lines(
+            build_id, 'caches', index, store_prefix('cache', cache['name']),
+            [('prefetcher', 'install_prefetcher_module', 'make_prefetcher', cache.get('_prefetcher_data', [])),
+             ('replacement', 'install_replacement_module', 'make_replacement', cache.get('_replacement_data', []))])
     yield '}'
     yield ''
 

@@ -167,27 +167,65 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   // their keys are appended to the generated manifest by hand.
   constexpr std::array<std::string_view, 3> sim_knob_keys{"sim.deadlock_cycle", "sim.heartbeat_frequency", "sim.livelock_period"};
 
-  if (list_knobs) {
-    // Construct a throwaway environment against an empty recording store: the
-    // (key, fallback) pairs it consults ARE this binary's knobs, exactly as
-    // the real construction would consult them.
-    champsim::runtime_config recorder{};
-    configured_environment knob_probe{recorder};
-    recorder.value<int>("sim.deadlock_cycle", champsim::simulation_knobs{}.deadlock_cycle);
-    recorder.value<uint64_t>("sim.heartbeat_frequency", configured_environment::heartbeat_frequency);
-    recorder.value<uint64_t>("sim.livelock_period", champsim::simulation_knobs{}.livelock_period);
-    for (const auto& [knob_key, fallback] : recorder.consulted()) {
-      fmt::print("{} = {}\n", knob_key, fallback);
+  using registry = champsim::configured::module_registry<CHAMPSIM_BUILD>;
+
+  // A module-knob key names a registered module's table on a component:
+  // <component>.<registered module name>.<knob...>. Knob names inside the
+  // table are the module's to validate (the consumed-key check below); the
+  // module-name segment is checked here so a typo'd module still fails fast.
+  const auto is_module_knob_key = [](std::string_view key) {
+    const auto component_prefixes = std::array<std::pair<std::string_view, std::vector<std::string_view>>, 2>{
+        std::pair{std::string_view{"ooo_cpu."},
+                  [] {
+                    std::vector<std::string_view> names(std::begin(registry::branch_predictor), std::end(registry::branch_predictor));
+                    names.insert(std::end(names), std::begin(registry::btb), std::end(registry::btb));
+                    return names;
+                  }()},
+        std::pair{std::string_view{"cache."},
+                  [] {
+                    std::vector<std::string_view> names(std::begin(registry::prefetcher), std::end(registry::prefetcher));
+                    names.insert(std::end(names), std::begin(registry::replacement), std::end(registry::replacement));
+                    return names;
+                  }()},
+    };
+    for (const auto& [kind_prefix, module_names] : component_prefixes) {
+      if (key.substr(0, std::size(kind_prefix)) != kind_prefix) {
+        continue;
+      }
+      // <kind>.<component>.<module>.<knob...>: split off the component name,
+      // then require a registered module name followed by at least one knob
+      // segment.
+      const auto after_kind = key.substr(std::size(kind_prefix));
+      const auto component_end = after_kind.find('.');
+      if (component_end == std::string_view::npos) {
+        return false;
+      }
+      const auto after_component = after_kind.substr(component_end + 1);
+      const auto module_end = after_component.find('.');
+      if (module_end == std::string_view::npos) {
+        return false;
+      }
+      const auto module_name = after_component.substr(0, module_end);
+      return std::find(std::begin(module_names), std::end(module_names), module_name) != std::end(module_names);
     }
-    return 0;
-  }
+    return false;
+  };
 
   // Fail before construction: an unknown key would otherwise be silently
   // ignored, and a sweep that misspells a knob would sweep nothing.
+  std::vector<std::string> module_knob_keys{};
   {
     std::vector<std::string_view> valid{std::begin(champsim::configured::config_record<CHAMPSIM_BUILD>::runtime_keys),
                                         std::end(champsim::configured::config_record<CHAMPSIM_BUILD>::runtime_keys)};
     valid.insert(std::end(valid), std::begin(sim_knob_keys), std::end(sim_knob_keys));
+    // Collect fully before taking views: growing the vector would reallocate
+    // and dangle any view already handed to `valid`.
+    for (const auto& [applied_key, rendered] : runtime_cfg.applied()) {
+      if (is_module_knob_key(applied_key)) {
+        module_knob_keys.push_back(applied_key);
+      }
+    }
+    valid.insert(std::end(valid), std::begin(module_knob_keys), std::end(module_knob_keys));
     const auto complaints = runtime_cfg.unknown_keys(std::begin(valid), std::end(valid));
     if (!std::empty(complaints)) {
       for (const auto& complaint : complaints) {
@@ -196,6 +234,34 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
       fmt::print(stderr, "Run with --knobs to list every key this binary accepts.\n");
       return 1;
     }
+  }
+
+  if (list_knobs) {
+    // Construct a throwaway environment against the ACTUAL store: the
+    // (key, fallback) pairs it consults are this binary's knobs under the
+    // given configuration -- including the knob tables of runtime-SELECTED
+    // modules, which an empty-store probe could never reach.
+    try {
+      configured_environment knob_probe{runtime_cfg};
+      runtime_cfg.value<int>("sim.deadlock_cycle", champsim::simulation_knobs{}.deadlock_cycle);
+      runtime_cfg.value<uint64_t>("sim.heartbeat_frequency", configured_environment::heartbeat_frequency);
+      runtime_cfg.value<uint64_t>("sim.livelock_period", champsim::simulation_knobs{}.livelock_period);
+    } catch (const std::runtime_error& err) {
+      fmt::print(stderr, "ERROR: {}\n", err.what());
+      return 1;
+    }
+    for (const auto& [knob_key, fallback] : runtime_cfg.consulted()) {
+      fmt::print("{} = {}\n", knob_key, fallback);
+    }
+    fmt::print("\nSelectable modules (per component, via the keys above):\n");
+    const auto print_names = [](std::string_view kind, const auto& names) {
+      fmt::print("{}: {}\n", kind, fmt::join(names, ", "));
+    };
+    print_names("branch_predictor", registry::branch_predictor);
+    print_names("btb", registry::btb);
+    print_names("prefetcher", registry::prefetcher);
+    print_names("replacement", registry::replacement);
+    return 0;
   }
 
   // --knobs is the only invocation that may omit the traces.
@@ -227,6 +293,25 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     return 1;
   }
   configured_environment& gen_environment = *built_environment;
+
+  // The hook contract: a module consults every knob it owns, unconditionally,
+  // during configure(). A module-knob key never consulted therefore targets a
+  // module that is not selected on that component, or misspells a knob.
+  {
+    const auto consulted = runtime_cfg.consulted();
+    std::vector<std::string> unconsumed{};
+    std::copy_if(std::begin(module_knob_keys), std::end(module_knob_keys), std::back_inserter(unconsumed), [&consulted](const auto& knob_key) {
+      return std::none_of(std::begin(consulted), std::end(consulted), [&knob_key](const auto& entry) { return entry.first == knob_key; });
+    });
+    if (!std::empty(unconsumed)) {
+      for (const auto& knob_key : unconsumed) {
+        fmt::print(stderr,
+                   "ERROR: no selected module consumed configuration key '{}' -- is that module selected on that component, and is the knob name right?\n",
+                   knob_key);
+      }
+      return 1;
+    }
+  }
 
   if (hide_heartbeat) {
     for (O3_CPU& cpu : gen_environment.cpu_view()) {
@@ -271,7 +356,16 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   fmt::print("\n*** ChampSim Multicore Out-of-Order Simulator ***\nWarmup Instructions: {}\nSimulation Instructions: {}\nNumber of CPUs: {}\nPage size: {}\n\n",
              phases.at(0).length, phases.at(1).length, std::size(gen_environment.cpu_view()), PAGE_SIZE);
 
-  auto phase_stats = champsim::main(gen_environment, phases, traces, sim_knobs);
+  decltype(champsim::main(gen_environment, phases, traces, sim_knobs)) phase_stats{};
+  try {
+    phase_stats = champsim::main(gen_environment, phases, traces, sim_knobs);
+  } catch (const std::runtime_error& err) {
+    // A module may reject its placement at initialize() -- CBP6 tenants throw
+    // when instantiated beyond cpu0 -- which under runtime selection is a
+    // one-flag user error, not a programming error.
+    fmt::print(stderr, "ERROR: {}\n", err.what());
+    return 1;
+  }
 
   fmt::print("\nChampSim completed all CPUs\n\n");
 

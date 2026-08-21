@@ -26,6 +26,8 @@ from .instantiation_file import runtime_keys
 from .instantiation_file import get_instantiation_header
 from .config_record import get_config_record_lines
 from .config_record import get_config_record_cxx
+from .module_registry import registry_class_lines
+from .module_registry import registry_impl_lines
 from . import util
 
 warning_text = (
@@ -167,6 +169,9 @@ class Fragment:
 
         instantiation_lines = list(get_instantiation_lines(build_id=build_id, **elements))
 
+        # Only compiled modules are linkable, so only they are registered.
+        compiled_module_info = {kind: util.subdict(kind_info, modules_to_compile) for kind, kind_info in module_info.items()}
+
         fileparts = [
             # Instantiation file
             # The [config] record rides along in core_inst.inc: src/main.cc already
@@ -179,8 +184,10 @@ class Fragment:
             (os.path.join(objdir_name, 'core_inst.inc'), cxx_file(itertools.chain(
                 get_instantiation_header(len(elements['cores']), config_file, build_id=build_id),
                 get_config_record_cxx(build_id, get_config_record_lines(executable_basename, elements, config_file),
-                                      runtime_keys=runtime_keys(instantiation_lines))
+                                      runtime_keys=runtime_keys(instantiation_lines)),
+                registry_class_lines(build_id, compiled_module_info)
             ))),
+            (os.path.join(objdir_name, 'registry.cc.inc'), cxx_file(registry_impl_lines(build_id, compiled_module_info))),
             (os.path.join(objdir_name, 'core_inst.cc.inc'), cxx_file(instantiation_lines)),
 
             # Makefile generation

@@ -381,11 +381,22 @@ class RuntimeLookupIntegrationTest(unittest.TestCase):
             with self.subTest(key=expected):
                 self.assertIn(expected, self.keys)
 
-    def test_wiring_and_modules_stay_literal(self):
+    def test_wiring_stays_literal(self):
         text = ' '.join(self.lines)
-        for absent in ('lower_level"', 'branch_predictor"', '_offset_bits"', 'name"'):
+        for absent in ('lower_level"', '_offset_bits"', 'name"'):
             with self.subTest(fragment=absent):
                 self.assertNotIn(absent, text)
+
+    def test_module_selection_is_a_runtime_lookup(self):
+        # Phase B: the module choice itself became a runtime key with the baked
+        # class as its default, and the selected module gets configure().
+        text = ' '.join(self.lines)
+        self.assertIn('cfg.value<std::string>("ooo_cpu.cpu0.branch_predictor", "bimodal")', text)
+        self.assertIn('cfg.value<std::string>("cache.cpu0_l1d.replacement", "lru")', text)
+        self.assertIn('install_branch_module', text)
+        self.assertIn('impl_configure', text)
+        self.assertIn('ooo_cpu.cpu0.branch_predictor', self.keys)
+        self.assertIn('cache.llc.prefetcher', self.keys)
 
     def test_the_manifest_is_extracted_from_the_emitted_lookups(self):
         # The manifest is derived by regex from the very lines the compiler will
