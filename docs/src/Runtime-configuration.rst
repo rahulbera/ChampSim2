@@ -63,7 +63,22 @@ Provenance
 ==========
 
 A run's statistics document records what produced it: ``[config]`` is the
-effective configuration -- every key consulted, with the value used -- and is
-itself a valid ``--config`` file. ``[config_override]`` records what the
-command line changed, ``[meta].config_files`` the files loaded in order, and
-``[meta].build_id`` a content hash identifying the machine.
+effective configuration -- every key consulted, with the value used.
+``[config_override]`` records what the configuration sources set,
+``[meta].config_files`` the files loaded in order, and ``[meta].build_id`` a
+content hash identifying the machine.
+
+That makes a statistics document a configuration source in its own right.
+Pointing ``--config`` at a previous run's ``--toml`` output reproduces that
+run's machine:
+
+.. code-block:: console
+
+    $ bin/champsim --toml run.toml trace.champsimtrace.xz
+    $ bin/champsim --config run.toml --toml repro.toml trace.champsimtrace.xz
+
+The loader recognises the document by ``[meta].schema_version`` and reads its
+``[config]`` table, ignoring the results; an ordinary configuration file has no
+such key and is read whole. This only reproduces what is *configurable* --
+``[meta].build_id`` still has to match, or the two binaries are different
+machines.

@@ -14,11 +14,17 @@ does nothing but discover modules.
   in a sibling table named after it (`[ooo_cpu.cpu0.basic_btb]`). The
   machine's shape is C++ (`src/static_environment.cc`) and
   `NUM_CPUS`/`BLOCK_SIZE`/`PAGE_SIZE` are in `inc/defs.h`; both are code edits
-  plus a rebuild (see `docs/runtime-config-map.md`).
+  plus a rebuild.
 - A run's statistics document records the loaded files in
   `[meta].config_files` and every applied key under `[config_override]`.
 
 `sample.toml` is a commented example and `lnc.toml` models Intel's Lion Cove;
 both target the standard single-core component names (`ooo_cpu.cpu0`,
-`cache.cpu0_l1d`, ...). A run's own `[config]` section is itself a valid
-`--config` file.
+`cache.cpu0_l1d`, ...).
+
+A run's statistics document is itself a configuration source: `--config
+run.toml` on a previous run's `--toml` output reproduces that run's machine.
+The loader recognises the document by `[meta].schema_version` and reads its
+`[config]` table, ignoring the results. It reproduces only what is
+configurable -- `[meta].build_id` must match too, or the binaries are
+different machines.

@@ -54,7 +54,21 @@ void champsim::runtime_config::load_file(const std::string& path)
   } catch (const std::exception& err) {
     throw std::runtime_error(fmt::format("runtime config: cannot read '{}': {}", path, err.what()));
   }
-  flatten(table, {}, values_);
+  // A statistics document is a valid configuration source: its [config] table
+  // is the effective configuration of the run that produced it, so pointing
+  // --config at a previous run's --toml output reproduces that run's machine.
+  // The document identifies itself by [meta].schema_version -- an ordinary
+  // configuration file has no such key, and is loaded whole. Without this, the
+  // [config] root table would prefix every key and none would be consumed.
+  if (const auto* meta = table["meta"].as_table(); meta != nullptr && meta->contains("schema_version")) {
+    const auto* config = table["config"].as_table();
+    if (config == nullptr) {
+      throw std::runtime_error(fmt::format("runtime config: '{}' is a statistics document with no [config] section", path));
+    }
+    flatten(*config, {}, values_);
+  } else {
+    flatten(table, {}, values_);
+  }
   files_.push_back(path);
 }
 

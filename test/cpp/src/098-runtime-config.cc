@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <catch.hpp>
 #include <cstdio>
@@ -315,4 +316,49 @@ TEST_CASE("Consulting a key the user never set does not make it a complaint")
   champsim::runtime_config cfg{};
   cfg.value<long>("ooo_cpu.cpu0.rob_size", 352);
   REQUIRE(std::empty(cfg.unconsulted_keys()));
+}
+
+TEST_CASE("A statistics document is loaded through its [config] section")
+{
+  // A run's --toml output is a valid --config source: pointing at it
+  // reproduces the machine that produced it. Loading the document whole would
+  // prefix every key with "config." and consume none of them, so the loader
+  // recognises the document by [meta].schema_version and descends.
+  temp_toml doc{"[meta]\nschema_version = 1\nnum_cpus = 1\n\n"
+                "[config.ooo_cpu.cpu0]\nrob_size = 512\nbtb = \"basic_btb\"\n\n"
+                "[config.cache.cpu0_l1d]\nsets = 128\n\n"
+                "[config_override]\n\"ooo_cpu.cpu0.rob_size\" = 512\n\n"
+                "[phase.simulation.cpu0]\ninstructions = 20000\n"};
+  champsim::runtime_config cfg{};
+  cfg.load_file(doc.path);
+
+  REQUIRE(cfg.value<long>("ooo_cpu.cpu0.rob_size", 352) == 512);
+  REQUIRE(cfg.value<std::string>("ooo_cpu.cpu0.btb", "none") == "basic_btb");
+  REQUIRE(cfg.value<long>("cache.cpu0_l1d.sets", 64) == 128);
+
+  // Everything outside [config] is the record of a past run, not configuration:
+  // the results and the override log must not become keys.
+  const auto keys = cfg.applied();
+  REQUIRE(std::none_of(std::begin(keys), std::end(keys), [](const auto& key) { return key.first.rfind("meta.", 0) == 0; }));
+  REQUIRE(std::none_of(std::begin(keys), std::end(keys), [](const auto& key) { return key.first.rfind("phase.", 0) == 0; }));
+  REQUIRE(std::none_of(std::begin(keys), std::end(keys), [](const auto& key) { return key.first.rfind("config_override.", 0) == 0; }));
+  REQUIRE(std::none_of(std::begin(keys), std::end(keys), [](const auto& key) { return key.first.rfind("config.", 0) == 0; }));
+}
+
+TEST_CASE("An ordinary configuration file with a meta table is loaded whole")
+{
+  // schema_version is what identifies a statistics document -- a [meta] table
+  // alone must not divert an ordinary file, whose keys would then vanish.
+  temp_toml file{"[meta]\nauthor = \"someone\"\n\n[ooo_cpu.cpu0]\nrob_size = 512\n"};
+  champsim::runtime_config cfg{};
+  cfg.load_file(file.path);
+  REQUIRE(cfg.value<long>("ooo_cpu.cpu0.rob_size", 352) == 512);
+  REQUIRE(cfg.value<std::string>("meta.author", "") == "someone");
+}
+
+TEST_CASE("A statistics document with no [config] section is rejected")
+{
+  temp_toml doc{"[meta]\nschema_version = 1\n\n[phase.simulation.cpu0]\ninstructions = 20000\n"};
+  champsim::runtime_config cfg{};
+  REQUIRE_THROWS_WITH(cfg.load_file(doc.path), Catch::Matchers::ContainsSubstring("no [config] section"));
 }
