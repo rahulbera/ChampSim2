@@ -613,3 +613,48 @@ TEST_CASE("An empty override set still emits an indexable table")
   REQUIRE(std::find(std::begin(lines), std::end(lines), "[config_override]") != std::end(lines));
   REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"config_files = \"\""}));
 }
+
+TEST_CASE("The effective configuration renders as a nested table tree")
+{
+  // Once there is no baked JSON to record, [config] is built from the keys the
+  // machine actually consulted -- flat dotted paths with values already in
+  // TOML syntax.
+  const std::vector<std::pair<std::string, std::string>> effective{
+      {"block_size", "64"}, {"cache.cpu0_l1d.sets", "64"}, {"cache.cpu0_l1d.ways", "12"}, {"ooo_cpu.cpu0.rob_size", "352"}};
+
+  const auto lines = champsim::toml_printer::format_config(effective);
+
+  REQUIRE(lines.at(0) == "[config]");
+  REQUIRE(lines.at(1) == "block_size = 64");
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"[config.cache.cpu0_l1d]"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"sets = 64"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"[config.ooo_cpu.cpu0]"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"rob_size = 352"}));
+}
+
+TEST_CASE("A scalar is never emitted after a sub-table of the same table")
+{
+  // The trap: sorted dotted keys put ooo_cpu.cpu0.dib.sets BEFORE
+  // ooo_cpu.cpu0.rob_size, so a naive pass emits the dib table first and
+  // rob_size then lands inside it, silently reparenting the knob.
+  const std::vector<std::pair<std::string, std::string>> effective{
+      {"ooo_cpu.cpu0.dib.sets", "32"}, {"ooo_cpu.cpu0.dib.ways", "8"}, {"ooo_cpu.cpu0.rob_size", "352"}};
+
+  const auto lines = champsim::toml_printer::format_config(effective);
+  const auto rob_at = std::distance(std::begin(lines), std::find(std::begin(lines), std::end(lines), "rob_size = 352"));
+  const auto dib_at = std::distance(std::begin(lines), std::find(std::begin(lines), std::end(lines), "[config.ooo_cpu.cpu0.dib]"));
+  REQUIRE(rob_at < dib_at);
+}
+
+TEST_CASE("A key that is not a bare TOML key is quoted in the effective configuration")
+{
+  const std::vector<std::pair<std::string, std::string>> effective{{"cache.Weird Name.sets", "64"}};
+  const auto lines = champsim::toml_printer::format_config(effective);
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"[config.cache.\"Weird Name\"]"}));
+}
+
+TEST_CASE("An empty effective configuration still emits an indexable table")
+{
+  const auto lines = champsim::toml_printer::format_config({});
+  REQUIRE(lines == std::vector<std::string>{"[config]"});
+}

@@ -180,94 +180,42 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 
   // The simulation-level knobs live outside the generated constructor, so
   // their keys are appended to the generated manifest by hand.
-  constexpr std::array<std::string_view, 3> sim_knob_keys{"sim.deadlock_cycle", "sim.heartbeat_frequency", "sim.livelock_period"};
-
-  using registry = champsim::configured::module_registry<CHAMPSIM_BUILD>;
-
-  // A module-knob key names a registered module's table on a component:
-  // <component>.<registered module name>.<knob...>. Knob names inside the
-  // table are the module's to validate (the consumed-key check below); the
-  // module-name segment is checked here so a typo'd module still fails fast.
-  const auto is_module_knob_key = [](std::string_view key) {
-    const auto component_prefixes = std::array<std::pair<std::string_view, std::vector<std::string_view>>, 2>{
-        std::pair{std::string_view{"ooo_cpu."},
-                  [] {
-                    std::vector<std::string_view> names(std::begin(registry::branch_predictor), std::end(registry::branch_predictor));
-                    names.insert(std::end(names), std::begin(registry::btb), std::end(registry::btb));
-                    return names;
-                  }()},
-        std::pair{std::string_view{"cache."},
-                  [] {
-                    std::vector<std::string_view> names(std::begin(registry::prefetcher), std::end(registry::prefetcher));
-                    names.insert(std::end(names), std::begin(registry::replacement), std::end(registry::replacement));
-                    return names;
-                  }()},
-    };
-    for (const auto& [kind_prefix, module_names] : component_prefixes) {
-      if (key.substr(0, std::size(kind_prefix)) != kind_prefix) {
-        continue;
-      }
-      // <kind>.<component>.<module>.<knob...>: split off the component name,
-      // then require a registered module name followed by at least one knob
-      // segment.
-      const auto after_kind = key.substr(std::size(kind_prefix));
-      const auto component_end = after_kind.find('.');
-      if (component_end == std::string_view::npos) {
-        return false;
-      }
-      const auto after_component = after_kind.substr(component_end + 1);
-      const auto module_end = after_component.find('.');
-      if (module_end == std::string_view::npos) {
-        return false;
-      }
-      const auto module_name = after_component.substr(0, module_end);
-      return std::find(std::begin(module_names), std::end(module_names), module_name) != std::end(module_names);
+  // The environment is constructed here -- after the CLI parse -- so that
+  // every builder argument can consult the completed store. Every store read,
+  // including the sim.* knobs, sits inside this try so that a type mismatch
+  // anywhere is a clean diagnostic and exit 1, never an uncaught exception.
+  champsim::simulation_knobs sim_knobs{};
+  std::optional<configured_environment> built_environment{};
+  try {
+    // Heartbeat precedence: the explicit CLI flag beats the store, which
+    // beats the configuration's baked default. positive_value gives the store
+    // path the same zero-rejection the flag's PositiveNumber check gives the
+    // CLI path.
+    // Consulted unconditionally: post-construction validation treats an
+    // unconsulted key as unknown, and a key that merely LOST a precedence
+    // contest is not unknown.
+    const auto stored_heartbeat = runtime_cfg.positive_value<uint64_t>("sim.heartbeat_frequency", configured_heartbeat_frequency);
+    if (heartbeat_option->count() == 0) {
+      heartbeat_frequency = stored_heartbeat;
     }
-    return false;
-  };
+    sim_knobs.deadlock_cycle = runtime_cfg.positive_value<int>("sim.deadlock_cycle", sim_knobs.deadlock_cycle);
+    sim_knobs.livelock_period = runtime_cfg.positive_value<uint64_t>("sim.livelock_period", sim_knobs.livelock_period);
 
-  // Fail before construction: an unknown key would otherwise be silently
-  // ignored, and a sweep that misspells a knob would sweep nothing.
-  std::vector<std::string> module_knob_keys{};
-  {
-    std::vector<std::string_view> valid{std::begin(champsim::configured::config_record<CHAMPSIM_BUILD>::runtime_keys),
-                                        std::end(champsim::configured::config_record<CHAMPSIM_BUILD>::runtime_keys)};
-    valid.insert(std::end(valid), std::begin(sim_knob_keys), std::end(sim_knob_keys));
-    // Collect fully before taking views: growing the vector would reallocate
-    // and dangle any view already handed to `valid`.
-    for (const auto& [applied_key, rendered] : runtime_cfg.applied()) {
-      if (is_module_knob_key(applied_key)) {
-        module_knob_keys.push_back(applied_key);
-      }
-    }
-    valid.insert(std::end(valid), std::begin(module_knob_keys), std::end(module_knob_keys));
-    const auto complaints = runtime_cfg.unknown_keys(std::begin(valid), std::end(valid));
-    if (!std::empty(complaints)) {
-      for (const auto& complaint : complaints) {
-        fmt::print(stderr, "ERROR: {}\n", complaint);
-      }
-      fmt::print(stderr, "Run with --knobs to list every key this binary accepts.\n");
-      return 1;
-    }
+    built_environment.emplace(runtime_cfg);
+  } catch (const std::runtime_error& err) {
+    fmt::print(stderr, "ERROR: {}\n", err.what());
+    return 1;
   }
+  configured_environment& gen_environment = *built_environment;
 
   if (list_knobs) {
-    // Construct a throwaway environment against the ACTUAL store: the
-    // (key, fallback) pairs it consults are this binary's knobs under the
-    // given configuration -- including the knob tables of runtime-SELECTED
-    // modules, which an empty-store probe could never reach.
-    try {
-      configured_environment knob_probe{runtime_cfg};
-      runtime_cfg.value<int>("sim.deadlock_cycle", champsim::simulation_knobs{}.deadlock_cycle);
-      runtime_cfg.value<uint64_t>("sim.heartbeat_frequency", configured_heartbeat_frequency);
-      runtime_cfg.value<uint64_t>("sim.livelock_period", champsim::simulation_knobs{}.livelock_period);
-    } catch (const std::runtime_error& err) {
-      fmt::print(stderr, "ERROR: {}\n", err.what());
-      return 1;
+    // Reported after construction, so these are the keys this machine actually
+    // consults with the values this invocation would use -- including the knob
+    // tables of any runtime-selected module.
+    for (const auto& [knob_key, effective] : runtime_cfg.consulted()) {
+      fmt::print("{} = {}\n", knob_key, effective);
     }
-    for (const auto& [knob_key, fallback] : runtime_cfg.consulted()) {
-      fmt::print("{} = {}\n", knob_key, fallback);
-    }
+    using registry = champsim::configured::module_registry<CHAMPSIM_BUILD>;
     fmt::print("\nSelectable modules (per component, via the keys above):\n");
     const auto print_names = [](std::string_view kind, const auto& names) {
       fmt::print("{}: {}\n", kind, fmt::join(names, ", "));
@@ -285,45 +233,17 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     return 1;
   }
 
-  // The environment is constructed here -- after the CLI parse -- so that
-  // every builder argument can consult the completed store. Every store read,
-  // including the sim.* knobs, sits inside this try so that a type mismatch
-  // anywhere is a clean diagnostic and exit 1, never an uncaught exception.
-  champsim::simulation_knobs sim_knobs{};
-  std::optional<configured_environment> built_environment{};
-  try {
-    // Heartbeat precedence: the explicit CLI flag beats the store, which
-    // beats the configuration's baked default. positive_value gives the store
-    // path the same zero-rejection the flag's PositiveNumber check gives the
-    // CLI path.
-    if (heartbeat_option->count() == 0) {
-      heartbeat_frequency = runtime_cfg.positive_value<uint64_t>("sim.heartbeat_frequency", configured_heartbeat_frequency);
-    }
-    sim_knobs.deadlock_cycle = runtime_cfg.positive_value<int>("sim.deadlock_cycle", sim_knobs.deadlock_cycle);
-    sim_knobs.livelock_period = runtime_cfg.positive_value<uint64_t>("sim.livelock_period", sim_knobs.livelock_period);
-
-    built_environment.emplace(runtime_cfg);
-  } catch (const std::runtime_error& err) {
-    fmt::print(stderr, "ERROR: {}\n", err.what());
-    return 1;
-  }
-  configured_environment& gen_environment = *built_environment;
-
-  // The hook contract: a module consults every knob it owns, unconditionally,
-  // during configure(). A module-knob key never consulted therefore targets a
-  // module that is not selected on that component, or misspells a knob.
+  // Every key the machine understands has now been read, so a key nothing
+  // consulted is one this binary has no use for: a typo, or a knob aimed at a
+  // component or module that is not part of this machine. This is the whole
+  // of key validation -- scalars, module selections and module knobs alike.
   {
-    const auto consulted = runtime_cfg.consulted();
-    std::vector<std::string> unconsumed{};
-    std::copy_if(std::begin(module_knob_keys), std::end(module_knob_keys), std::back_inserter(unconsumed), [&consulted](const auto& knob_key) {
-      return std::none_of(std::begin(consulted), std::end(consulted), [&knob_key](const auto& entry) { return entry.first == knob_key; });
-    });
-    if (!std::empty(unconsumed)) {
-      for (const auto& knob_key : unconsumed) {
-        fmt::print(stderr,
-                   "ERROR: no selected module consumed configuration key '{}' -- is that module selected on that component, and is the knob name right?\n",
-                   knob_key);
+    const auto complaints = runtime_cfg.unconsulted_keys();
+    if (!std::empty(complaints)) {
+      for (const auto& complaint : complaints) {
+        fmt::print(stderr, "ERROR: {}\n", complaint);
       }
+      fmt::print(stderr, "Run with --knobs to list every key this binary accepts.\n");
       return 1;
     }
   }
@@ -409,7 +329,14 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   // _configuration.mk exactly -- a shake_128 digest may begin with a zero, and
   // "{:#x}" would silently drop it.
   run.build_id = fmt::format("0x{:016x}", static_cast<unsigned long long>(CHAMPSIM_BUILD));
-  run.config_toml = champsim::configured::config_record<CHAMPSIM_BUILD>::toml;
+  // [config] is the EFFECTIVE configuration: every key the machine consulted
+  // with the value it actually used. With no configure-time JSON there is no
+  // "baked" configuration to record, and this is the more useful record --
+  // one table with no overlay arithmetic, and directly feedable back as
+  // --config.
+  const auto effective_config = champsim::toml_printer::format_config(runtime_cfg.consulted());
+  const auto effective_config_text = fmt::format("{}", fmt::join(effective_config, "\n"));
+  run.config_toml = effective_config_text;
   run.warmup_instructions = warmup_instructions;
   run.simulation_instructions = simulation_instructions;
   run.trace_version = static_cast<int>(trace_version);

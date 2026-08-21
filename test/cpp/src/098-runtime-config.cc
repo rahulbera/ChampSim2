@@ -279,3 +279,40 @@ TEST_CASE("An unsigned fallback above int64 max is recorded exactly when it is t
   REQUIRE(cfg.value<uint64_t>("a.k", 18446744073709551615ULL) == 18446744073709551615ULL);
   REQUIRE(cfg.consulted().at(0) == std::pair<std::string, std::string>{"a.k", "18446744073709551615"});
 }
+
+TEST_CASE("Keys nothing consulted are reported, with a suggestion from what was")
+{
+  // Post-construction validation: the machine reads every key it understands,
+  // so a key left unread is one this binary has no use for -- a typo, or a
+  // knob aimed at a component or module that is not part of this machine.
+  champsim::runtime_config cfg{};
+  cfg.set("ooo_cpu.cpu0.rob_size=512");
+  cfg.set("ooo_cpu.cpu0.rob_sze=512");
+  cfg.set("cache.cpu0_l1d.SETS=128");
+
+  cfg.value<long>("ooo_cpu.cpu0.rob_size", 352);
+  cfg.value<long>("cache.cpu0_l1d.sets", 64);
+
+  const auto complaints = cfg.unconsulted_keys();
+  REQUIRE(std::size(complaints) == 2);
+  const auto joined = complaints.at(0) + " " + complaints.at(1);
+  REQUIRE_THAT(joined, Catch::Matchers::ContainsSubstring("rob_sze"));
+  REQUIRE_THAT(joined, Catch::Matchers::ContainsSubstring("cache.cpu0_l1d.SETS"));
+  // The case-folded near miss gets a did-you-mean; the misspelling does not.
+  REQUIRE_THAT(joined, Catch::Matchers::ContainsSubstring("did you mean 'cache.cpu0_l1d.sets'"));
+}
+
+TEST_CASE("A key that was consulted is never reported unconsulted")
+{
+  champsim::runtime_config cfg{};
+  cfg.set("ooo_cpu.cpu0.rob_size=512");
+  cfg.value<long>("ooo_cpu.cpu0.rob_size", 352);
+  REQUIRE(std::empty(cfg.unconsulted_keys()));
+}
+
+TEST_CASE("Consulting a key the user never set does not make it a complaint")
+{
+  champsim::runtime_config cfg{};
+  cfg.value<long>("ooo_cpu.cpu0.rob_size", 352);
+  REQUIRE(std::empty(cfg.unconsulted_keys()));
+}

@@ -340,6 +340,49 @@ std::vector<std::string> champsim::toml_printer::format(champsim::phase_stats& s
   return lines;
 }
 
+namespace
+{
+// A node in the [config] tree: its own scalars, and its sub-tables. Built from
+// flat dotted keys so the emitter can put every scalar before any sub-table --
+// a scalar written after a table header would silently land inside it, and
+// sorted dotted keys deliver them in exactly the wrong order
+// (ooo_cpu.cpu0.dib.sets precedes ooo_cpu.cpu0.rob_size).
+struct config_node {
+  std::vector<entry> scalars{};
+  std::map<std::string, config_node> tables{};
+};
+
+void emit_node(std::vector<std::string>& lines, const std::string& path, const config_node& node)
+{
+  lines.push_back(fmt::format("[{}]", path));
+  for (const auto& [name, value] : node.scalars) {
+    lines.push_back(fmt::format("{} = {}", name, value));
+  }
+  for (const auto& [name, child] : node.tables) {
+    lines.emplace_back("");
+    emit_node(lines, path + "." + name, child);
+  }
+}
+} // namespace
+
+std::vector<std::string> champsim::toml_printer::format_config(const std::vector<std::pair<std::string, std::string>>& effective)
+{
+  config_node root{};
+  for (const auto& [dotted, value] : effective) {
+    auto* node = &root;
+    std::string_view rest{dotted};
+    for (auto dot = rest.find('.'); dot != std::string_view::npos; dot = rest.find('.')) {
+      node = &node->tables[key(rest.substr(0, dot))];
+      rest.remove_prefix(dot + 1);
+    }
+    node->scalars.emplace_back(key(rest), value);
+  }
+
+  std::vector<std::string> lines{};
+  emit_node(lines, "config", root);
+  return lines;
+}
+
 std::vector<std::string> champsim::toml_printer::format(std::vector<phase_stats>& stats, bool include_sim, const run_info& info)
 {
   std::vector<std::string> lines{"# ChampSim statistics. Ratios are rounded to two decimals; the exact",

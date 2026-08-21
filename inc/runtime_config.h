@@ -79,6 +79,13 @@ public:
     return result;
   }
 
+  // Keys the user set that nothing consulted. The machine reads every key it
+  // understands during construction, so a key left unread is one this binary
+  // has no use for: a typo, or a knob aimed at a component or module that is
+  // not part of this machine. Each is formatted as a ready-to-print
+  // complaint, with a did-you-mean when a case-folded match WAS consulted.
+  [[nodiscard]] std::vector<std::string> unconsulted_keys() const;
+
   // Keys the user set that the manifest does not contain, each formatted as a
   // ready-to-print complaint (with a did-you-mean when a case-folded match
   // exists). Empty means the configuration is valid.

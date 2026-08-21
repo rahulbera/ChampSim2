@@ -202,3 +202,28 @@ std::vector<std::pair<std::string, std::string>> champsim::runtime_config::consu
   std::copy(std::begin(consulted_), std::end(consulted_), std::back_inserter(out));
   return out;
 }
+
+std::vector<std::string> champsim::runtime_config::unconsulted_keys() const
+{
+  const auto lower = [](std::string_view text) {
+    std::string out{};
+    std::transform(std::begin(text), std::end(text), std::back_inserter(out),
+                   [](char chr) { return static_cast<char>(std::tolower(static_cast<unsigned char>(chr))); });
+    return out;
+  };
+
+  std::vector<std::string> complaints{};
+  for (const auto& [key, val] : values_) {
+    if (consulted_.find(key) != std::end(consulted_)) {
+      continue;
+    }
+    std::string complaint = "nothing consumed configuration key '" + key + "'";
+    const auto folded = lower(key);
+    const auto suggestion = std::find_if(std::begin(consulted_), std::end(consulted_), [&](const auto& entry) { return lower(entry.first) == folded; });
+    if (suggestion != std::end(consulted_)) {
+      complaint += "; did you mean '" + suggestion->first + "'?";
+    }
+    complaints.push_back(std::move(complaint));
+  }
+  return complaints;
+}

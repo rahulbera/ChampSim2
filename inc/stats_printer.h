@@ -106,6 +106,10 @@ public:
   static std::vector<std::string> format(CACHE::stats_type stats, std::string_view path);
   static std::vector<std::string> format(DRAM_CHANNEL::stats_type stats, std::string_view path);
   static std::vector<std::string> format(phase_stats& stats, bool include_sim = false);
+  // The effective configuration -- flat dotted keys with values already in
+  // TOML syntax -- rendered as the nested [config] table tree.
+  static std::vector<std::string> format_config(const std::vector<std::pair<std::string, std::string>>& effective);
+
   static std::vector<std::string> format(std::vector<phase_stats>& stats, bool include_sim, const run_info& info);
   static std::vector<std::string> format(std::vector<phase_stats>& stats, bool include_sim = false);
 
