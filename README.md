@@ -28,8 +28,9 @@ vcpkg/vcpkg install
 
 `config.sh` **discovers the modules** present on disk -- which is all it does --
 and emits the registry naming them plus the makefile fragment listing their
-objects. Run it once per checkout, and again only when a module is added or
-renamed.
+objects. Run it once per checkout, and again whenever a module is added, renamed, or
+removed -- including when git removes one for you, which is what checking out a branch
+with a different module set does.
 
 ```
 $ ./config.sh

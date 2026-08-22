@@ -96,6 +96,7 @@ clean:
 	@-$(RM) inc/ooo_cpu_modules.h
 	@-$(RM) src/core_inst.cc
 	@-$(RM) $(test_main_name)
+	@-$(RM) $(executable_name)
 
 # Remove all compile_commands.json files
 compile_commands_clean:
@@ -105,6 +106,7 @@ compile_commands_clean:
 # Remove all configuration files
 configclean: clean compile_commands_clean
 	@-$(RM) _configuration.mk
+	@-$(RM) $(OBJ_ROOT)/registry.inc $(OBJ_ROOT)/registry.cc.inc
 
 reverse = $(if $(wordlist 2,2,$(1)),$(call reverse,$(call tail,$1)) $(firstword $(1)),$(1))
 
@@ -118,8 +120,12 @@ define obj_recipe
 	$(CXX) $(attach_options) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $(filter %.cc, $^)
 endef
 
-# All .d files should be preprocessed only
-DEPFLAGS = -MM -MT $@ -MT $(@:.d=.o)
+# All .d files should be preprocessed only.
+# -MP emits a phony target for every header, so a dependency file that names a
+# header which has since been deleted -- what switching to a branch with a
+# different module set leaves behind -- makes the translation unit rebuild
+# instead of aborting make with "No rule to make target".
+DEPFLAGS = -MM -MP -MT $@ -MT $(@:.d=.o)
 define dep_recipe
 	$(CXX) $(attach_options) $(DEPFLAGS) $(CPPFLAGS) -MF $@ $(filter %.cc, $^)
 endef
@@ -158,6 +164,11 @@ endif
 #  - All dependencies and flags assigned according to the modules
 ifeq (,$(filter clean compile_commands_clean configclean pytest maketest, $(MAKECMDGOALS)))
 include _configuration.mk
+else
+# The clean targets need $(executable_name) from the fragment, but must still
+# work when it has already been removed -- hence the soft include here and the
+# hard one above.
+-include _configuration.mk
 endif
 
 all: $(executable_name)

@@ -26,8 +26,10 @@ bin/champsim --config configs/lnc.toml --set ooo_cpu.cpu0.btb=ittage_64kb \
     -w 20000000 -i 50000000 --toml stats.toml trace.champsimtrace.xz
 ```
 
-Re-run `config.sh` only after **adding or renaming a module**. Changing the machine's
-shape (which caches exist, how they are wired) is a code edit in
+Re-run `config.sh` after **adding, renaming, or removing a module** — including when
+git removes one for you, which is what checking out a branch with a different module
+set does. No `make clean` is needed for that; see the branch-switch gotcha for why.
+Changing the machine's shape (which caches exist, how they are wired) is a code edit in
 `src/static_environment.cc`; changing `NUM_CPUS`, `BLOCK_SIZE` or `PAGE_SIZE` is an edit
 to `inc/defs.h` and a rebuild — multi-core is a separate binary by design.
 
@@ -149,7 +151,9 @@ guarded is gone.
 - `make clean` — remove object and dep files. It also deletes
   `inc/champsim_constants.h` and `inc/cache_modules.h`; **those paths are vestigial**,
   nothing has written them for two migrations, and looking for what does is a dead end.
-- `make configclean` — also remove `_configuration.mk` and `compile_commands.json`.
+- `make configclean` — also remove `_configuration.mk`, `compile_commands.json`, and
+  the two `.csconfig/registry*.inc` files. Note it also deletes every `.cache/` directory,
+  so clangd needs `make compile_commands` afterwards.
 - `make compile_commands` — regenerate `compile_commands.json` (per module/src/test) for clangd.
 
 ## Architecture
@@ -175,7 +179,8 @@ before a pointer into it is handed out. Cache order is the per-cycle `operate()`
 header cannot know: `.csconfig/registry.inc` + `registry.cc.inc` (the name→factory
 tables) and `_configuration.mk` (module object lists the top-level `Makefile`
 includes). `.csconfig/` is gitignored, so no generated source is a staging hazard.
-Re-run it only after **adding or renaming a module**.
+Re-run it after **adding, renaming, or removing a module** — a branch switch that
+changes the module set counts, because git does the removing.
 
 A module is selected by its **directory basename**, so two modules of one kind cannot
 share one — `config.sh` rejects that, naming both paths, because the registry would
@@ -364,6 +369,19 @@ builds break on the machine where it is hardest to notice. Keep such code in `sr
   models a faster bus with intact core timings, which is what a memory *generation*
   change usually wants. Note the 2:1 data-rate-to-clock ratio is a DDR relation and
   does not hold for LPDDR5.
+- **Gitignored generated state does not follow a branch switch, and the hazard is the
+  *dep* file, not the orphan objects.** `_configuration.mk` and `.csconfig/` survive a
+  checkout, so a branch that adds modules leaves a registry naming directories the new
+  branch does not have. The stale `.o` files are inert — both link rules pass `$^` over
+  lists that bottom out in `$(wildcard <dir>/*.cc)`, and nothing in the build globs
+  `*.o`, so an object whose source is gone is never named. What actually stopped `make`
+  was `.csconfig/generated_registry.d`: a dependency file whose translation unit still
+  exists, naming five headers git had deleted. `config.sh` cannot clear a `.d` (nothing
+  in `config/` removes a file), so `./config.sh && make` alone did not repair it and
+  `make clean && make` alone did not either — `registry.cc.inc` still `#include`d the
+  dead headers. `DEPFLAGS` now carries `-MP`, which emits a phony target per header and
+  makes the translation unit rebuild instead; `./config.sh && make` is therefore
+  sufficient on its own. `make configclean` remains the belt-and-braces recovery.
 - **Vendored ITTAGE has undefined behaviour in its RNG.** `inc/ittage/ittage.hpp:246,248`
   left-shift a negative `int` in `MYRANDOM`; UBSan flags it on any `ittage_64kb` run, so
   the ITTAGE campaign's numbers were produced with it. GCC emits the expected
