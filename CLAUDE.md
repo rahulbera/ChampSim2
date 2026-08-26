@@ -335,6 +335,12 @@ builds break on the machine where it is hardest to notice. Keep such code in `sr
   settings is an ODR violation that produces wrong stats rather than a link error.
   Always `make clean` when switching it. It roughly doubles wall-clock, so it is off by
   default.
+- **A perfect cache reporting a 100% hit rate proves nothing**, for the same reason
+  the perfect-predictor entry below gives: it follows structurally from the flag. The
+  load-bearing checks are that the level below goes quiet (every `*_fill` for the
+  perfect cache is zero) and that IPC actually moves. `test/cpp/src/446-perfect-cache.cc`
+  pins both, and carries a non-perfect control scenario so the file would fail if the
+  flag did nothing.
 - **A "perfect predictor" reporting 0 MPKI proves nothing.** `branch/perfect_branch` +
   `btb/perfect_btb` read the outcome out of the trace at prediction time — the same field
   ChampSim's mispredict rule compares — so 0 MPKI follows structurally even from a corrupt
@@ -394,8 +400,22 @@ builds break on the machine where it is hardest to notice. Keep such code in `sr
 
 Four branch-predictor hooks (`branch_predictor_final_stats`, `branch_execute_resolve`,
 `branch_decode_notify`, `branch_execute_notify`), the `cycles_on_wrong_path` statistic
-reported as **CycWPKI**, DIB lookup/hit/miss counters, `--trace-version`, and a
-configurable, flushed `--heartbeat-frequency`.
+reported as **CycWPKI**, DIB lookup/hit/miss counters, `--trace-version`, a
+configurable, flushed `--heartbeat-frequency`, and the per-cache `perfect` flag.
+
+**`cache.<name>.perfect`** (default `false`, accepted by every cache including the
+three TLBs) makes every lookup hit, *including the first access to a block that was
+never filled* — there is no compulsory miss, because the point is headroom: "what is
+the performance if every request hits here?". `CACHE::try_hit` short-circuits before
+touching the tag array, so the array is never filled or evicted and this cache issues
+nothing downward. Four things it deliberately does **not** change: the configured hit
+latency and `max_tag_check`/queue limits still apply; requests are still translated,
+so a perfect L1D still exercises the DTLB/STLB/PTW (set `perfect` on those to model
+perfect translation, which composes); this cache's own prefetcher and replacement
+hooks are bypassed, since neither can affect a cache that cannot miss and there is no
+way index to hand a replacement policy; and the level below is *not* silenced
+outright — it keeps serving its other clients, so an L2C under a perfect L1D still
+sees the L1I's misses.
 
 DIB accounting lives in `cpu_stats` (`inc/core_stats.h`) and is charged in
 `O3_CPU::do_check_dib`, which runs once per instruction, gated by `dib_checked`. Only

@@ -40,7 +40,7 @@ CACHE::CACHE(CACHE&& other)
       cpu(other.cpu), NAME(std::move(other.NAME)), NUM_SET(other.NUM_SET), NUM_WAY(other.NUM_WAY), MSHR_SIZE(other.MSHR_SIZE), PQ_SIZE(other.PQ_SIZE),
       HIT_LATENCY(other.HIT_LATENCY), FILL_LATENCY(other.FILL_LATENCY), OFFSET_BITS(other.OFFSET_BITS), block(std::move(other.block)), MAX_TAG(other.MAX_TAG),
       MAX_FILL(other.MAX_FILL), prefetch_as_load(other.prefetch_as_load), match_offset_bits(other.match_offset_bits), virtual_prefetch(other.virtual_prefetch),
-      pref_activate_mask(std::move(other.pref_activate_mask)),
+      perfect(other.perfect), pref_activate_mask(std::move(other.pref_activate_mask)),
 
       sim_stats(std::move(other.sim_stats)), roi_stats(std::move(other.roi_stats)),
 
@@ -78,6 +78,7 @@ auto CACHE::operator=(CACHE&& other) -> CACHE&
   this->prefetch_as_load = other.prefetch_as_load;
   this->match_offset_bits = other.match_offset_bits;
   this->virtual_prefetch = other.virtual_prefetch;
+  this->perfect = other.perfect;
   this->pref_activate_mask = std::move(other.pref_activate_mask);
 
   this->sim_stats = std::move(other.sim_stats);
@@ -247,6 +248,36 @@ bool CACHE::handle_fill(const fill_type& fill)
 bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 {
   cpu = handle_pkt.cpu;
+
+  // A perfect cache hits on EVERY lookup, including the first access to a block
+  // that was never filled -- the point is to measure headroom ("what if every
+  // request hit here?"), so there is no such thing as a compulsory miss. The tag
+  // array is therefore never consulted, never filled and never evicted, and the
+  // level below this one sees no traffic at all.
+  //
+  // The prefetcher and the replacement policy are bypassed rather than called
+  // with hit=true. Neither can affect a cache that cannot miss, and there is no
+  // way index to hand the replacement policy: the block has no line, and the
+  // RRIP policies index their state with .at(), so an out-of-range way would
+  // throw rather than be ignored.
+  //
+  // The response echoes the request's own data, which for a v2 trace is the
+  // value that operand actually held -- a cache with no line has nothing else
+  // truthful to return.
+  //
+  // Requests still arrive translated (the tag-check stage requires it), so a
+  // perfect data cache still exercises the TLBs and the page table walker. To
+  // model perfect translation as well, set perfect on the TLBs.
+  if (perfect) {
+    sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
+
+    response_type response{handle_pkt.address, handle_pkt.v_address, handle_pkt.data, handle_pkt.pf_metadata, handle_pkt.instr_depend_on_me};
+    for (auto* ret : handle_pkt.to_return) {
+      ret->push_back(response);
+    }
+
+    return true;
+  }
 
   // access cache
   auto [set_begin, set_end] = get_set_span(handle_pkt.address);

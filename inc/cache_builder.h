@@ -57,6 +57,7 @@ struct cache_builder_base {
   bool m_pref_load{};
   bool m_wq_full_addr{};
   bool m_va_pref{};
+  bool m_perfect{};
 
   std::vector<access_type> m_pref_act_mask{access_type::LOAD, access_type::PREFETCH};
   std::vector<champsim::channel*> m_uls{};
@@ -223,6 +224,27 @@ public:
    * Specify that prefetchers should operate in the physical address space.
    */
   self_type& reset_virtual_prefetch();
+
+  /**
+   * Model this cache as perfect: every lookup hits, including the first access
+   * to a block that was never filled. Used to measure headroom -- "what is the
+   * performance if every request hits in this cache?" -- so the tag array is
+   * never filled or evicted and the level below sees no traffic at all. The
+   * configured hit latency and bandwidth still apply, requests are still
+   * translated, and this cache's own prefetcher and replacement hooks are
+   * bypassed because neither can affect a cache that never misses.
+   */
+  self_type& perfect(bool perfect_);
+
+  /**
+   * Model this cache as perfect. See perfect(bool).
+   */
+  self_type& set_perfect();
+
+  /**
+   * Model this cache normally. See perfect(bool).
+   */
+  self_type& reset_perfect();
 
   /**
    * Specify the ``access_type`` values that should activate the prefetcher.
@@ -515,6 +537,27 @@ template <typename P, typename R>
 auto champsim::cache_builder<P, R>::reset_virtual_prefetch() -> self_type&
 {
   m_va_pref = false;
+  return *this;
+}
+
+template <typename P, typename R>
+auto champsim::cache_builder<P, R>::perfect(bool perfect_) -> self_type&
+{
+  m_perfect = perfect_;
+  return *this;
+}
+
+template <typename P, typename R>
+auto champsim::cache_builder<P, R>::set_perfect() -> self_type&
+{
+  m_perfect = true;
+  return *this;
+}
+
+template <typename P, typename R>
+auto champsim::cache_builder<P, R>::reset_perfect() -> self_type&
+{
+  m_perfect = false;
   return *this;
 }
 

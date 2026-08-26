@@ -246,7 +246,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                           .prefetch_activate(prefetch_activate(cfg, "cache.llc"))
                           .clock_period(period(cfg, "cache.llc.frequency", 4000))
                           .prefetch_as_load(cfg.value<bool>("cache.llc.prefetch_as_load", false))
-                          .virtual_prefetch(cfg.value<bool>("cache.llc.virtual_prefetch", false)));
+                          .virtual_prefetch(cfg.value<bool>("cache.llc.virtual_prefetch", false))
+                          .perfect(cfg.value<bool>("cache.llc.perfect", false)));
 
   for (std::size_t cpu = 0; cpu < defs::num_cpus; ++cpu) {
     const auto dtlb = cache_key(cpu, "DTLB");
@@ -272,7 +273,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .offset_bits(champsim::data::bits{page_bits})
                             .prefetch_activate(prefetch_activate(cfg, dtlb))
                             .clock_period(period(cfg, dtlb + ".frequency", 4000))
-                            .prefetch_as_load(cfg.value<bool>(dtlb + ".prefetch_as_load", false)));
+                            .prefetch_as_load(cfg.value<bool>(dtlb + ".prefetch_as_load", false))
+                            .perfect(cfg.value<bool>(dtlb + ".perfect", false)));
 
     caches.emplace_back(champsim::cache_builder{champsim::defaults::default_itlb}
                             .name(cache_name(cpu, "ITLB"))
@@ -288,7 +290,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .offset_bits(champsim::data::bits{page_bits})
                             .prefetch_activate(prefetch_activate(cfg, itlb))
                             .clock_period(period(cfg, itlb + ".frequency", 4000))
-                            .prefetch_as_load(cfg.value<bool>(itlb + ".prefetch_as_load", false)));
+                            .prefetch_as_load(cfg.value<bool>(itlb + ".prefetch_as_load", false))
+                            .perfect(cfg.value<bool>(itlb + ".perfect", false)));
 
     caches.emplace_back(champsim::cache_builder{champsim::defaults::default_l1d}
                             .name(cache_name(cpu, "L1D"))
@@ -306,7 +309,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .prefetch_activate(prefetch_activate(cfg, l1d))
                             .clock_period(period(cfg, l1d + ".frequency", 4000))
                             .prefetch_as_load(cfg.value<bool>(l1d + ".prefetch_as_load", false))
-                            .virtual_prefetch(cfg.value<bool>(l1d + ".virtual_prefetch", false)));
+                            .virtual_prefetch(cfg.value<bool>(l1d + ".virtual_prefetch", false))
+                            .perfect(cfg.value<bool>(l1d + ".perfect", false)));
 
     caches.emplace_back(champsim::cache_builder{champsim::defaults::default_l1i}
                             .name(cache_name(cpu, "L1I"))
@@ -324,7 +328,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .prefetch_activate(prefetch_activate(cfg, l1i))
                             .clock_period(period(cfg, l1i + ".frequency", 4000))
                             .prefetch_as_load(cfg.value<bool>(l1i + ".prefetch_as_load", false))
-                            .virtual_prefetch(cfg.value<bool>(l1i + ".virtual_prefetch", true)));
+                            .virtual_prefetch(cfg.value<bool>(l1i + ".virtual_prefetch", true))
+                            .perfect(cfg.value<bool>(l1i + ".perfect", false)));
 
     caches.emplace_back(champsim::cache_builder{champsim::defaults::default_l2c}
                             .name(cache_name(cpu, "L2C"))
@@ -342,7 +347,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .prefetch_activate(prefetch_activate(cfg, l2c))
                             .clock_period(period(cfg, l2c + ".frequency", 4000))
                             .prefetch_as_load(cfg.value<bool>(l2c + ".prefetch_as_load", false))
-                            .virtual_prefetch(cfg.value<bool>(l2c + ".virtual_prefetch", false)));
+                            .virtual_prefetch(cfg.value<bool>(l2c + ".virtual_prefetch", false))
+                            .perfect(cfg.value<bool>(l2c + ".perfect", false)));
 
     caches.emplace_back(champsim::cache_builder{champsim::defaults::default_stlb}
                             .name(cache_name(cpu, "STLB"))
@@ -358,7 +364,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .offset_bits(champsim::data::bits{page_bits})
                             .prefetch_activate(prefetch_activate(cfg, stlb))
                             .clock_period(period(cfg, stlb + ".frequency", 4000))
-                            .prefetch_as_load(cfg.value<bool>(stlb + ".prefetch_as_load", false)));
+                            .prefetch_as_load(cfg.value<bool>(stlb + ".prefetch_as_load", false))
+                            .perfect(cfg.value<bool>(stlb + ".perfect", false)));
   }
 
   cores.reserve(defs::num_cpus);
