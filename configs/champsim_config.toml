@@ -1,0 +1,228 @@
+# The pre-migration ChampSim baseline, as TOML.
+#
+#     bin/champsim --config configs/champsim_config.toml [--set KEY=VALUE ...] trace.xz
+#
+# This is champsim_config.json -- the JSON that configured this simulator before
+# the runtime-configuration migration -- expressed in the runtime key language.
+# The JSON itself was deleted by that migration and now exists only in history,
+# at 6b9603e7:champsim_config.json.
+#
+# Of the JSON's 147 leaves, 142 appear below unchanged, `heartbeat_frequency`
+# became `sim.heartbeat_frequency`, and four are compile-time by design:
+# block_size, page_size and num_cores live in inc/defs.h; executable_name is a
+# makefile concern.
+#
+# Lines tagged `# effective` were NOT written in the JSON. They are the values
+# the JSON build actually used -- a cache's frequency inherited from its core,
+# the `lru`/`no` module defaults, pmem.frequency derived as data_rate/2 -- read
+# out of that binary's own [config] record. They are stated explicitly so this
+# file cannot drift if a built-in default ever changes.
+#
+# PIN THE PREDICTOR, do not delete it: the default branch predictor changed with
+# the migration (inc/defaults.hpp bakes hashed_perceptron; this JSON chose
+# bimodal), so dropping ooo_cpu.cpu0.branch_predictor silently gives a different
+# machine -- 4.46 MPKI against bimodal's 8.38 on 400.perlbench.
+#
+# Verified: this file reproduces the pre-migration binary bit-for-bit -- 237 of
+# 237 statistic leaves identical on each of 10 traces at 10M warmup / 50M
+# simulation instructions. See
+# docs/research-log/RuntimeConfig/2026-08-26-runtime-config-regression.md.
+
+# Core
+[ooo_cpu.cpu0]
+frequency = 4000
+ifetch_buffer_size = 64
+decode_buffer_size = 32
+dispatch_buffer_size = 32
+register_file_size = 128
+rob_size = 352
+lq_size = 128
+sq_size = 72
+fetch_width = 6
+decode_width = 6
+dispatch_width = 6
+execute_width = 4
+lq_width = 2
+sq_width = 2
+retire_width = 5
+mispredict_penalty = 1
+scheduler_size = 128
+decode_latency = 1
+dispatch_latency = 1
+schedule_latency = 0
+execute_latency = 0
+branch_predictor = "bimodal"
+btb = "basic_btb"
+
+# Decoded-instruction buffer
+[ooo_cpu.cpu0.dib]
+window_size = 16
+sets = 32
+ways = 8
+
+# L1I
+[cache.cpu0_l1i]
+sets = 64
+ways = 8
+rq_size = 64
+wq_size = 64
+pq_size = 32
+mshr_size = 8
+latency = 4
+max_tag_check = 2
+max_fill = 2
+prefetch_as_load = false
+virtual_prefetch = true
+prefetch_activate = "LOAD,PREFETCH"
+prefetcher = "no"
+frequency = 4000 # effective
+replacement = "lru" # effective
+
+# L1D
+[cache.cpu0_l1d]
+sets = 64
+ways = 12
+rq_size = 64
+wq_size = 64
+pq_size = 8
+mshr_size = 16
+latency = 5
+max_tag_check = 2
+max_fill = 2
+prefetch_as_load = false
+virtual_prefetch = false
+prefetch_activate = "LOAD,PREFETCH"
+prefetcher = "no"
+frequency = 4000 # effective
+replacement = "lru" # effective
+
+# L2C
+[cache.cpu0_l2c]
+sets = 1024
+ways = 8
+rq_size = 32
+wq_size = 32
+pq_size = 16
+mshr_size = 32
+latency = 10
+max_tag_check = 1
+max_fill = 1
+prefetch_as_load = false
+virtual_prefetch = false
+prefetch_activate = "LOAD,PREFETCH"
+prefetcher = "no"
+frequency = 4000 # effective
+replacement = "lru" # effective
+
+# ITLB
+[cache.cpu0_itlb]
+sets = 16
+ways = 4
+rq_size = 16
+wq_size = 16
+pq_size = 0
+mshr_size = 8
+latency = 1
+max_tag_check = 2
+max_fill = 2
+prefetch_as_load = false
+frequency = 4000 # effective
+prefetcher = "no" # effective
+replacement = "lru" # effective
+
+# DTLB
+[cache.cpu0_dtlb]
+sets = 16
+ways = 4
+rq_size = 16
+wq_size = 16
+pq_size = 0
+mshr_size = 8
+latency = 1
+max_tag_check = 2
+max_fill = 2
+prefetch_as_load = false
+frequency = 4000 # effective
+prefetcher = "no" # effective
+replacement = "lru" # effective
+
+# STLB
+[cache.cpu0_stlb]
+sets = 128
+ways = 12
+rq_size = 32
+wq_size = 32
+pq_size = 0
+mshr_size = 16
+latency = 8
+max_tag_check = 1
+max_fill = 1
+prefetch_as_load = false
+frequency = 4000 # effective
+prefetcher = "no" # effective
+replacement = "lru" # effective
+
+# LLC
+[cache.llc]
+frequency = 4000
+sets = 2048
+ways = 16
+rq_size = 32
+wq_size = 32
+pq_size = 32
+mshr_size = 64
+latency = 20
+max_tag_check = 1
+max_fill = 1
+prefetch_as_load = false
+virtual_prefetch = false
+prefetch_activate = "LOAD,PREFETCH"
+prefetcher = "no"
+replacement = "lru"
+
+# Page table walker
+[ptw.cpu0_ptw]
+pscl5_set = 1
+pscl5_way = 2
+pscl4_set = 1
+pscl4_way = 4
+pscl3_set = 2
+pscl3_way = 4
+pscl2_set = 4
+pscl2_way = 8
+rq_size = 16
+mshr_size = 5
+max_read = 2
+max_write = 2
+frequency = 4000 # effective
+
+# Main memory  (timings are memory-controller CYCLES, scaled by pmem.frequency)
+[pmem]
+data_rate = 3200
+frequency = 1600.0 # effective
+channels = 1
+ranks = 1
+bankgroups = 8
+banks = 4
+bank_rows = 65536
+bank_columns = 1024
+channel_width = 8
+wq_size = 64
+rq_size = 64
+tcas = 24
+trcd = 24
+trp = 24
+tras = 52
+refresh_period = 32
+refreshes_per_period = 8192
+
+# Virtual memory  (randomization: an integer is the seed; false disables; true means 1)
+[vmem]
+pte_page_size = 4096
+num_levels = 5
+minor_fault_penalty = 200
+randomization = 1
+
+# Simulation control
+[sim]
+heartbeat_frequency = 10000000

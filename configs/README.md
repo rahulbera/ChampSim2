@@ -20,9 +20,16 @@ does nothing but discover modules.
 - A run's statistics document records the loaded files in
   `[meta].config_files` and every applied key under `[config_override]`.
 
-`sample.toml` is a commented example and `lnc.toml` models Intel's Lion Cove;
-both target the standard single-core component names (`ooo_cpu.cpu0`,
-`cache.cpu0_l1d`, ...).
+`sample.toml` is a commented example, `lnc.toml` models Intel's Lion Cove, and
+`champsim_config.toml` is the pre-migration baseline -- the deleted
+`champsim_config.json` in the runtime key language, verified to reproduce that
+JSON build bit-for-bit. All three target the standard single-core component
+names (`ooo_cpu.cpu0`, `cache.cpu0_l1d`, ...).
+
+Use `champsim_config.toml` for anything that must compare against a
+pre-migration number. It pins `ooo_cpu.cpu0.branch_predictor = "bimodal"` on
+purpose: the baked default changed with the migration, so a run that drops that
+key is a different machine.
 
 A run's statistics document is itself a configuration source: `--config
 run.toml` on a previous run's `--toml` output reproduces that run's machine.
