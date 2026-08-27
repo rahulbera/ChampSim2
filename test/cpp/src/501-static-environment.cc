@@ -177,10 +177,25 @@ TEST_CASE("A geometry knob of zero is refused, not crashed on")
   // configuration from the command line has to reject the value, not die on
   // it -- and the two DIB knobs did neither, silently building a structure
   // that can never hit.
-  const auto keys = {"pmem.refresh_period",   "pmem.channels",        "pmem.ranks",          "pmem.bankgroups",           "pmem.banks",
-                     "pmem.bank_rows",        "pmem.bank_columns",    "pmem.channel_width",  "pmem.refreshes_per_period", "vmem.pte_page_size",
-                     "cache.llc.sets",        "cache.llc.ways",       "cache.cpu0_l1d.sets", "cache.cpu0_l1d.ways",       "cache.cpu0_stlb.ways",
-                     "ooo_cpu.cpu0.dib.sets", "ooo_cpu.cpu0.dib.ways"};
+  const auto keys = {"pmem.refresh_period",
+                     "pmem.channels",
+                     "pmem.ranks",
+                     "pmem.bankgroups",
+                     "pmem.banks",
+                     "pmem.bank_rows",
+                     "pmem.bank_columns",
+                     "pmem.channel_width",
+                     "pmem.refreshes_per_period",
+                     "vmem.pte_page_size",
+                     "cache.llc.sets",
+                     "cache.llc.ways",
+                     "cache.cpu0_l1d.sets",
+                     "cache.cpu0_l1d.ways",
+                     "cache.cpu0_stlb.ways",
+                     "ooo_cpu.cpu0.dib.sets",
+                     "ooo_cpu.cpu0.dib.ways",
+                     "ooo_cpu.cpu0.dib.inorder_width",
+                     "ooo_cpu.cpu0.dib.hit_buffer_size"};
 
   for (const auto* key : keys) {
     DYNAMIC_SECTION("zero " << key)

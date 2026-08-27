@@ -17,6 +17,13 @@
 #   [4] https://hardwaretimes.com/skylake-vs-sunny-cove-vs-golden-cove-vs-redwood-cove-vs-lion-cove-intel-p-core-architectures/
 #   [5] https://chipsandcheese.com/p/analyzing-lion-coves-memory-subsystem
 #   [6] https://www.intel.com/content/www/us/en/products/sku/240961/intel-core-ultra-9-processor-288v-12m-cache-up-to-5-10-ghz/specifications.html
+#   [7] https://cdrdv2-public.intel.com/824430/2024_Intel_Tech%20Tour%20TW_Next%20Gen%20P-core%20The%20Lion%20Cove%20Architecture-4.pdf
+#       (Ori Lempel, Intel Tech Tour Taiwan, June 2024 -- primary source for the front end)
+#   [8] https://jbk5155.github.io/publications/MICRO_2020.pdf
+#       (Kotra & Kalamatianos, AMD Research, "Improving the Utilization of
+#        Micro-operation Caches in x86 Processors", MICRO 2020 -- Table I)
+#   [9] https://www.7-cpu.com/cpu/Skylake.html (also Haswell.html, Ice_Lake.html)
+#       -- measured mispredict penalty split by uop-cache hit/miss
 #
 # Notes
 #  * LNC's 4-level data hierarchy is modelled as 3: the 192 KB 12-way 9-cycle
@@ -49,7 +56,7 @@ decode_buffer_size = 32         # default
 dispatch_buffer_size = 32       # default
 scheduler_size = 128            # default
 mispredict_penalty = 1          # default
-decode_latency = 1              # default
+decode_latency = 4              # derived [8][9] (= dib.hit_latency + 3; band 3-5)
 dispatch_latency = 1            # default
 schedule_latency = 0            # default
 execute_latency = 0             # default
@@ -64,10 +71,101 @@ btb = "basic_btb"               # default
 # Op cache: 5250 entries, 12-way [1][3]. ChampSim's DIB is indexed by
 # instruction window, not uops, so ways match and sets are the nearest
 # power of two.
+# The DIB models LNC's uop cache, which Lion Cove definitely has -- Intel's own
+# front-end slide lists "Uop cache capacity growth and read BW increase" [7].
+# (The "Intel dropped the uop cache" reports are about Skymont, the Lunar Lake
+# E-core, not Lion Cove.)
+#
+# UNIT NOTE for inorder_width: [1] gives the uop cache 12 micro-ops/cycle against
+# 8 instructions/cycle of decode. ChampSim never cracks an instruction into
+# micro-ops -- one trace instruction is one op everywhere in the model -- so the
+# two figures are carried across 1:1 and the DIB path ends up wider than decode,
+# which is the real machine's ordering. It is the RATIO that is modelled here,
+# not a micro-op count.
+#
+# hit_latency vs decode_latency: Intel states the ordering for this exact core --
+# "The DSB pipeline has shorter latency and delivered higher bandwidth than the
+# MITE (legacy instruction decode pipeline)", in the Lion Cove perfmon TMA metric
+# text -- but publishes no magnitude for either path, on Lion Cove or Golden
+# Cove, and the Lion Cove deck [7] gives a data-side load-to-use table while
+# omitting the front end entirely. The 3-cycle gap below is therefore DERIVED
+# from two independent sources that agree, neither of them Intel:
+#   * AMD Research's uop-cache paper [8] publishes its simulator configuration as
+#     "Decoder Latency: 3 cycles" and gives the uop cache no latency of its own,
+#     so its entire modelled uop-cache advantage is exactly 3 cycles. That model
+#     is stated as correlated with silicon and RTL at R^2 = 0.98.
+#   * 7-cpu's measured branch-misprediction penalties [9], split by uop-cache
+#     hit/miss, give 3.0-4.0 cycles on Haswell, Skylake and Ice Lake. A
+#     mispredict restarts the front end, so that delta IS the path-depth gap.
+# Ceiling: AMD Zen 4 bounds the op-cache component below 7 cycles. Floor: Agner
+# Fog could not resolve the difference above measurement noise on Skylake or Ice
+# Lake at all, which argues for the low end of the 3-5 band rather than the high.
+#
+# TREAT decode_latency AS A SENSITIVITY PARAMETER, NOT A CALIBRATED CONSTANT.
+# Every source that pins a number describes a front end at least two generations
+# older, and Golden Cove and Lion Cove are precisely where Intel invested in the
+# legacy path -- four decoders to six to eight, fetch 16 to 32 B/cycle. Agner on
+# the Alder Lake P-core: "The decoders in the P cores are now so efficient that
+# the uop cache is less important." The true LNC gap may be 1-2 cycles, and no
+# fetchable source can currently tell those cases apart.
+#
+# ---------------------------------------------------------------------------
+#
+# SIZING -- why 128 sets and not 512.
+#
+# One DIB entry is one 16-byte ALIGNED WINDOW of instruction bytes, not one
+# micro-op: dib_shift masks lg2(window_size) = 4 bits off the IP for both the
+# set index and the tag. Sizing this structure as though an entry were a
+# micro-op therefore overstates its capacity by however many instructions share
+# a window.
+#
+# That factor is MEASURED on this workload set, not assumed. Reading the traces
+# directly and counting distinct IPs against distinct 16-byte windows over 20M
+# records: 3.77 instructions/window on rubocop_toolchain, 3.87 on redis, with an
+# average x86-64 instruction length of 3.58 B and 3.73 B respectively.
+#
+#   disclosed [1]        5,250 micro-ops
+#   entry-as-micro-op    5250 / 12 ways = 437.5 -> 512 sets = 6,144 entries.
+#                        That is what this file used to say. At 3.8
+#                        instructions per window it is ~23,300 micro-op
+#                        equivalents -- 4.4x the real cache -- and 6,144 x 16 B
+#                        = 96 KB of instruction footprint, MORE code than this
+#                        file's own 64 KB L0I holds. A decoded-instruction
+#                        cache covering more code than the instruction cache
+#                        feeding it is backwards, which is the tell.
+#   window-corrected     5250 / 3.8 = 1,382 windows / 12 ways = 115 sets -> 128.
+#                        128 x 12 = 1,536 windows ~ 5,840 micro-op equivalents,
+#                        11% over the disclosed figure, and 24 KB of footprint,
+#                        comfortably inside the L0I.
+#
+# ONE OPTIMISM REMAINS AT ANY SIZE, and no choice of sets/ways fixes it.
+# Residency is granted per WINDOW: do_dib_update() fills the window containing
+# the decoded instruction and check_hit() tests the window, so once ONE
+# instruction in a window has been decoded, every other instruction in that
+# window hits -- including ones never decoded. A real DSB cannot do this. Intel's
+# has per-region micro-op limits and drops a region to the legacy decoders
+# entirely when it does not fit, so real uop caches pay a coverage loss the
+# windowed model never pays.
+#
+# Cost of the correction, measured at 10M warmup / 50M simulation instructions:
+#
+#                       rubocop_toolchain          redis
+#   512 x 12 (was)    97.87% hit, IPC 1.09   96.16% hit, IPC 0.90
+#   128 x 12 (now)    85.31% hit, IPC 1.07   85.83% hit, IPC 0.88
+#   infinite DIB      99.96% hit, IPC 1.13   99.78% hit, IPC 0.95
+#
+# So the old geometry ran ~2% optimistic on cycles and reported a uop-cache hit
+# rate of 96-98%, which is not a credible coverage figure for real code. 85% is.
+# The infinite row is the ceiling: even an unbounded DIB is only ~5% better than
+# the corrected one, which is the honest scale of what this structure is worth
+# at LNC's 8-wide decode.
 [ooo_cpu.cpu0.dib]
-sets = 512                      # derived [1][3]
+sets = 128                      # derived [1] (5250 uops / 3.8 instr-per-window / 12 ways)
 ways = 12                       # disclosed [3]
 window_size = 16                # default
+hit_latency = 1                 # pinned -- the reference point; the gap is in decode_latency
+inorder_width = 12              # derived [1] (12 uops/cycle; see the unit note above)
+hit_buffer_size = 32            # default -- no LNC figure published for this staging buffer
 
 # L0I: 64 KB, 16-way, 4 cycles [3]
 [cache.cpu0_l1i]

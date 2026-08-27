@@ -420,7 +420,28 @@ sees the L1I's misses.
 DIB accounting lives in `cpu_stats` (`inc/core_stats.h`) and is charged in
 `O3_CPU::do_check_dib`, which runs once per instruction, gated by `dib_checked`. Only
 `dib_hits`/`dib_misses` are stored; `dib_lookups()` is their sum, so the total cannot
-drift from its parts. Two things about the numbers are easy to get wrong:
+drift from its parts.
+
+**There are two front-end routes, not one.** `promote_to_decode` partitions the fetch
+window on `decoded`: DIB hits go to `DIB_HIT_BUFFER` charged `dib.hit_latency`, misses
+go to `DECODE_BUFFER` charged `decode_latency`, and `decode_instruction` merges the two
+back in program order under `dib.inorder_width`. The two routes are NOT symmetric:
+`do_dib_hit` sets `ready_time` and nothing else, while `do_decode` also fills the DIB
+(`do_dib_update`), fires `branch_decode_notify`, and performs decode-time misprediction
+recovery for direct branches. So a DIB hit never notifies the predictor at decode and
+never resolves a branch early — and a *perfect* DIB would eliminate both entirely.
+Measured inert today: `cbp6_runlts_norv` is the only consumer of the decode hook, and
+its mispredict count is identical at 76% and 97% DIB hit rate with `CBP6_PROTOCOL_CHECK`
+satisfied in both. It is a trap for the next predictor that needs the hook, not a
+current bug. Warmup is free on both routes — it
+was charged on the DIB route only, until `test/cpp/src/122-dib-warmup-latency.cc` pinned
+the symmetry. `ooo_cpu.<cpu>.dib.hit_latency`, `.dib.inorder_width` and
+`.dib.hit_buffer_size` were builder-only until they became runtime keys; the width and
+the buffer size refuse zero, `hit_latency` does not, because a zero-cost hit is a
+meaningful thing to ask for. A `hit_buffer_size` of zero stalls the *decode* path too —
+`promote_to_decode` takes the min of both buffers' free space.
+
+Four things about the numbers are easy to get wrong:
 
 - **A hit means the window was already decoded, not that a neighbour shares it.** The
   DIB is filled at *decode* (`do_dib_update`), many cycles after `check_dib` has
@@ -428,6 +449,20 @@ drift from its parts. Two things about the numbers are easy to get wrong:
   four instructions in one 16-byte window are four misses on the first pass, and hit
   only when that code runs again. `dib_misses` counts *instructions*, not distinct
   windows; it is not a code-footprint proxy. `test/cpp/src/141-dib-stats.cc` pins this.
+- **The DIB is worth very little at the shipped parameters, and the widths dominate.**
+  `dib.hit_latency` and `decode_latency` are both 1, so a hit and a miss reach dispatch
+  on the same cycle — `src/ooo_cpu.cc` says so at `// assume DECODE_LATENCY =
+  DIB_HIT_LATENCY`. Tripling the hit rate (a 1x1 DIB against the shipped 32x8) moved
+  cycles by 0.5%: the DIB removes L1I *hits*, not misses. The width knobs move results
+  roughly 7x harder than the latency knob. Intel states the uop-cache path has shorter
+  latency than legacy decode but publishes no magnitude for any Cove core;
+  `configs/lnc.toml` carries the derivation and the sources.
+- **Residency is granted per 16-byte window, which is optimistic at any size.** One
+  decoded instruction makes its whole window hit, including instructions never decoded;
+  a real uop cache has per-region micro-op limits and drops a region to the decoders
+  when it will not fit. So sizing the DIB as though an entry were a micro-op inflates it
+  by however many instructions share a window — measured at 3.77-3.87 on the agentic
+  traces, which is why `configs/lnc.toml` is 128 sets and not 512.
 - **The lookup count is not the retired instruction count.** The pipeline is *not*
   drained between phases (`do_phase` in `src/champsim.cc`), so a phase's lookups equal
   its retired count adjusted by the in-flight delta at both boundaries — measured at

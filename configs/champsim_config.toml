@@ -14,9 +14,11 @@
 #
 # Lines tagged `# effective` were NOT written in the JSON. They are the values
 # the JSON build actually used -- a cache's frequency inherited from its core,
-# the `lru`/`no` module defaults, pmem.frequency derived as data_rate/2 -- read
-# out of that binary's own [config] record. They are stated explicitly so this
-# file cannot drift if a built-in default ever changes.
+# the `lru`/`no` module defaults, pmem.frequency derived as data_rate/2, and the
+# three DIB knobs that were builder-only until they became runtime keys -- read
+# out of that binary's own [config] record, or from inc/defaults.hpp where the
+# JSON never reached. They are stated explicitly so this file cannot drift if a
+# built-in default ever changes.
 #
 # PIN THE PREDICTOR, do not delete it: the default branch predictor changed with
 # the migration (inc/defaults.hpp bakes hashed_perceptron; this JSON chose
@@ -59,6 +61,9 @@ btb = "basic_btb"
 window_size = 16
 sets = 32
 ways = 8
+hit_latency = 1 # effective
+inorder_width = 5 # effective
+hit_buffer_size = 32 # effective
 
 # L1I
 [cache.cpu0_l1i]

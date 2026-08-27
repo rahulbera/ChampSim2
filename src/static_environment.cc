@@ -403,7 +403,20 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                            .clock_period(period(cfg, key + ".frequency", 4000))
                            .dib_set(cfg.positive_value<std::size_t>(key + ".dib.sets", 32))
                            .dib_way(cfg.positive_value<std::size_t>(key + ".dib.ways", 8))
-                           .dib_window(cfg.value<std::size_t>(key + ".dib.window_size", 16)));
+                           .dib_window(cfg.value<std::size_t>(key + ".dib.window_size", 16))
+                           // A DIB hit costs hit_latency where a miss costs decode_latency; both
+                           // default to 1, which is the assumption promote_to_decode() calls out
+                           // in its own comment. Intel states the ordering for these cores -- the
+                           // uop-cache path has shorter latency than legacy decode -- but never
+                           // the magnitude, so the gap is a knob to be swept, not a constant.
+                           // hit_latency reads through value(), not positive_value(): a
+                           // zero-cycle DIB hit is a meaningful thing to ask for. The other two
+                           // are refused at zero, because zero drains nothing -- and
+                           // hit_buffer_size of zero stalls the DECODE path too, since
+                           // promote_to_decode() takes the min of both buffers' free space.
+                           .dib_hit_latency(cfg.value<unsigned>(key + ".dib.hit_latency", 1))
+                           .dib_inorder_width(champsim::bandwidth::maximum_type{cfg.positive_value<long>(key + ".dib.inorder_width", 5)})
+                           .dib_hit_buffer_size(cfg.positive_value<std::size_t>(key + ".dib.hit_buffer_size", 32)));
   }
 
   select_modules(cfg);
