@@ -302,9 +302,12 @@ long O3_CPU::promote_to_decode()
   auto mark_for_decode = [time = current_time, lat = DECODE_LATENCY, warmup = warmup](auto& x) {
     return x.ready_time = time + (warmup ? champsim::chrono::clock::duration{} : lat);
   };
-  // to DIB_HIT_BUFFER
+  // to DIB_HIT_BUFFER. Warmup is free here for the same reason it is free in
+  // mark_for_decode: warmup exists to populate structures, not to be timed, and
+  // charging one path but not the other made the two front-end routes
+  // asymmetric during warmup in a way nothing intended.
   auto mark_for_dib = [time = current_time, lat = DIB_HIT_LATENCY, warmup = warmup](auto& x) {
-    return x.ready_time = time + lat;
+    return x.ready_time = time + (warmup ? champsim::chrono::clock::duration{} : lat);
   };
 
   std::for_each(window_begin, decoded_window_end, mark_for_dib); // assume DECODE_LATENCY = DIB_HIT_LATENCY
