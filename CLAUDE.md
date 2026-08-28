@@ -388,6 +388,15 @@ builds break on the machine where it is hardest to notice. Keep such code in `sr
   dead headers. `DEPFLAGS` now carries `-MP`, which emits a phony target per header and
   makes the translation unit rebuild instead; `./config.sh && make` is therefore
   sufficient on its own. `make configclean` remains the belt-and-braces recovery.
+  The *other* direction is the silent one. A branch that **adds** modules leaves a
+  registry that does not name them, and nothing fails: module objects come from the
+  Makefile's own `$(wildcard <dir>/*.cc)`, so the new sources compile and link, `make`
+  exits 0, and `make test` passes too — the module tests bind their module as a
+  template argument (`.prefetcher<sms>()`), never through the registry. The first
+  signal is at run time: `registry::make_prefetcher` throws `unknown prefetcher module
+  'sms'; valid prefetcher modules: ...` and the run exits 1, naming a directory that is
+  visibly present. So `./config.sh` after a checkout that adds modules is mandatory,
+  not merely recovery.
 - **Vendored ITTAGE has undefined behaviour in its RNG.** `inc/ittage/ittage.hpp:246,248`
   left-shift a negative `int` in `MYRANDOM`; UBSan flags it on any `ittage_64kb` run, so
   the ITTAGE campaign's numbers were produced with it. GCC emits the expected
