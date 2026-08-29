@@ -6,7 +6,9 @@
 # Tags: disclosed = stated by a reference below; derived = computed from one
 # (capacity/associativity -> set count, load-to-use -> per-level latency);
 # default = ChampSim default, not an LNC figure; pinned = neither, held at a
-# value on purpose (see the comment at that line). A `default` tag means the
+# value on purpose (see the comment at that line); `@rbera override` = set by hand
+# against the reference, with the value it replaced kept in the comment.
+# A `default` tag means the
 # value equals what `bin/champsim --knobs` reports, and a disclosed figure that
 # happens to coincide with a ChampSim default is still tagged disclosed.
 #
@@ -39,19 +41,19 @@
 #    PAGE_SIZE live in inc/defs.h; everything else is here.
 
 [ooo_cpu.cpu0]
-frequency = 5100                # disclosed [6]
+frequency = 4000                # @rbera override (was 5100, disclosed [6])
 rob_size = 576                  # disclosed [1][3][4]
 fetch_width = 8                 # derived [2] (48 B/cycle fetch)
 decode_width = 8                # disclosed [1][3][4]
 dispatch_width = 8              # disclosed [3][4] (rename/allocate)
-execute_width = 18              # disclosed [1][3] (execution ports)
+execute_width = 8               # @rbera override (was 18, disclosed [1][3])
 retire_width = 12               # disclosed [3][4]
 lq_width = 3                    # disclosed [4] (load AGUs)
 sq_width = 3                    # disclosed [4] (store AGUs)
 ifetch_buffer_size = 192        # disclosed [1][3] (op queue)
 lq_size = 128                   # default
 sq_size = 72                    # default
-register_file_size = 128        # default
+register_file_size = 200        # @rbera override (was 128, ChampSim default)
 decode_buffer_size = 32         # default
 dispatch_buffer_size = 32       # default
 scheduler_size = 128            # default
@@ -60,13 +62,8 @@ decode_latency = 4              # derived [8][9] (= dib.hit_latency + 3; band 3-
 dispatch_latency = 1            # default
 schedule_latency = 0            # default
 execute_latency = 0             # default
-# Was the default when this file was written; the built-in default has since
-# moved to hashed_perceptron (inc/defs.h), so this line is now a PIN, not a
-# default. Left as-is so LNC results stay comparable with runs already taken --
-# delete the line to follow the built-in default instead. Neither is an LNC
-# figure: no reference discloses its predictor.
-branch_predictor = "bimodal"    # pinned
-btb = "basic_btb"               # default
+branch_predictor = "cbp6_tagescl64" # @rbera override (was "bimodal")
+btb = "ittage_64kb"             # @rbera override (was "basic_btb", ChampSim default)
 
 # Op cache: 5250 entries, 12-way [1][3]. ChampSim's DIB is indexed by
 # instruction window, not uops, so ways match and sets are the nearest
@@ -119,53 +116,14 @@ btb = "basic_btb"               # default
 # micro-op therefore overstates its capacity by however many instructions share
 # a window.
 #
-# That factor is MEASURED on this workload set, not assumed. Reading the traces
-# directly and counting distinct IPs against distinct 16-byte windows over 20M
-# records: 3.77 instructions/window on rubocop_toolchain, 3.87 on redis, with an
-# average x86-64 instruction length of 3.58 B and 3.73 B respectively.
-#
-#   disclosed [1]        5,250 micro-ops
-#   entry-as-micro-op    5250 / 12 ways = 437.5 -> 512 sets = 6,144 entries.
-#                        That is what this file used to say. At 3.8
-#                        instructions per window it is ~23,300 micro-op
-#                        equivalents -- 4.4x the real cache -- and 6,144 x 16 B
-#                        = 96 KB of instruction footprint, MORE code than this
-#                        file's own 64 KB L0I holds. A decoded-instruction
-#                        cache covering more code than the instruction cache
-#                        feeding it is backwards, which is the tell.
-#   window-corrected     5250 / 3.8 = 1,382 windows / 12 ways = 115 sets -> 128.
-#                        128 x 12 = 1,536 windows ~ 5,840 micro-op equivalents,
-#                        11% over the disclosed figure, and 24 KB of footprint,
-#                        comfortably inside the L0I.
-#
-# ONE OPTIMISM REMAINS AT ANY SIZE, and no choice of sets/ways fixes it.
-# Residency is granted per WINDOW: do_dib_update() fills the window containing
-# the decoded instruction and check_hit() tests the window, so once ONE
-# instruction in a window has been decoded, every other instruction in that
-# window hits -- including ones never decoded. A real DSB cannot do this. Intel's
-# has per-region micro-op limits and drops a region to the legacy decoders
-# entirely when it does not fit, so real uop caches pay a coverage loss the
-# windowed model never pays.
-#
-# Cost of the correction, measured at 10M warmup / 50M simulation instructions:
-#
-#                       rubocop_toolchain          redis
-#   512 x 12 (was)    97.87% hit, IPC 1.09   96.16% hit, IPC 0.90
-#   128 x 12 (now)    85.31% hit, IPC 1.07   85.83% hit, IPC 0.88
-#   infinite DIB      99.96% hit, IPC 1.13   99.78% hit, IPC 0.95
-#
-# So the old geometry ran ~2% optimistic on cycles and reported a uop-cache hit
-# rate of 96-98%, which is not a credible coverage figure for real code. 85% is.
-# The infinite row is the ceiling: even an unbounded DIB is only ~5% better than
-# the corrected one, which is the honest scale of what this structure is worth
-# at LNC's 8-wide decode.
+# ---------------------------------------------------------------------------
 [ooo_cpu.cpu0.dib]
 sets = 128                      # derived [1] (5250 uops / 3.8 instr-per-window / 12 ways)
 ways = 12                       # disclosed [3]
 window_size = 16                # default
-hit_latency = 1                 # pinned -- the reference point; the gap is in decode_latency
+hit_latency = 1                 # pinned -- see the note above
 inorder_width = 12              # derived [1] (12 uops/cycle; see the unit note above)
-hit_buffer_size = 32            # default -- no LNC figure published for this staging buffer
+hit_buffer_size = 32            # default -- no LNC figure published
 
 # L0I: 64 KB, 16-way, 4 cycles [3]
 [cache.cpu0_l1i]
@@ -196,7 +154,7 @@ replacement = "lru"             # default
 sets = 4096                     # derived [3]
 ways = 10                       # disclosed [3]
 latency = 13                    # derived [3] (17 - 4)
-mshr_size = 80                  # disclosed [1] (L2 miss queue)
+mshr_size = 32                  # @rbera override (was 80, disclosed [1])
 rq_size = 32                    # default
 wq_size = 32                    # default
 pq_size = 16                    # default
@@ -213,7 +171,7 @@ rq_size = 32                    # default
 wq_size = 32                    # default
 pq_size = 32                    # default
 prefetcher = "no"               # default
-replacement = "lru"             # default
+replacement = "ship"            # @rbera override (was "lru", ChampSim default)
 
 # DTLB: 128 entries [1][3]
 [cache.cpu0_dtlb]
@@ -248,7 +206,7 @@ latency = 7                     # disclosed [1]
 # that would suggest 4266 is a DDR4 relation; LPDDR5X does not use it, and [6]
 # is a product page, not a timing specification.
 [pmem]
-data_rate = 8533                # disclosed [6]
+data_rate = 5600                # @rbera override (was 8533, disclosed [6])
 frequency = 1600                # default  (controller clock; see the note above)
 tcas = 24                       # default  (24 cycles @ 1600 MHz = 15.0 ns)
 trcd = 24                       # default
