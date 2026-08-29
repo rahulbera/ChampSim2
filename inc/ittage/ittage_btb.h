@@ -55,15 +55,17 @@
 #include "ittage/ittage.hpp"
 #include "msl/bits.h"
 #include "msl/lru_table.h"
+#include "runtime_config.h"
 
 namespace champsim::ittage
 {
 // ---------------------------------------------------------------------------
 // Copied verbatim from btb/basic_btb/direct_predictor.{h,cc} as of the
-// campaign, made inline and namespaced (basic_btb has since gained a
-// runtime-geometry resize() this shell deliberately lacks -- the write-up pins
-// the fixed 1024x8 geometry). Unmodified: an ITTAGE configuration must differ from basic_btb
-// only in the indirect path, or the comparison measures two things at once.
+// campaign, made inline and namespaced. The geometry is runtime-settable via
+// `.direct.sets`/`.direct.ways` (see configure_direct below) and defaults to the
+// 1024x8 the write-ups pin. Otherwise unmodified: an ITTAGE configuration must
+// differ from basic_btb only in the indirect path, or the comparison measures
+// two things at once.
 // ---------------------------------------------------------------------------
 struct direct_predictor {
   enum class branch_info {
@@ -94,6 +96,12 @@ struct direct_predictor {
   };
 
   champsim::msl::lru_table<btb_entry_t> BTB{sets, ways};
+
+  // Runtime-sized, mirroring btb/basic_btb/direct_predictor.h. Runs before any
+  // lookup, so rebuilding the empty table loses nothing; the constexpr values
+  // above stay the defaults, which is what keeps the recorded comparisons
+  // reproducible.
+  void resize(std::size_t new_sets, std::size_t new_ways) { BTB = champsim::msl::lru_table<btb_entry_t>{new_sets, new_ways}; }
 
   std::optional<btb_entry_t> check_hit(champsim::address ip) { return BTB.check_hit({ip, champsim::address{}, branch_info::ALWAYS_TAKEN}); }
 
@@ -203,6 +211,24 @@ public:
   // for every table, so calling it a second time leaks the constructor's
   // allocation (96 KB / 192 KB depending on configuration, ASan-confirmed).
   void initialize() {}
+
+  // The direct predictor's geometry, and the only thing here a configuration can
+  // move. The key is `.direct.sets`, not `.sets`: this module's own tables are
+  // vendored and compile-time, so a bare `sets` would name the thing that
+  // cannot be set.
+  //
+  // A caveat this cannot enforce: a comparison against another BTB arm is
+  // honest only while every arm's direct path is identical. Changing this on one
+  // arm and not another measures two things at once. The defaults are the
+  // geometry the write-ups pin, so leaving these keys alone is always safe.
+  void configure_direct(const champsim::runtime_config& cfg, std::string_view prefix)
+  {
+    // positive_value: lru_table validates sets itself but never ways, and a
+    // zero-way table silently never hits.
+    const auto s = cfg.positive_value<std::size_t>(std::string{prefix} + ".direct.sets", direct_predictor::sets);
+    const auto w = cfg.positive_value<std::size_t>(std::string{prefix} + ".direct.ways", direct_predictor::ways);
+    direct.resize(s, w);
+  }
 
   // Verification surface, not a functional interface. The adapter's contract
   // with the predictor -- notably that it forwards the ARCHITECTURAL next PC

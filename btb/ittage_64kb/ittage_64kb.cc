@@ -42,6 +42,8 @@ impl_type& shared()
 }
 } // namespace
 
+void ittage_64kb::configure(const champsim::runtime_config& cfg, std::string_view prefix) { shared().configure_direct(cfg, prefix); }
+
 void ittage_64kb::initialize_btb()
 {
   // The predictor, direct BTB and RAS live in one function-local static shared

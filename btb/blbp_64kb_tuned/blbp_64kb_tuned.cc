@@ -5,9 +5,8 @@
 #include "ooo_cpu.h"
 #define CHAMPSIM_MODULE
 
-#include "blbp_64kb_tuned.h"
-
 #include "blbp/blbp_btb.h"
+#include "blbp_64kb_tuned.h"
 #include "cbp6/cbp6_host.h"
 
 namespace
@@ -36,6 +35,8 @@ champsim::blbp::btb_impl& shared()
   return instance;
 }
 } // namespace
+
+void blbp_64kb_tuned::configure(const champsim::runtime_config& cfg, std::string_view prefix) { shared().configure_direct(cfg, prefix); }
 
 void blbp_64kb_tuned::initialize_btb()
 {

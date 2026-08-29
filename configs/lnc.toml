@@ -125,6 +125,19 @@ hit_latency = 1                 # pinned -- see the note above
 inorder_width = 12              # derived [1] (12 uops/cycle; see the unit note above)
 hit_buffer_size = 32            # default -- no LNC figure published
 
+# The direct target predictor inside the selected BTB. It owns branch PRESENCE
+# and TYPE as well as direct targets: a miss here means no prediction at all,
+# whatever the indirect predictor or the RAS would have said. 1024x8 is the
+# geometry the BTB write-ups pin, and is what every recorded comparison used --
+# the values below are those defaults stated explicitly, not a change.
+#
+# NOTE this table is tied to `btb = "ittage_64kb"` above. Module knobs are only
+# consulted when their module is selected, and an unconsulted key is fatal, so
+# changing the BTB means changing this table name too (or deleting it).
+[ooo_cpu.cpu0.ittage_64kb]
+direct.sets = 1024              # default (pinned by the BTB write-ups)
+direct.ways = 8                 # default (pinned by the BTB write-ups)
+
 # L0I: 64 KB, 16-way, 4 cycles [3]
 [cache.cpu0_l1i]
 sets = 64                       # derived [3]
