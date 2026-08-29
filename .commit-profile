@@ -9,7 +9,7 @@
 message:
   # `<component>: <imperative summary>`. The prefix is the SUBSYSTEM touched,
   # not a conventional-commit type -- history uses config, sim, stats, blbp,
-  # ittage, btb, cbp6, trace, modules, heartbeat, cluster_configs, configs and
+  # ittage, btb, cbp6, trace, modules, heartbeat, configs and
   # headroom alongside docs and test. Hence `custom`, not `conventional`.
   format: custom
   template: |

@@ -128,7 +128,7 @@ construction. `basic_btb` is the exemplar (direct-predictor geometry). BLBP's
 configure adoption is deferred: its tuned surface (`transfer`, `intervals`) is
 vector-valued and the store is scalar-only. ITTAGE/CBP6 internals are unreachable by
 construction (constexpr policy classes, vendored macros); CBP6's env toggles stay
-`getenv` for comparability with prior campaign runs.
+`getenv` so that results already recorded with them stay comparable.
 
 ### Tests
 
@@ -210,9 +210,9 @@ baked default changed (next paragraph).
 `champsim_config.json` selected `bimodal`, overriding the `hashed_perceptron` that
 `inc/defaults.hpp` bakes; `inc/defs.h` now names the C++ default, so a
 configuration-free run predicts better than it used to — 4.46 MPKI against bimodal's
-8.38 on 400.perlbench. Every campaign selects its predictor explicitly, so no campaign
-number moves, but a default-build baseline does, and any comparison against a
-pre-migration run must pin `ooo_cpu.<cpu>.branch_predictor`.
+8.38 on 400.perlbench. A run that pins its predictor is unaffected, but a default-build
+baseline is not, and any comparison against a pre-migration run must pin
+`ooo_cpu.<cpu>.branch_predictor`.
 
 ### Simulation model: `champsim::operable` + global clock
 
@@ -279,25 +279,19 @@ unregistered, giving a module that builds and can never be selected.
   `uint64_t`. Many hooks have both `champsim::address` and legacy `uint64_t` overloads;
   the `uint64_t` ones are `[[deprecated]]`.
 
-## This Branch (`rbdev`): branch-prediction research
+## Predictor modules with tuned or vendored constants
 
-Four campaigns, each with a full write-up (every number, every figure, and the
-disclosures) under `docs/research-log/`. Read the write-up before touching a campaign's
-code — the constants in it were tuned, and the reasoning is not reconstructible from
-the source.
+Several shipped modules carry constants that cannot be reconstructed from the source
+and must not be "cleaned up" on inspection: `btb/blbp_64kb_tuned` was produced by a
+parameter search, and the `branch/cbp6_*` predictors plus `inc/ittage/` are vendored
+competition code. Read the module's own header comments before changing a constant in
+one of them.
 
-| Campaign | Code | Write-up |
-|---|---|---|
-| CBP2025 conditional predictors | `inc/cbp6/`, `branch/cbp6_*` | `docs/research-log/CBP6/` |
-| ITTAGE indirect target predictor | `inc/ittage/`, `btb/ittage_{32,64}kb` | `docs/research-log/CBP6/` |
-| BLBP bit-level perceptron (clean-room) | `inc/blbp/`, `btb/blbp_64kb{,_tuned}` | `docs/research-log/BLBP/` |
-| Headroom oracles | `inc/perfect_group/`, `btb/{perfect,ideal}_*` | both |
-
-The oracle BTBs decompose target-prediction headroom by class (direct / indirect /
-return), so a predictor's capture can be stated as a fraction of what is attainable
-rather than as a raw MPKI. `cluster_configs/arms.toml` records the eight campaign arms
-as runtime `--set` values — one binary now serves every arm, where each used to need its
-own configure-and-build.
+The oracle BTBs (`btb/{perfect,ideal}_*`, `inc/perfect_group/`) decompose
+target-prediction headroom by class (direct / indirect / return), so a predictor's
+capture can be stated as a fraction of what is attainable rather than as a raw MPKI.
+Selecting between them is a runtime `--set`, so a sweep over predictors is one binary
+and N values, where each variant used to need its own configure-and-build.
 
 ### The CBP6 adapter (`inc/cbp6/`)
 
@@ -315,14 +309,24 @@ can be **vendored unmodified** rather than rewritten. Hosted tenants:
 
 ### Standalone harnesses (`tools/`)
 
-`tools/blbp_tune/` (trace-stream extractor, the `blbp_eval` objective binary, and the
-hill-climbing tuner — plus `TUNING_NOTES.md`, which is how a paused campaign is resumed),
-`tools/cbp6_replay/`, `tools/ittage_equiv/`.
+`tools/blbp_tune/`, `tools/cbp6_replay/`, `tools/ittage_equiv/`. Each has its own
+Makefile that compiles with **nothing but `g++ -I../../inc`** — no vcpkg — so they build
+on a bare login node. The consequence is a real constraint: if a header they include
+ever starts pulling a vcpkg dependency, those builds break on the machine where it is
+hardest to notice. Keep such code in `src/`.
 
-Each has its own Makefile that compiles with **nothing but `g++ -I../../inc`** — no
-vcpkg — so they build on a bare cluster login node. The consequence is a real
-constraint: if a header they include ever starts pulling a vcpkg dependency, those
-builds break on the machine where it is hardest to notice. Keep such code in `src/`.
+**`btb/blbp_64kb_tuned`'s constants came from a search that was paused, not finished,
+and resuming it is very likely not worth it.** `tools/blbp_tune/TUNING_NOTES.md` has the
+state: stopped at generation 35 of 40 for an operational reason, *not* by its own stop
+criterion — the objective was still falling ~0.1–0.2% per generation, having fallen
+17.5% overall. Extrapolating the last ten generations suggests another 1–2% is
+available from the same search space and no more. The parameters that would actually
+move the result — `M`, `K`, `N` and the IBTB geometry — are **size-bearing** and were
+frozen to hold the storage budget, so they are outside the space by construction: a
+resumed run cannot reach them, and widening to include them is a new configuration
+rather than a resume, because it breaks the iso-storage claim. The generation-35 best is
+frozen and committed; a later search that beats it should produce a new module, not
+overwrite that one.
 
 ### Gotchas that cost real time here
 
@@ -390,11 +394,11 @@ builds break on the machine where it is hardest to notice. Keep such code in `sr
   sufficient on its own. `make configclean` remains the belt-and-braces recovery.
 - **Vendored ITTAGE has undefined behaviour in its RNG.** `inc/ittage/ittage.hpp:246,248`
   left-shift a negative `int` in `MYRANDOM`; UBSan flags it on any `ittage_64kb` run, so
-  the ITTAGE campaign's numbers were produced with it. GCC emits the expected
-  two's-complement result, and casting through `unsigned` would be bit-identical, but it
+  any results already recorded with that module were produced with it. GCC emits the
+  expected two's-complement result, and casting through `unsigned` would be bit-identical, but it
   is vendored competition code — do not change it without deciding what happens to the
-  recorded results. It is the *only* UB the simulator reports: ASan+UBSan across all
-  eight campaign arms is otherwise clean.
+  recorded results. It is the *only* UB the simulator reports: ASan+UBSan across the
+  shipped module set is otherwise clean.
 
 ### Added to the core
 
@@ -461,8 +465,8 @@ Four things about the numbers are easy to get wrong:
   decoded instruction makes its whole window hit, including instructions never decoded;
   a real uop cache has per-region micro-op limits and drops a region to the decoders
   when it will not fit. So sizing the DIB as though an entry were a micro-op inflates it
-  by however many instructions share a window — measured at 3.77-3.87 on the agentic
-  traces, which is why `configs/lnc.toml` is 128 sets and not 512.
+  by however many instructions share a window — measured at ~3.8 on our traces, which is
+  why `configs/lnc.toml` is 128 sets and not 512.
 - **The lookup count is not the retired instruction count.** The pipeline is *not*
   drained between phases (`do_phase` in `src/champsim.cc`), so a phase's lookups equal
   its retired count adjusted by the in-flight delta at both boundaries — measured at
