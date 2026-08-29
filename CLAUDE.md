@@ -365,6 +365,11 @@ overwrite that one.
   page fault was proportionally too expensive, silently. If you add a component with a
   clock, add its frequency key to that sweep; `501-static-environment.cc` pins the
   computed quantum against the constructed machine's actual minimum.
+- **Two configuration keys are named for something they are not.**
+  `ooo_cpu.<cpu>.scheduler_size` feeds `schedule_width()` — a per-cycle search
+  *bandwidth*, not the size of a structure — and `ptw.<name>.max_read`/`max_write`
+  feed `tag_bandwidth`/`fill_bandwidth`. Both names came from the JSON and were kept
+  so old configurations still load; read them as widths.
 - **Geometry knobs read through `positive_value`; queue sizes deliberately do not.**
   Thirteen keys used to kill the process at zero (SIGFPE in the DRAM divisors, SIGABRT in
   the cache asserts) and the two DIB knobs silently built a structure that can never hit.
