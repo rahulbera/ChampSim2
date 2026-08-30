@@ -14,64 +14,32 @@
 
 /*
  * A generic Markov correlation instrument, after Joseph and Grunwald,
- * "Prefetching Using Markov Predictors", IEEE Trans. Computers 48(2), Feb.
- * 1999 -- with every hardware constraint of that design deliberately removed.
+ * "Prefetching Using Markov Predictors", IEEE Trans. Computers 48(2), 1999,
+ * with that design's hardware constraints deliberately removed.
  *
- * It learns correlations of the form
+ * Learns {A,B,C,D} -> {E,F,G,H}: the left side is the last `history_length`
+ * cacheline addresses, the right side the SET of one-step successors.
  *
- *     {A, B, C, D}  ->  {E, F, G, H}
+ * A measurement instrument, not a prefetcher. It issues nothing while
+ * issue_prefetch is false, which keeps the measured address stream independent
+ * of history_length. Space is unbounded and exact-keyed: ~1.2 GB at H=32 at LLC
+ * scale, and NOT affordable at L1D or L2C volumes.
  *
- * where the left side is the last `history_length` cacheline addresses and the
- * right side is the SET of addresses observed to follow that sequence. The
- * right side is breadth-first -- every node reachable in one step from the
- * current node -- not a depth-first chain of successive prefetches.
- *
- * WHAT THIS IS FOR. It is a measurement instrument, not a prefetcher. It
- * answers two questions about a workload:
- *
- *   1. How does right-side cardinality change as the left side lengthens?
- *      Cardinality bounds ACCURACY: a sequence with eight observed successors
- *      cannot be predicted better than one-in-eight without more information.
- *   2. How much does a length-H sequence actually recur? Recurrence bounds
- *      COVERAGE: a correlation that pinpoints the successor perfectly is worth
- *      nothing if its key never comes round again.
- *
- * The expected tension is that (1) improves and (2) degrades as H rises. This
- * module measures where that trade sits.
- *
- * WHY IT DOES NOT PREFETCH BY DEFAULT. If predictions became real prefetches,
- * the address stream being measured would itself become a function of H, and
- * the cardinality-versus-H curve would be partly an artifact of the instrument
- * perturbing its own input. `issue_prefetch` is reserved for when this becomes
- * a prefetcher; while it is false the module is provably inert (no
- * prefetch_line call exists on that path).
- *
- * SPACE. Deliberately unbounded: no table size, no fan-out cap, no LRU
- * approximation of the transition probabilities. The keys are full address
- * sequences rather than hashed fingerprints, so the distinct-key count this
- * reports is exact rather than collision-inflated. At LLC scale that is about
- * 1.2 GB at H = 32 on the widest of our traces. It is NOT affordable at L1D or
- * L2C volumes; see proj/specs/2026-08-30-generic-markov-design.md.
+ * Rationale and metric definitions: proj/specs/2026-08-30-generic-markov-design.md
  */
 class generic_markov : public champsim::modules::prefetcher
 {
 public:
-  // One observed successor of a left-side sequence: how often it followed, and
-  // when it was last seen following.
-  //
-  // last_seen breaks count ties. It is a stamp from a monotonic training clock,
-  // so it is unique per training event and therefore a TOTAL order -- no third
-  // sort key is reachable behind it.
+  // last_seen breaks count ties, and is unique per training event -- so
+  // (count, last_seen) is a total order and needs no third sort key.
   struct candidate {
     uint64_t addr{};
     uint64_t count{};
     uint64_t last_seen{};
   };
 
-  // The right side of one correlation. `total_count` is the sum of the
-  // candidate counts, kept alongside rather than recomputed: it is how many
-  // times this key has been trained, and summing a wide right side on every
-  // lookup would make the hot keys quadratic.
+  // total_count is kept, not recomputed: summing per lookup would make the
+  // hot keys quadratic.
   struct successors {
     std::vector<candidate> candidates{};
     uint64_t total_count{};
@@ -79,15 +47,13 @@ public:
 
   using sequence = std::vector<uint64_t>;
 
-  // std::hash has no specialization for vector. FNV-1a over the bytes, the
-  // same construction champsim::toml_printer::config_id uses.
+  // std::hash has no specialization for vector. FNV-1a over the bytes.
   struct sequence_hash {
     std::size_t operator()(const sequence& seq) const noexcept;
   };
 
-  // Which addresses train the model. `all` is every lookup that reached this
-  // cache; `miss` is only those that missed -- the paper's miss reference
-  // stream.
+  // `all` trains on every lookup reaching this cache; `miss` only on those
+  // that missed -- the paper's miss reference stream.
   enum class stream { all, miss };
 
   using prefetcher::prefetcher;
@@ -101,56 +67,37 @@ public:
   void prefetcher_begin_phase();
   void prefetcher_end_phase();
 
-  // Test seams. The behaviour tests drive the module through a real CACHE, so
-  // they need to read what it learned without befriending the class.
-  //
-  // lookup() returns a pointer INTO the map: any later access that inserts can
-  // rehash and leave it dangling. Read it before driving the module further.
+  // Test seams. lookup() points INTO the map: a later insert can dangle it.
   [[nodiscard]] std::size_t table_size() const { return table.size(); }
   [[nodiscard]] const successors* lookup(const sequence& seq) const;
 
 private:
-  // Knobs. Every one is consulted unconditionally in configure(): the runtime
-  // configuration makes a user key that nothing reads fatal, so a knob read
-  // only on some paths would turn a valid configuration into a crash.
+  // Consulted unconditionally: an unread user key is fatal.
   std::size_t history_length{1};
   std::size_t predict_degree{4};
   stream train_on{stream::all};
   bool issue_prefetch{false};
 
-  // The sliding window, oldest first. A vector rather than a deque because it
-  // IS the map key -- lookups need no conversion, and erase-from-front costs
-  // at most history_length moves.
+  // The sliding window, oldest first. A vector because it IS the map key.
   sequence history{};
 
   std::unordered_map<sequence, successors, sequence_hash> table{};
 
-  // The top-k of the most recent prediction, in rank order. Graded against the
-  // NEXT access, which is the only moment it can be checked.
-  //
-  // These survive a phase boundary along with the table and the window: the
-  // address stream does not restart, so a prediction made on the last warmup
-  // access is genuinely a statement about the first ROI access and is graded
-  // there. It moves scored_predictions by at most one.
+  // The last prediction, graded against the NEXT access. Survives a phase
+  // boundary with the table and window.
   std::vector<uint64_t> pending{};
   bool has_pending{false};
   bool pending_tied{false};
 
-  // Scratch for ranking, kept as a member so a hot key does not reallocate on
-  // every lookup.
+  // Scratch, so a hot key does not reallocate per lookup.
   std::vector<candidate> ranked{};
 
-  // The recency clock. Stamped into candidate::last_seen on every training
-  // update, and NEVER reset -- not even at a phase boundary. Resetting it would
-  // restart ROI stamps at zero while warmup candidates kept large ones, making
-  // every warmup entry look permanently newer than anything learned since.
+  // NEVER reset: restarting it would leave warmup candidates looking newer
+  // than anything learned since.
   uint64_t train_clock{};
 
-  // Counters for one phase. Reset at every begin_phase, so what is published
-  // at the end of the region of interest describes the region of interest.
-  // The TABLE is never reset -- training carries across the warmup boundary on
-  // purpose, so the ROI is measured against a model in the position a real
-  // prefetcher would be in.
+  // Per-phase counters. The TABLE is not reset -- training carries across the
+  // warmup boundary on purpose.
   uint64_t train_events{};
   uint64_t predict_attempts{};
   uint64_t predict_hits{};
@@ -161,14 +108,10 @@ private:
   uint64_t top1_ties{};
   uint64_t topk_correct{};
 
-  // Addresses actually emitted, summed over predictions -- min(predict_degree,
-  // cardinality) each time. The denominator for degree-k accuracy, which
-  // scored_predictions cannot supply because one prediction emits up to k.
+  // Addresses emitted: the denominator for degree-k accuracy.
   uint64_t predicted_addresses{};
 
-  // The successor was somewhere in the candidate list, at any rank. The
-  // ordering- and degree-independent ceiling: what the table could have
-  // predicted if it issued everything it held. top1 <= topk <= topall.
+  // Successor present at any rank: the ceiling. top1 <= topk <= topall.
   uint64_t topall_correct{};
 };
 
