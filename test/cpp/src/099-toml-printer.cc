@@ -1,3 +1,6 @@
+#include <algorithm>
+#include <iterator>
+#include <limits>
 #include <catch.hpp>
 #include <fmt/core.h>
 
@@ -341,6 +344,149 @@ TEST_CASE("The region of interest is emitted and the whole-run section is not, b
     return line.rfind("[phase.simulation.sim.", 0) == 0;
   };
   REQUIRE(std::none_of(std::begin(lines), std::end(lines), is_sim_table));
+}
+
+TEST_CASE("A module that publishes nothing leaves no module table")
+{
+  // The overwhelming majority of runs select a module with no statistics of
+  // its own. Emitting an empty table for them would change the schema of every
+  // existing result for the benefit of one experiment.
+  auto phase = one_of_everything();
+  std::vector<champsim::phase_stats> given{phase};
+
+  const auto lines = champsim::toml_printer::format(given);
+
+  const auto is_module_table = [](const auto& line) {
+    return line.rfind("[phase.simulation.roi.cache.cpu0_l1d.generic_markov]", 0) == 0;
+  };
+  REQUIRE(std::none_of(std::begin(lines), std::end(lines), is_module_table));
+}
+
+TEST_CASE("Module statistics are emitted in their own table under the cache")
+{
+  auto phase = one_of_everything();
+  auto& block = phase.roi_cache_stats.at(0).module_block("generic_markov");
+  block.set("distinct_keys", int64_t{4096});
+  block.set("lookup_hit_rate", 0.375);
+  std::vector<champsim::phase_stats> given{phase};
+
+  const auto lines = champsim::toml_printer::format(given);
+
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"[phase.simulation.roi.cache.cpu0_l1d.generic_markov]"}));
+
+  // A count keeps its exact integer form; a ratio is rounded for reading, the
+  // same two decimals every other ratio in this document uses.
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"distinct_keys = 4096"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"lookup_hit_rate = 0.38"}));
+}
+
+TEST_CASE("Module statistics keep the order the module published them")
+{
+  // The whole point of the vector. A map would emit these alphabetically,
+  // which scatters a ratio away from the operands it was computed from and
+  // makes the table something to reassemble rather than read. Names chosen so
+  // that publication order and alphabetical order disagree completely.
+  auto phase = one_of_everything();
+  auto& block = phase.roi_cache_stats.at(0).module_block("gm");
+  block.set("zulu", int64_t{1});
+  block.set("alpha", int64_t{2});
+  block.set("mike", int64_t{3});
+  std::vector<champsim::phase_stats> given{phase};
+
+  const auto lines = champsim::toml_printer::format(given);
+
+  const auto at = [&](const std::string& needle) {
+    return std::distance(std::begin(lines), std::find(std::begin(lines), std::end(lines), needle));
+  };
+  REQUIRE(at("zulu = 1") < at("alpha = 2"));
+  REQUIRE(at("alpha = 2") < at("mike = 3"));
+}
+
+TEST_CASE("Re-publishing a statistic overwrites it in place")
+{
+  // end_phase runs once per FINISHING CPU, so a module publishes more than
+  // once on a multi-core run. The second pass must not append duplicates (TOML
+  // would reject the repeated key) nor reorder the table.
+  auto phase = one_of_everything();
+  auto& block = phase.roi_cache_stats.at(0).module_block("gm");
+  block.set("first", int64_t{1});
+  block.set("second", int64_t{2});
+  block.set("first", int64_t{99});
+
+  REQUIRE(std::size(block.entries) == 2);
+  REQUIRE(block.entries.at(0).first == "first");
+  REQUIRE(std::get<int64_t>(block.entries.at(0).second) == 99);
+  REQUIRE(block.entries.at(1).first == "second");
+}
+
+TEST_CASE("Two modules at one cache get two separate named tables")
+{
+  // The reason the block carries a name at all: a merged bag could not say
+  // which of two prefetchers a statistic came from.
+  auto phase = one_of_everything();
+  phase.roi_cache_stats.at(0).module_block("generic_markov").set("keys", int64_t{10});
+  phase.roi_cache_stats.at(0).module_block("ip_stride").set("keys", int64_t{20});
+  std::vector<champsim::phase_stats> given{phase};
+
+  const auto lines = champsim::toml_printer::format(given);
+
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"[phase.simulation.roi.cache.cpu0_l1d.generic_markov]"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"[phase.simulation.roi.cache.cpu0_l1d.ip_stride]"}));
+
+  // Same statistic name in both, which is only unambiguous because the tables
+  // are separate.
+  REQUIRE(std::count(std::begin(lines), std::end(lines), std::string{"keys = 10"}) == 1);
+  REQUIRE(std::count(std::begin(lines), std::end(lines), std::string{"keys = 20"}) == 1);
+}
+
+TEST_CASE("A module named like a sibling table does not collide with it")
+{
+  // `prefetch` and `cpuN` are already written under every cache. A module
+  // directory may legally carry either name, and defining one table twice does
+  // not corrupt a section -- it makes the WHOLE document unparseable, silently.
+  auto phase = one_of_everything();
+  phase.roi_cache_stats.at(0).module_block("prefetch").set("x", int64_t{1});
+  phase.roi_cache_stats.at(0).module_block("cpu0").set("y", int64_t{2});
+  std::vector<champsim::phase_stats> given{phase};
+
+  const auto lines = champsim::toml_printer::format(given);
+
+  const auto defined = [&](const std::string& table) {
+    return std::count(std::begin(lines), std::end(lines), table);
+  };
+  REQUIRE(defined("[phase.simulation.roi.cache.cpu0_l1d.prefetch]") == 1);
+  REQUIRE(defined("[phase.simulation.roi.cache.cpu0_l1d.cpu0]") == 1);
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"[phase.simulation.roi.cache.cpu0_l1d.prefetch_module]"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"[phase.simulation.roi.cache.cpu0_l1d.cpu0_module]"}));
+}
+
+TEST_CASE("A module stat name that is not a bare key is quoted")
+{
+  // Module stat names are chosen by the module, not sanitised anywhere. An
+  // unquoted name containing a dot would open a nested table and silently move
+  // every following key into it; a space would not parse at all. Nothing else
+  // pins this, so a refactor dropping key() would emit an unparseable document
+  // and still pass the suite.
+  auto phase = one_of_everything();
+  phase.roi_cache_stats.at(0).module_block("gm").set("weird.name here", int64_t{7});
+  std::vector<champsim::phase_stats> given{phase};
+
+  const auto lines = champsim::toml_printer::format(given);
+
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"\"weird.name here\" = 7"}));
+}
+
+TEST_CASE("A module ratio with no denominator stays a TOML float")
+{
+  // Same contract as toml_ratio: the key is always present, so a parser never
+  // has to guard the lookup, and `nan` is a real float literal.
+  auto phase = one_of_everything();
+  phase.roi_cache_stats.at(0).module_block("gm").set("top1_rate", std::numeric_limits<double>::quiet_NaN());
+  std::vector<champsim::phase_stats> given{phase};
+
+  const auto lines = champsim::toml_printer::format(given);
+
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"top1_rate = nan"}));
 }
 
 TEST_CASE("The whole-run section is emitted when it is asked for")

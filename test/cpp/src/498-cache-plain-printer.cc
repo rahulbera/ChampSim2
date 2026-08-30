@@ -1,4 +1,5 @@
 #include <catch.hpp>
+#include <limits>
 
 #include "cache_stats.h"
 #include "stats_printer.h"
@@ -9,6 +10,41 @@ TEST_CASE("An empty cache stat block prints nothing")
   given.name = "test_cache";
 
   std::vector<std::string> expected{};
+
+  REQUIRE_THAT(champsim::plain_printer::format(given), Catch::Matchers::RangeEquals(expected));
+}
+
+TEST_CASE("Module statistics are printed once for the cache")
+{
+  // A module owns the whole cache, not a core's share of it, so these are not
+  // per-CPU lines. With no access counters set there are no per-CPU lines at
+  // all, which makes the module block the entire output.
+  cache_stats given{};
+  given.name = "test_cache";
+  auto& block = given.module_block("generic_markov");
+  block.set("distinct_keys", int64_t{4096});
+  block.set("lookup_hit_rate", 0.375);
+
+  std::vector<std::string> expected{
+      "test_cache->generic_markov distinct_keys: 4096",
+      "test_cache->generic_markov lookup_hit_rate: 0.375",
+  };
+
+  REQUIRE_THAT(champsim::plain_printer::format(given), Catch::Matchers::RangeEquals(expected));
+}
+
+TEST_CASE("An undefined module ratio prints as a dash, like every other ratio here")
+{
+  // ::print_ratio renders a zero-denominator ratio as "-", and this report is
+  // documented as following that rule. The module hands over an
+  // already-computed double, so its NaN has to be recognised rather than
+  // formatted -- fmt would render it "nan", which is right for the TOML
+  // document and wrong for this one.
+  cache_stats given{};
+  given.name = "test_cache";
+  given.module_block("generic_markov").set("top1_rate", std::numeric_limits<double>::quiet_NaN());
+
+  std::vector<std::string> expected{"test_cache->generic_markov top1_rate: -"};
 
   REQUIRE_THAT(champsim::plain_printer::format(given), Catch::Matchers::RangeEquals(expected));
 }

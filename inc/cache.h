@@ -239,6 +239,12 @@ public:
     virtual void impl_prefetcher_cycle_operate() = 0;
     virtual void impl_prefetcher_final_stats() = 0;
     virtual void impl_prefetcher_branch_operate(champsim::address ip, uint8_t branch_type, champsim::address branch_target) = 0;
+
+    // Phase boundaries, for modules that measure a region of interest. See the
+    // note in inc/modules.h for why publishing statistics needs end_phase
+    // rather than final_stats.
+    virtual void impl_prefetcher_begin_phase() = 0;
+    virtual void impl_prefetcher_end_phase() = 0;
   };
 
   struct replacement_module_concept {
@@ -277,6 +283,8 @@ public:
     void impl_prefetcher_cycle_operate() final;
     void impl_prefetcher_final_stats() final;
     void impl_prefetcher_branch_operate(champsim::address ip, uint8_t branch_type, champsim::address branch_target) final;
+    void impl_prefetcher_begin_phase() final;
+    void impl_prefetcher_end_phase() final;
   };
 
   template <typename... Rs>
@@ -440,6 +448,30 @@ void CACHE::prefetcher_module_model<Ps...>::impl_prefetcher_final_stats()
     using namespace champsim::modules;
     if constexpr (prefetcher::has_final_stats<decltype(p)>)
       p.prefetcher_final_stats();
+  };
+
+  std::apply([&](auto&... p) { (..., process_one(p)); }, intern_);
+}
+
+template <typename... Ps>
+void CACHE::prefetcher_module_model<Ps...>::impl_prefetcher_begin_phase()
+{
+  [[maybe_unused]] auto process_one = [&](auto& p) {
+    using namespace champsim::modules;
+    if constexpr (prefetcher::has_begin_phase<decltype(p)>)
+      p.prefetcher_begin_phase();
+  };
+
+  std::apply([&](auto&... p) { (..., process_one(p)); }, intern_);
+}
+
+template <typename... Ps>
+void CACHE::prefetcher_module_model<Ps...>::impl_prefetcher_end_phase()
+{
+  [[maybe_unused]] auto process_one = [&](auto& p) {
+    using namespace champsim::modules;
+    if constexpr (prefetcher::has_end_phase<decltype(p)>)
+      p.prefetcher_end_phase();
   };
 
   std::apply([&](auto&... p) { (..., process_one(p)); }, intern_);

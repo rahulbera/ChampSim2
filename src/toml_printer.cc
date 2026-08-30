@@ -22,7 +22,9 @@
 #include <ratio>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 #include <fmt/core.h>
 
@@ -125,6 +127,30 @@ std::string quote(std::string_view value)
 // are not sanitised anywhere, so a name that is not a bare key is quoted
 // rather than allowed to change the shape of the document.
 std::string key(std::string_view name) { return is_bare_key(name) ? std::string{name} : quote(name); }
+
+// The table a module's statistics go under, inside its cache's table.
+//
+// Used verbatim rather than lower-cased. Lower-casing is non-injective, and
+// two modules whose names differed only in case would then define the SAME
+// table twice -- which does not corrupt one section, it makes the whole
+// document unparseable, silently, at emit time. Module names are directory
+// basenames, unique by construction and lower case by repo convention, so
+// verbatim keeps the document lower case in practice and injective always.
+//
+// The one name that must be changed is one that collides with a sibling this
+// printer already writes: `prefetch`, or `cpuN` for any N. Nothing forbids a
+// module directory called `prefetch`, and the failure would be the same
+// whole-document one, so it is disambiguated rather than trusted.
+std::string module_table_name(std::string_view module)
+{
+  const bool is_cpu_n = module.size() > 3 && module.substr(0, 3) == "cpu"
+                        && std::all_of(std::begin(module) + 3, std::end(module),
+                                       [](char chr) { return std::isdigit(static_cast<unsigned char>(chr)) != 0; });
+  if (module == "prefetch" || is_cpu_n) {
+    return std::string{module} + "_module";
+  }
+  return std::string{module};
+}
 
 // The table-path component for each of a set of named components.
 //
@@ -268,6 +294,47 @@ std::vector<std::string> champsim::toml_printer::format(CACHE::stats_type stats,
               {"useful", fmt::format("{}", stats.pf_useful)},
               {"useless", fmt::format("{}", stats.pf_useless)},
               {"fill", fmt::format("{}", stats.pf_fill)}});
+
+  // Whatever this cache's modules published. The table is omitted entirely when
+  // no module published anything, so the schema is unchanged for every run that
+  // selects a module without statistics of its own -- which is all of the
+  // shipped ones. [config] already records WHICH module produced these, so the
+  // table does not repeat the name.
+  //
+  // Names come from the module, not from the configuration, so they are keyed
+  // through key() for the same reason cache names are: a name that is not a
+  // bare key must be quoted, or it changes the shape of the document.
+  //
+  // NOT lower-cased, unlike component_keys. Lower-casing is non-injective, and
+  // component_keys can afford it only because it detects collisions and falls
+  // back to the exact spelling. Two module stats differing only in case would
+  // instead collapse onto one key and define the same table entry twice, which
+  // makes the whole document unparseable. Keeping the module's spelling is the
+  // safe choice; shipped modules use lower_snake_case by convention.
+  for (const auto& block : stats.module_stats) {
+    if (std::empty(block.entries)) {
+      continue;
+    }
+
+    // Entries keep the order the module published them, because that order is
+    // the module's editorial decision about how its numbers should be read --
+    // a ratio next to the operands it came from. Sorting would scatter that.
+    std::vector<entry> module_entries{};
+    module_entries.reserve(std::size(block.entries));
+    for (const auto& [name, value] : block.entries) {
+      module_entries.emplace_back(key(name), std::visit(
+                                                 [](auto held) {
+                                                   if constexpr (std::is_floating_point_v<decltype(held)>) {
+                                                     return toml_float(held);
+                                                   } else {
+                                                     return fmt::format("{}", held);
+                                                   }
+                                                 },
+                                                 value));
+    }
+
+    emit_table(lines, fmt::format("{}.{}", path, key(module_table_name(block.module))), module_entries);
+  }
 
   for (std::size_t cpu = 0; cpu < NUM_CPUS; ++cpu) {
     std::vector<entry> counters{};

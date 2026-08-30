@@ -18,7 +18,9 @@
 #include <numeric>
 #include <ratio>
 #include <string_view> // for string_view
+#include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 #include <fmt/chrono.h>
 #include <fmt/core.h>
@@ -149,6 +151,30 @@ std::vector<std::string> champsim::plain_printer::format(CACHE::stats_type stats
     uint64_t total_downstream_demands = total_fill - stats.fill.value_or(std::pair{access_type::PREFETCH, cpu}, fill_value_type{});
     lines.push_back(
         fmt::format("cpu{}->{} AVERAGE MISS LATENCY: {} cycles", cpu, stats.name, ::print_ratio(stats.total_miss_latency_cycles, total_downstream_demands)));
+  }
+
+  // Whatever this cache's modules published, once for the cache rather than
+  // once per CPU: a module owns the whole cache, not a core's share of it.
+  //
+  // An undefined ratio prints as "-", and a defined one to 4 significant
+  // figures, because that is what ::print_ratio does for every other ratio in
+  // this report. The module hands over a double that is already computed, so
+  // the NaN it uses for "no denominator" has to be recognised here rather than
+  // formatted -- fmt would render it "nan", which is right for the TOML
+  // document and wrong for this one.
+  for (const auto& block : stats.module_stats) {
+    for (const auto& [name, value] : block.entries) {
+      lines.push_back(fmt::format("{}->{} {}: {}", stats.name, block.module, name,
+                                  std::visit(
+                                      [](auto held) {
+                                        if constexpr (std::is_floating_point_v<decltype(held)>) {
+                                          return std::isfinite(held) ? fmt::format("{:.4g}", held) : std::string{"-"};
+                                        } else {
+                                          return fmt::format("{}", held);
+                                        }
+                                      },
+                                      value)));
+    }
   }
 
   return lines;

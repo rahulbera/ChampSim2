@@ -886,6 +886,10 @@ void CACHE::begin_phase()
     ul->roi_stats = ul_new_roi_stats;
     ul->sim_stats = ul_new_sim_stats;
   }
+
+  // After the reset, so a module that mirrors a counter into module_stats is
+  // not immediately overwritten by the fresh stats_type above.
+  pref_module_pimpl->impl_prefetcher_begin_phase();
 }
 
 void CACHE::end_phase(unsigned finished_cpu)
@@ -917,6 +921,25 @@ void CACHE::end_phase(unsigned finished_cpu)
     ul->roi_stats.WQ_FULL = ul->sim_stats.WQ_FULL;
     ul->roi_stats.WQ_TO_CACHE = ul->sim_stats.WQ_TO_CACHE;
   }
+
+  // Last, so what a module publishes into roi_stats.module_stats survives the
+  // sim -> roi copies above and is in place before champsim::main snapshots
+  // roi_stats into phase_stats.
+  //
+  // CONTRACT: this runs once per FINISHING CPU (champsim::do_phase calls
+  // end_phase for each CPU that completes), while begin_phase runs once per
+  // phase. A module's hook must therefore be idempotent -- recomputing and
+  // overwriting its own keys, never accumulating into them and never resetting
+  // per-phase state here. On a multi-core binary a hook that accumulates would
+  // silently multiply its published values by the core count, and nothing can
+  // catch it: num_cpus is 1 in this build and in the test binary.
+  pref_module_pimpl->impl_prefetcher_end_phase();
+
+  // The whole-run section is documented as a copy of the region-of-interest one
+  // when a run has a single ROI, and --toml-sim-stats emits both. The module
+  // writes only into roi_stats, so without this the sim section would be
+  // missing a table the roi section has -- which reads as a printer bug.
+  sim_stats.module_stats = roi_stats.module_stats;
 }
 
 template <typename T>

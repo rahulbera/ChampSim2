@@ -181,6 +181,20 @@ struct prefetcher : public bound_to<CACHE> {
   template <typename, typename...>
   static auto final_stats_member_impl(long) -> std::false_type;
 
+  // Phase boundaries. A module that measures the region of interest needs both:
+  // begin_phase to reset whatever it counts, end_phase to publish into the
+  // cache's roi_stats while champsim::main can still see it. final_stats() is
+  // too late for publishing -- phase_stats has already copied roi_stats by then.
+  template <typename T, typename... Args>
+  static auto begin_phase_member_impl(int) -> decltype(std::declval<T>().prefetcher_begin_phase(std::declval<Args>()...), std::true_type{});
+  template <typename, typename...>
+  static auto begin_phase_member_impl(long) -> std::false_type;
+
+  template <typename T, typename... Args>
+  static auto end_phase_member_impl(int) -> decltype(std::declval<T>().prefetcher_end_phase(std::declval<Args>()...), std::true_type{});
+  template <typename, typename...>
+  static auto end_phase_member_impl(long) -> std::false_type;
+
   template <typename T, typename... Args>
   static auto branch_operate_member_impl(int) -> decltype(std::declval<T>().prefetcher_branch_operate(std::declval<Args>()...), std::true_type{});
   template <typename, typename...>
@@ -203,6 +217,12 @@ struct prefetcher : public bound_to<CACHE> {
 
   template <typename T, typename... Args>
   constexpr static bool has_branch_operate = decltype(branch_operate_member_impl<T, Args...>(0))::value;
+
+  template <typename T, typename... Args>
+  constexpr static bool has_begin_phase = decltype(begin_phase_member_impl<T, Args...>(0))::value;
+
+  template <typename T, typename... Args>
+  constexpr static bool has_end_phase = decltype(end_phase_member_impl<T, Args...>(0))::value;
 };
 
 struct replacement : public bound_to<CACHE> {
