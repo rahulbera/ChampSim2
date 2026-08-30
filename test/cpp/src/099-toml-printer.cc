@@ -1,7 +1,7 @@
 #include <algorithm>
+#include <catch.hpp>
 #include <iterator>
 #include <limits>
-#include <catch.hpp>
 #include <fmt/core.h>
 
 #include "cache_stats.h"
@@ -166,6 +166,7 @@ TEST_CASE("An empty cache emits the full per-CPU access matrix")
                                     "requested = 0",
                                     "issued = 0",
                                     "useful = 0",
+                                    "late = 0",
                                     "useless = 0",
                                     "fill = 0"};
 
@@ -228,6 +229,19 @@ TEST_CASE("Prefetcher counters are separated from PREFETCH-type accesses")
   REQUIRE(std::find(prefetch_table, cpu_table, "requested = 7") != cpu_table);
   REQUIRE(std::find(prefetch_table, cpu_table, "useful = 3") != cpu_table);
   REQUIRE(std::find(cpu_table, std::end(lines), "prefetch_hit = 11") != std::end(lines));
+}
+
+TEST_CASE("A late prefetch is reported apart from a useful one")
+{
+  cache_stats given{};
+  given.name = "test_cache";
+  given.pf_useful = 2;
+  given.pf_late = 5;
+
+  const auto lines = champsim::toml_printer::format(given, "cache.test_cache");
+
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"useful = 2"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"late = 5"}));
 }
 
 TEST_CASE("A DRAM channel emits the write-queue-full count the JSON printer dropped")

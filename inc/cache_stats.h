@@ -62,6 +62,9 @@ struct cache_stats {
   uint64_t pf_requested = 0;
   uint64_t pf_issued = 0;
   uint64_t pf_useful = 0;
+  // A demand that merged into an in-flight prefetch: the prefetch saved part of
+  // the miss, never all of it, so it is not counted useful.
+  uint64_t pf_late = 0;
   uint64_t pf_useless = 0;
   uint64_t pf_fill = 0;
 

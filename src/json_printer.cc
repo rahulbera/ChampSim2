@@ -52,6 +52,7 @@ void to_json(nlohmann::json& j, const CACHE::stats_type& stats)
   statsmap.emplace("prefetch requested", stats.pf_requested);
   statsmap.emplace("prefetch issued", stats.pf_issued);
   statsmap.emplace("useful prefetch", stats.pf_useful);
+  statsmap.emplace("late prefetch", stats.pf_late);
   statsmap.emplace("useless prefetch", stats.pf_useless);
 
   uint64_t total_downstream_demands = stats.fill.total();

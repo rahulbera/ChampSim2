@@ -144,8 +144,7 @@ std::string key(std::string_view name) { return is_bare_key(name) ? std::string{
 std::string module_table_name(std::string_view module)
 {
   const bool is_cpu_n = module.size() > 3 && module.substr(0, 3) == "cpu"
-                        && std::all_of(std::begin(module) + 3, std::end(module),
-                                       [](char chr) { return std::isdigit(static_cast<unsigned char>(chr)) != 0; });
+                        && std::all_of(std::begin(module) + 3, std::end(module), [](char chr) { return std::isdigit(static_cast<unsigned char>(chr)) != 0; });
   if (module == "prefetch" || is_cpu_n) {
     return std::string{module} + "_module";
   }
@@ -292,6 +291,7 @@ std::vector<std::string> champsim::toml_printer::format(CACHE::stats_type stats,
              {{"requested", fmt::format("{}", stats.pf_requested)},
               {"issued", fmt::format("{}", stats.pf_issued)},
               {"useful", fmt::format("{}", stats.pf_useful)},
+              {"late", fmt::format("{}", stats.pf_late)},
               {"useless", fmt::format("{}", stats.pf_useless)},
               {"fill", fmt::format("{}", stats.pf_fill)}});
 

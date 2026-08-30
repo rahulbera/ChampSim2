@@ -249,25 +249,6 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 {
   cpu = handle_pkt.cpu;
 
-  // A perfect cache hits on EVERY lookup, including the first access to a block
-  // that was never filled -- the point is to measure headroom ("what if every
-  // request hit here?"), so there is no such thing as a compulsory miss. The tag
-  // array is therefore never consulted, never filled and never evicted, and the
-  // level below this one sees no traffic at all.
-  //
-  // The prefetcher and the replacement policy are bypassed rather than called
-  // with hit=true. Neither can affect a cache that cannot miss, and there is no
-  // way index to hand the replacement policy: the block has no line, and the
-  // RRIP policies index their state with .at(), so an out-of-range way would
-  // throw rather than be ignored.
-  //
-  // The response echoes the request's own data, which for a v2 trace is the
-  // value that operand actually held -- a cache with no line has nothing else
-  // truthful to return.
-  //
-  // Requests still arrive translated (the tag-check stage requires it), so a
-  // perfect data cache still exercises the TLBs and the page table walker. To
-  // model perfect translation as well, set perfect on the TLBs.
   if (perfect) {
     sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
 
@@ -371,9 +352,10 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
   if (fill_entry != inflight_fills.end()) // miss or fill already inflight
   {
     if (fill_entry->type == access_type::PREFETCH && handle_pkt.type != access_type::PREFETCH) {
-      // Mark the prefetch as useful
+      // Mark the prefetch as late: it was still in flight, so it hid only part
+      // of this miss's latency.
       if (fill_entry->prefetch_from_this) {
-        ++sim_stats.pf_useful;
+        ++sim_stats.pf_late;
       }
     }
 
@@ -905,6 +887,7 @@ void CACHE::end_phase(unsigned finished_cpu)
   roi_stats.pf_requested = sim_stats.pf_requested;
   roi_stats.pf_issued = sim_stats.pf_issued;
   roi_stats.pf_useful = sim_stats.pf_useful;
+  roi_stats.pf_late = sim_stats.pf_late;
   roi_stats.pf_useless = sim_stats.pf_useless;
   roi_stats.pf_fill = sim_stats.pf_fill;
 
