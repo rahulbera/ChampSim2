@@ -56,10 +56,16 @@
 class generic_markov : public champsim::modules::prefetcher
 {
 public:
-  // One observed successor of a left-side sequence, with how often it followed.
+  // One observed successor of a left-side sequence: how often it followed, and
+  // when it was last seen following.
+  //
+  // last_seen breaks count ties. It is a stamp from a monotonic training clock,
+  // so it is unique per training event and therefore a TOTAL order -- no third
+  // sort key is reachable behind it.
   struct candidate {
     uint64_t addr{};
     uint64_t count{};
+    uint64_t last_seen{};
   };
 
   // The right side of one correlation. `total_count` is the sum of the
@@ -134,6 +140,12 @@ private:
   // every lookup.
   std::vector<candidate> ranked{};
 
+  // The recency clock. Stamped into candidate::last_seen on every training
+  // update, and NEVER reset -- not even at a phase boundary. Resetting it would
+  // restart ROI stamps at zero while warmup candidates kept large ones, making
+  // every warmup entry look permanently newer than anything learned since.
+  uint64_t train_clock{};
+
   // Counters for one phase. Reset at every begin_phase, so what is published
   // at the end of the region of interest describes the region of interest.
   // The TABLE is never reset -- training carries across the warmup boundary on
@@ -148,6 +160,16 @@ private:
   uint64_t top1_correct{};
   uint64_t top1_ties{};
   uint64_t topk_correct{};
+
+  // Addresses actually emitted, summed over predictions -- min(predict_degree,
+  // cardinality) each time. The denominator for degree-k accuracy, which
+  // scored_predictions cannot supply because one prediction emits up to k.
+  uint64_t predicted_addresses{};
+
+  // The successor was somewhere in the candidate list, at any rank. The
+  // ordering- and degree-independent ceiling: what the table could have
+  // predicted if it issued everything it held. top1 <= topk <= topall.
+  uint64_t topall_correct{};
 };
 
 #endif

@@ -127,10 +127,25 @@ uint32_t generic_markov::prefetcher_cache_operate(champsim::address addr, champs
   if (std::size(history) == history_length) {
     auto& entry = table[history];
     const auto found = std::find_if(std::begin(entry.candidates), std::end(entry.candidates), [block](const candidate& cand) { return cand.addr == block; });
+
+    // The ceiling, for free: this key is the one the previous access predicted
+    // from, and the search above runs BEFORE the insert below, so a hit means
+    // the true successor was already in the candidate list at prediction time.
+    // Keep this ahead of the insert, or it degenerates to counting every
+    // access. No "did we predict?" guard is needed: a populated key implies the
+    // previous lookup found it and left a prediction pending.
+    if (found != std::end(entry.candidates)) {
+      ++topall_correct;
+    }
+
+    ++train_clock;
     if (found == std::end(entry.candidates)) {
-      entry.candidates.push_back({block, 1});
+      entry.candidates.push_back({block, 1, train_clock});
     } else {
       ++found->count;
+      // Refresh on the increment branch too, or a candidate seen a thousand
+      // times would keep the recency of its first sighting.
+      found->last_seen = train_clock;
     }
     ++entry.total_count;
     ++train_events;
@@ -154,10 +169,21 @@ uint32_t generic_markov::prefetcher_cache_operate(champsim::address addr, champs
       sum_cardinality += static_cast<uint64_t>(std::size(entry.candidates));
       sum_key_occurrences += entry.total_count;
 
-      // Rank by count, descending. Ties break on the address so that a rerun
-      // of the same trace produces the same top-k: unordered_map iteration
-      // order and push_back order are both incidental, and a tie broken by
-      // either would make top1_correct depend on them.
+      // Rank by count, descending; ties break on RECENCY, most recent first.
+      //
+      // Recency is not merely a determinism device, it carries signal. Where
+      // counts tie the frequency evidence is silent, and the successor seen
+      // most recently is the better guess -- which is what Joseph & Grunwald's
+      // LRU-ordered prediction registers encode, and why they found LRU beat
+      // the true transition probabilities. This module keeps exact counts
+      // (strictly better information than their approximation) and now keeps
+      // their ordering for the case where counts say nothing.
+      //
+      // It replaced an ascending-address tie-break, which was deterministic but
+      // carried no information at all: rank 1 was decided by which block number
+      // happened to be numerically smaller. Determinism is not lost -- last_seen
+      // is a pure function of the observed stream -- and no third sort key is
+      // needed, because stamps are unique per training event.
       //
       // At least two are ranked whenever two exist, even when predict_degree
       // is 1, so that the rank-1 tie below can always be detected without a
@@ -166,17 +192,19 @@ uint32_t generic_markov::prefetcher_cache_operate(champsim::address addr, champs
       const auto rank_count = std::min(std::max(predict_degree, std::size_t{2}), std::size(entry.candidates));
       ranked.resize(rank_count);
       std::partial_sort_copy(std::begin(entry.candidates), std::end(entry.candidates), std::begin(ranked), std::end(ranked),
-                             [](const candidate& lhs, const candidate& rhs) { return (lhs.count != rhs.count) ? (lhs.count > rhs.count) : (lhs.addr < rhs.addr); });
+                             [](const candidate& lhs, const candidate& rhs) { return (lhs.count != rhs.count) ? (lhs.count > rhs.count) : (lhs.last_seen > rhs.last_seen); });
 
-      // Was rank 1 decided by the address tie-break rather than by the counts?
+      // Was rank 1 decided by recency rather than by the counts?
       //
-      // This matters for reading top1_rate. At large H nearly every
-      // multi-successor key is an all-way tie -- every successor seen exactly
-      // once -- so rank 1 is chosen by which block address is numerically
-      // smallest, a property of the address layout and not of the correlation.
-      // On those predictions top1_rate measures the tie-break, not the model,
-      // so the fraction that were tied has to be published alongside it.
+      // At large H nearly every multi-successor key is an all-way tie -- every
+      // successor seen exactly once -- so this fires often, and it says which
+      // signal did the work: counts, or recency. It is no longer a warning that
+      // rank 1 was arbitrary (the address tie-break made it so); it now
+      // separates "frequency knew" from "recency knew", which is why it is
+      // still published next to top1_rate.
       pending_tied = (rank_count >= 2) && (ranked.at(0).count == ranked.at(1).count);
+
+      predicted_addresses += static_cast<uint64_t>(keep);
 
       pending.clear();
       std::transform(std::begin(ranked), std::begin(ranked) + static_cast<std::ptrdiff_t>(keep), std::back_inserter(pending),
@@ -216,6 +244,9 @@ void generic_markov::prefetcher_begin_phase()
   top1_correct = 0;
   top1_ties = 0;
   topk_correct = 0;
+  topall_correct = 0;
+  predicted_addresses = 0;
+  // train_clock is deliberately absent: see its declaration.
 }
 
 void generic_markov::prefetcher_end_phase()
@@ -330,6 +361,17 @@ void generic_markov::prefetcher_end_phase()
   out.set("top1_rate", ratio(top1_correct, scored_predictions));
   out.set("top1_ties", as_toml_integer(top1_ties));
   out.set("top1_tie_rate", ratio(top1_ties, scored_predictions));
+  // predicted_addresses is the denominator for accuracy AT DEGREE k: one
+  // prediction emits up to k addresses and at most one can be right, so
+  // scored_predictions would overstate it.
+  out.set("predicted_addresses", as_toml_integer(predicted_addresses));
   out.set("topk_correct", as_toml_integer(topk_correct));
   out.set("topk_rate", ratio(topk_correct, scored_predictions));
+  out.set("topk_accuracy_per_address", ratio(topk_correct, predicted_addresses));
+
+  // The ceiling: the successor was in the list at ANY rank, so this is what the
+  // table could predict independent of ordering policy and of degree. Accuracy
+  // at full degree is topall_correct / sum_cardinality, both published here.
+  out.set("topall_correct", as_toml_integer(topall_correct));
+  out.set("topall_rate", ratio(topall_correct, scored_predictions));
 }

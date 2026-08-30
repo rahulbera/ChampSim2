@@ -134,12 +134,29 @@ TEST_CASE("The one-history model reproduces a hand-computed correlation table")
     REQUIRE(count_of(stats, "sum_key_occurrences") == 9);
     REQUIRE(rate_of(stats, "mean_key_occurrences") == Catch::Approx(9.0 / 5.0));
 
-    // Four predictions got a following access to be graded against; three of
-    // them named it first.
+    // Four predictions got a following access to be graded against.
+    //
+    // Two named it first, not three: the prediction from [A] -> {B:1, C:1} is a
+    // count tie, and recency ranks C first because it was seen more recently.
+    // The address tie-break this replaced would have ranked B first and scored
+    // that one correct. The number moving IS the change under test.
     REQUIRE(count_of(stats, "scored_predictions") == 4);
-    REQUIRE(count_of(stats, "top1_correct") == 3);
+    REQUIRE(count_of(stats, "top1_correct") == 2);
     REQUIRE(count_of(stats, "topk_correct") == 3);
-    REQUIRE(rate_of(stats, "top1_rate") == Catch::Approx(0.75));
+    REQUIRE(rate_of(stats, "top1_rate") == Catch::Approx(0.5));
+    REQUIRE(count_of(stats, "top1_ties") == 1);
+
+    // The successor was in the candidate list at some rank on three of the four
+    // -- the ordering- and degree-independent ceiling. The nesting must hold.
+    REQUIRE(count_of(stats, "topall_correct") == 3);
+    REQUIRE(count_of(stats, "top1_correct") <= count_of(stats, "topk_correct"));
+    REQUIRE(count_of(stats, "topk_correct") <= count_of(stats, "topall_correct"));
+    REQUIRE(count_of(stats, "topall_correct") <= count_of(stats, "scored_predictions"));
+
+    // Five predictions emitted 1, 2, 1, 2, 1 addresses. Equal to sum_cardinality
+    // here only because no key is wider than predict_degree; the k=1 test below
+    // separates them.
+    REQUIRE(count_of(stats, "predicted_addresses") == 7);
 
     // The map walk: cardinalities are 2, 1, 1 over three keys.
     REQUIRE(count_of(stats, "distinct_keys") == 3);
@@ -202,15 +219,16 @@ TEST_CASE("predict_degree governs the top-k, and top-k is not an alias for top-1
   // throughout and three separate defects would go unnoticed: topk aliased to
   // top1, `keep` ignoring predict_degree, and `keep` pinned to 1.
   //
-  // Here [A] accumulates {B,C,D,E}, all with count 1, so rank order is by
-  // address: B, C, D, E. The final access is C -- rank 2. It scores top-k at
-  // k=2 and not at k=1, and never scores top-1.
+  // Here [A] accumulates {B,C,D,E}, all with count 1, so the count signal is
+  // silent and recency decides: most recent first, i.e. E, D, C, B -- the
+  // REVERSE of insertion. The final access is D, which sits at rank 2. It
+  // scores top-k at k=2 and not at k=1, and never scores top-1.
   constexpr uint64_t A{0x10};
   constexpr uint64_t B{0x20};
   constexpr uint64_t C{0x30};
   constexpr uint64_t D{0x40};
   constexpr uint64_t E{0x50};
-  const std::vector<uint64_t> stream{A, B, A, C, A, D, A, E, A, C};
+  const std::vector<uint64_t> stream{A, B, A, C, A, D, A, E, A, D};
 
   SECTION("At k=2 the rank-2 successor scores")
   {
@@ -235,12 +253,12 @@ TEST_CASE("predict_degree governs the top-k, and top-k is not an alias for top-1
   }
 }
 
-TEST_CASE("Predictions decided by the address tie-break are counted")
+TEST_CASE("Predictions decided by recency rather than by count are counted")
 {
   // top1_rate is only interpretable next to this. At large H nearly every
   // multi-successor key is an all-way tie -- every successor seen once -- so
-  // rank 1 is chosen by which block address is smallest, a property of the
-  // address layout rather than of the correlation.
+  // the count signal is silent and recency alone picks rank 1. The counter
+  // separates "frequency knew" from "recency knew".
   //
   // Same stream as above: three of the four graded predictions come from a key
   // whose candidates all have count 1.
@@ -251,7 +269,7 @@ TEST_CASE("Predictions decided by the address tie-break are counted")
   constexpr uint64_t E{0x50};
 
   markov_harness uut{"454-ties"};
-  uut.walk({A, B, A, C, A, D, A, E, A, C});
+  uut.walk({A, B, A, C, A, D, A, E, A, D});
 
   const auto& stats = uut.publish();
   REQUIRE(count_of(stats, "scored_predictions") == 4);
@@ -291,20 +309,26 @@ TEST_CASE("A prediction is graded against the next access, not the one that made
   }
 }
 
-TEST_CASE("Equal-count candidates are ranked by address, not by insertion order")
+TEST_CASE("Equal-count candidates are ranked by recency, most recent first")
 {
-  // Determinism: unordered_map iteration order and push_back order are both
-  // incidental, so a tie broken by either would make top1_correct depend on
-  // something no configuration records.
+  // The tie-break under test. Recency replaced an ascending-address rule, and
+  // the stream is chosen so the two DISAGREE -- the more recent candidate is
+  // also the higher-addressed one. The predecessor of this test used a stream
+  // where address and recency happened to agree, so it passed under both and
+  // proved nothing.
+  //
+  // A B A C A C at H=1: [A] collects B then C, both count 1, and C is both
+  // later and higher-addressed. The last prediction must name C.
+  //
+  //   address order (old)  -> B first -> top1_correct 0
+  //   insertion order      -> B first -> top1_correct 0
+  //   recency (new)        -> C first -> top1_correct 1
   constexpr uint64_t A{0x10};
   constexpr uint64_t B{0x20};
   constexpr uint64_t C{0x30};
 
-  markov_harness uut{"454-tie-break"};
-  // A C A B A B: [A] collects C first, then B, both with count 1. The last
-  // prediction must name B -- the lower address -- and the following access is
-  // B, so a correct tie-break scores and an insertion-order one does not.
-  uut.walk({A, C, A, B, A, B});
+  markov_harness uut{"454-recency"};
+  uut.walk({A, B, A, C, A, C});
 
   const auto* from_a = uut.pref.lookup({A});
   REQUIRE(from_a != nullptr);
@@ -313,6 +337,77 @@ TEST_CASE("Equal-count candidates are ranked by address, not by insertion order"
   const auto& stats = uut.publish();
   REQUIRE(count_of(stats, "scored_predictions") == 2);
   REQUIRE(count_of(stats, "top1_correct") == 1);
+}
+
+TEST_CASE("Recency is refreshed when a candidate's count is incremented")
+{
+  // The easy half of the tie-break to get wrong: stamping only on insert. A
+  // candidate seen a thousand times would then keep the recency of its first
+  // sighting, and the rule would silently mean "least recently INTRODUCED".
+  //
+  // A C A B A B A C A C at H=1, degree 1. [A] ends with B and C both at count
+  // 2. C was INSERTED first but RE-OBSERVED last, so the two rules disagree:
+  //
+  //   stamp on insert only -> B ranks first -> top1_correct 3
+  //   refresh on increment -> C ranks first -> top1_correct 4
+  constexpr uint64_t A{0x10};
+  constexpr uint64_t B{0x20};
+  constexpr uint64_t C{0x30};
+
+  markov_harness uut{"454-recency-refresh", {"cache.llc.generic_markov.predict_degree=1"}};
+  uut.walk({A, C, A, B, A, B, A, C, A, C});
+
+  const auto& stats = uut.publish();
+  REQUIRE(count_of(stats, "scored_predictions") == 6);
+  REQUIRE(count_of(stats, "top1_correct") == 4);
+}
+
+TEST_CASE("predicted_addresses counts addresses emitted, not predictions made")
+{
+  // The denominator for accuracy at degree k. One prediction emits up to k
+  // addresses and at most one can be right, so scored_predictions overstates
+  // the accuracy and sum_cardinality understates it -- neither is the answer.
+  //
+  // Same stream as the worked example. At k=1 exactly one address goes out per
+  // hit, so predicted_addresses equals predict_hits (5) while sum_cardinality
+  // is 7: the two are only equal when no key is wider than k.
+  constexpr uint64_t A{0x10};
+  constexpr uint64_t B{0x20};
+  constexpr uint64_t C{0x30};
+
+  markov_harness uut{"454-emitted", {"cache.llc.generic_markov.predict_degree=1"}};
+  uut.walk({A, B, A, C, A, B, A, B});
+
+  const auto& stats = uut.publish();
+  REQUIRE(count_of(stats, "predict_hits") == 5);
+  REQUIRE(count_of(stats, "predicted_addresses") == 5);
+  REQUIRE(count_of(stats, "sum_cardinality") == 7);
+}
+
+TEST_CASE("topall_correct is independent of ordering policy and of degree")
+{
+  // The ceiling: was the successor in the candidate list AT ALL. It is read off
+  // the training find_if, so it must not move when predict_degree changes --
+  // that independence is the whole claim, and is what makes it a bound on any
+  // ranking policy rather than a property of this one.
+  constexpr uint64_t A{0x10};
+  constexpr uint64_t B{0x20};
+  constexpr uint64_t C{0x30};
+  const std::vector<uint64_t> stream{A, B, A, C, A, B, A, B};
+
+  int64_t first = 0;
+  for (const auto* degree : {"cache.llc.generic_markov.predict_degree=1", "cache.llc.generic_markov.predict_degree=4"}) {
+    markov_harness uut{std::string{"454-topall-"} + degree, {degree}};
+    uut.walk(stream);
+    const auto& stats = uut.publish();
+
+    REQUIRE(count_of(stats, "topall_correct") == 3);
+    REQUIRE(count_of(stats, "topk_correct") <= count_of(stats, "topall_correct"));
+    if (first == 0) {
+      first = count_of(stats, "topall_correct");
+    }
+    REQUIRE(count_of(stats, "topall_correct") == first);
+  }
 }
 
 TEST_CASE("Cardinality percentiles are exact nearest-rank over the keys")
