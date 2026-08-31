@@ -436,6 +436,412 @@ TEST_CASE("Cardinality percentiles are exact nearest-rank over the keys")
   REQUIRE(count_of(stats, "keys_seen_once") == 1);
 }
 
+TEST_CASE("Occupancy thresholds measure how few keys carry the reoccurrence")
+{
+  // Walk 1,1,1,1,1,2,2,2,3,4,9 gives ten adjacent pairs and four keys:
+  //   [1] trained 5x   [2] trained 3x   [3] trained 1x   [4] trained 1x
+  // Repeat mass drops each key's first sighting: 4 + 2 + 0 + 0 = 6.
+  // Taking the most frequent first, and allowing part of a bucket:
+  //   O50 target ceil(3.0)=3 -> [1] alone contributes 4          -> 1 key
+  //   O80 target ceil(4.8)=5 -> [1] gives 4, [2] closes the gap  -> 2 keys
+  //   O90 target ceil(5.4)=6 -> same two keys reach exactly 6    -> 2 keys
+  //   O95 target ceil(5.7)=6 -> unchanged                        -> 2 keys
+  // Against ALL ten occurrences instead, target ceil(8.0)=8: [1] gives 5 and
+  // [2] gives 3, so 2 keys -- the singletons still never enter.
+  markov_harness uut{"454-occupancy"};
+  uut.walk({1, 1, 1, 1, 1, 2, 2, 2, 3, 4, 9});
+
+  const auto& stats = uut.publish();
+
+  REQUIRE(count_of(stats, "train_events") == 10);
+  REQUIRE(count_of(stats, "distinct_keys") == 4);
+  REQUIRE(count_of(stats, "total_key_occurrences") == 10);
+  REQUIRE(count_of(stats, "keys_seen_once") == 2);
+  REQUIRE(count_of(stats, "repeat_occurrences") == 6);
+
+  REQUIRE(count_of(stats, "o50_keys") == 1);
+  REQUIRE(count_of(stats, "o80_keys") == 2);
+  REQUIRE(count_of(stats, "o90_keys") == 2);
+  REQUIRE(count_of(stats, "o95_keys") == 2);
+  REQUIRE(count_of(stats, "o80_keys_by_total_occurrence") == 2);
+
+  REQUIRE(rate_of(stats, "o50_key_frac") == Catch::Approx(0.25));
+  REQUIRE(rate_of(stats, "o80_key_frac") == Catch::Approx(0.50));
+  REQUIRE(rate_of(stats, "o90_key_frac") == Catch::Approx(0.50));
+  REQUIRE(rate_of(stats, "o95_key_frac") == Catch::Approx(0.50));
+  REQUIRE(rate_of(stats, "o80_key_frac_by_total_occurrence") == Catch::Approx(0.50));
+}
+
+TEST_CASE("Occupancy takes only its share of a bucket, not the whole bucket")
+{
+  // Walk 1,1,1,1,2,2,2,3,3,3,4,9 -- eleven pairs, four keys:
+  //   [1] 4x   [2] 3x   [3] 3x   [4] 1x
+  // Repeat mass 3 + 2 + 2 + 0 = 7, and [2] and [3] share one histogram bucket.
+  //   O50 target ceil(3.5)=4 -> [1] gives 3, then ONE of the pair closes it -> 2
+  // Taking the whole bucket would answer 3, which is not the minimum. That is
+  // the only case in this file where the two differ.
+  markov_harness uut{"454-occupancy-partial"};
+  uut.walk({1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 9});
+
+  const auto& stats = uut.publish();
+
+  REQUIRE(count_of(stats, "distinct_keys") == 4);
+  REQUIRE(count_of(stats, "total_key_occurrences") == 11);
+  REQUIRE(count_of(stats, "repeat_occurrences") == 7);
+
+  REQUIRE(count_of(stats, "o50_keys") == 2);
+  REQUIRE(count_of(stats, "o80_keys") == 3);
+  REQUIRE(count_of(stats, "o90_keys") == 3);
+  REQUIRE(count_of(stats, "o95_keys") == 3);
+  REQUIRE(count_of(stats, "o80_keys_by_total_occurrence") == 3);
+
+  REQUIRE(rate_of(stats, "o50_key_frac") == Catch::Approx(0.50));
+  REQUIRE(rate_of(stats, "o80_key_frac") == Catch::Approx(0.75));
+}
+
+TEST_CASE("With no key seen twice there is no repeat mass to occupy")
+{
+  // 1,2,3,4 trains [1],[2],[3] exactly once each. Repeat mass is zero, so no
+  // number of keys reaches any fraction of it and the answer is zero keys --
+  // not "all of them", which is what a mass-less loop falling through would
+  // give. The by-total-occ variant still has ten-elevenths of a denominator
+  // and needs ceil(0.8*3)=3 of the three occurrences, so it takes all three.
+  markov_harness uut{"454-occupancy-empty"};
+  uut.walk({1, 2, 3, 4});
+
+  const auto& stats = uut.publish();
+
+  REQUIRE(count_of(stats, "distinct_keys") == 3);
+  REQUIRE(count_of(stats, "keys_seen_once") == 3);
+  REQUIRE(count_of(stats, "repeat_occurrences") == 0);
+
+  REQUIRE(count_of(stats, "o50_keys") == 0);
+  REQUIRE(count_of(stats, "o80_keys") == 0);
+  REQUIRE(count_of(stats, "o95_keys") == 0);
+  REQUIRE(rate_of(stats, "o80_key_frac") == Catch::Approx(0.0));
+
+  REQUIRE(count_of(stats, "o80_keys_by_total_occurrence") == 3);
+}
+
+TEST_CASE("Occupancy coverage credits the keys that actually earned it")
+{
+  // walk 1,2,1,2,1,2,1,2,3,4,3,4,5,6,7,8,9,10 -- seventeen pairs, nine keys:
+  //   [1] 4x, top1 3   [2] 4x, top1 2   [3] 2x, top1 1   [4] 2x, top1 0
+  //   [5]..[9] 1x each, top1 0
+  // Repeat mass 3+3+1+1 = 8.
+  //   O50 target ceil(4)=4   -> the two count-4 keys      -> 2 keys, top1 3+2=5
+  //   O90 target ceil(7.2)=8 -> plus both count-2 keys    -> 4 keys, top1 5+1=6
+  // O80 (target 7) needs ONE of the two count-2 keys, and they are tied: [3]
+  // carries a win and [4] does not, so its credit is 5 or 6 depending which the
+  // map yields. Deterministic per run, arbitrary between the two -- so only the
+  // unambiguous thresholds are pinned exactly.
+  markov_harness uut{"454-occ-coverage"};
+  uut.walk({1, 2, 1, 2, 1, 2, 1, 2, 3, 4, 3, 4, 5, 6, 7, 8, 9, 10});
+
+  const auto& stats = uut.publish();
+
+  REQUIRE(count_of(stats, "distinct_keys") == 9);
+  REQUIRE(count_of(stats, "repeat_occurrences") == 8);
+  REQUIRE(count_of(stats, "top1_correct") == 6);
+  REQUIRE(count_of(stats, "topall_correct") == 6);
+
+  REQUIRE(count_of(stats, "o50_keys") == 2);
+  REQUIRE(count_of(stats, "o80_keys") == 3);
+  REQUIRE(count_of(stats, "o90_keys") == 4);
+
+  // The point of the metric: 2 of 9 keys carry 5 of the 6 wins.
+  REQUIRE(count_of(stats, "o50_top1_correct") == 5);
+  REQUIRE(count_of(stats, "o50_topall_correct") == 5);
+  REQUIRE(count_of(stats, "o90_top1_correct") == 6);
+  REQUIRE(count_of(stats, "o90_topall_correct") == 6);
+
+  const auto o80_top1 = count_of(stats, "o80_top1_correct");
+  REQUIRE(o80_top1 >= 5);
+  REQUIRE(o80_top1 <= 6);
+
+  REQUIRE(rate_of(stats, "o50_top1_coverage") == Catch::Approx(5.0 / static_cast<double>(count_of(stats, "predict_attempts"))).margin(0.005));
+}
+
+TEST_CASE("Coverage separates top-1 from top-all on the same key")
+{
+  // walk 0,1,0,1,0,1,0,2,0,2,0 -- [0] ends with candidates {1:3, 2:2}. On the
+  // second 0->2 the successor IS among the candidates but is ranked second
+  // behind 1, so that event credits top-all and not top-1. [0] therefore
+  // carries top1 2, topall 3 -- the only shape in this file where a key's two
+  // credits differ, and the only thing that catches top-all being charged as
+  // top-1.
+  //   [0] 5x  top1 2  topall 3
+  //   [1] 3x  top1 2  topall 2
+  //   [2] 2x  top1 1  topall 1
+  // Repeat mass 4+2+1 = 7, and no two keys tie, so every threshold is exact:
+  //   O50 ceil(3.5)=4 -> [0]            -> top1 2, topall 3
+  //   O80 ceil(5.6)=6 -> [0],[1]        -> top1 4, topall 5
+  //   O90 ceil(6.3)=7 -> [0],[1],[2]    -> top1 5, topall 6
+  markov_harness uut{"454-occ-coverage-split"};
+  uut.walk({0, 1, 0, 1, 0, 1, 0, 2, 0, 2, 0});
+
+  const auto& stats = uut.publish();
+
+  REQUIRE(count_of(stats, "distinct_keys") == 3);
+  REQUIRE(count_of(stats, "repeat_occurrences") == 7);
+  REQUIRE(count_of(stats, "top1_correct") == 5);
+  REQUIRE(count_of(stats, "topall_correct") == 6);
+
+  REQUIRE(count_of(stats, "o50_keys") == 1);
+  REQUIRE(count_of(stats, "o50_top1_correct") == 2);
+  REQUIRE(count_of(stats, "o50_topall_correct") == 3);
+
+  REQUIRE(count_of(stats, "o80_keys") == 2);
+  REQUIRE(count_of(stats, "o80_top1_correct") == 4);
+  REQUIRE(count_of(stats, "o80_topall_correct") == 5);
+
+  REQUIRE(count_of(stats, "o90_keys") == 3);
+  REQUIRE(count_of(stats, "o90_top1_correct") == 5);
+  REQUIRE(count_of(stats, "o90_topall_correct") == 6);
+
+  // Fan-out of those same sets: [0] has two candidates, [1] and [2] one each.
+  REQUIRE(count_of(stats, "o50_keys_w_cardinality_1_1") == 0);
+  REQUIRE(count_of(stats, "o50_keys_w_cardinality_2_2") == 1);
+  REQUIRE(rate_of(stats, "o50_mean_cardinality") == Catch::Approx(2.0));
+
+  REQUIRE(count_of(stats, "o80_keys_w_cardinality_1_1") == 1);
+  REQUIRE(count_of(stats, "o80_keys_w_cardinality_2_2") == 1);
+  REQUIRE(rate_of(stats, "o80_mean_cardinality") == Catch::Approx(1.5));
+
+  REQUIRE(count_of(stats, "o90_keys_w_cardinality_1_1") == 2);
+  REQUIRE(count_of(stats, "o90_keys_w_cardinality_2_2") == 1);
+  REQUIRE(rate_of(stats, "o90_mean_cardinality") == Catch::Approx(4.0 / 3.0).margin(0.005));
+}
+
+TEST_CASE("Occupancy fan-out lands in the same bands as the whole table")
+{
+  // A hub with n successors is the ONLY key with any repeat mass (each
+  // successor is met once), so every occupancy set is exactly {hub} and its
+  // fan-out band is the band for n. Sweeping n across every edge is what
+  // catches an off-by-one in the band index -- the 64|65 edge especially,
+  // since that is where the doubling loop terminates. n=1 is excluded: a hub
+  // with one successor is met once, so it is a singleton with no repeat mass
+  // and every occupancy set is empty. The 1_1 band is covered below instead.
+  const auto [width, band] = GENERATE(table<uint64_t, std::string>({
+      {2, "2_2"},
+      {3, "3_4"},
+      {4, "3_4"},
+      {5, "5_8"},
+      {8, "5_8"},
+      {9, "9_16"},
+      {16, "9_16"},
+      {17, "17_32"},
+      {32, "17_32"},
+      {33, "33_64"},
+      {64, "33_64"},
+      {65, "65_plus"},
+      {130, "65_plus"},
+  }));
+
+  markov_harness uut{"454-occ-fanout-" + std::to_string(width)};
+  std::vector<uint64_t> walk{};
+  for (uint64_t i = 1; i <= width; ++i) {
+    walk.push_back(0);
+    walk.push_back(i);
+  }
+  walk.push_back(0);
+  uut.walk(walk);
+
+  const auto& stats = uut.publish();
+  REQUIRE(count_of(stats, "max_cardinality") == static_cast<int64_t>(width));
+
+  for (const auto* prefix : {"o50", "o80", "o90"}) {
+    const std::string p{prefix};
+    REQUIRE(count_of(stats, p + "_keys") == 1);
+    int64_t total{0};
+    for (const auto* b : {"1_1", "2_2", "3_4", "5_8", "9_16", "17_32", "33_64", "65_plus"}) {
+      const auto n = count_of(stats, p + "_keys_w_cardinality_" + b);
+      REQUIRE(n == (b == band ? 1 : 0));
+      total += n;
+    }
+    // The bands partition the set, exactly as they do the whole table.
+    REQUIRE(total == count_of(stats, p + "_keys"));
+    REQUIRE(rate_of(stats, p + "_mean_cardinality") == Catch::Approx(static_cast<double>(width)).margin(0.005));
+  }
+}
+
+TEST_CASE("A fixed key budget takes the most-recurred keys, ties included")
+{
+  // Same walk as the coverage case: [1] 4x(top1 3), [2] 4x(top1 2),
+  // [3] 2x(top1 1), [4] 2x(top1 0), [5]..[9] 1x. Nine keys, six wins.
+  // A budget of 50000 exceeds the table, so it must take all nine and match the
+  // whole-table figures exactly -- a budget cannot invent or drop credit.
+  markov_harness uut{"454-budget"};
+  uut.walk({1, 2, 1, 2, 1, 2, 1, 2, 3, 4, 3, 4, 5, 6, 7, 8, 9, 10});
+
+  const auto& stats = uut.publish();
+
+  REQUIRE(count_of(stats, "distinct_keys") == 9);
+  REQUIRE(count_of(stats, "top1_correct") == 6);
+
+  // Budget larger than the table: everything, frac exactly 1.
+  REQUIRE(rate_of(stats, "top_50000_key_frac") == Catch::Approx(1.0));
+  REQUIRE(count_of(stats, "top_50000_top1_correct") == 6);
+  REQUIRE(count_of(stats, "top_50000_topall_correct") == 6);
+  REQUIRE(rate_of(stats, "top_50000_mean_cardinality") == Catch::Approx(rate_of(stats, "mean_cardinality_per_key")).margin(0.005));
+
+  int64_t total{0};
+  for (const auto* b : {"1_1", "2_2", "3_4", "5_8", "9_16", "17_32", "33_64", "65_plus"}) {
+    total += count_of(stats, std::string{"top_50000_keys_w_cardinality_"} + b);
+  }
+  REQUIRE(total == 9);
+
+  // A budget is monotone in size and never exceeds the whole table.
+  REQUIRE(count_of(stats, "top_1000_top1_correct") <= count_of(stats, "top_10000_top1_correct"));
+  REQUIRE(count_of(stats, "top_10000_top1_correct") <= count_of(stats, "top_50000_top1_correct"));
+  REQUIRE(rate_of(stats, "top_1000_key_frac") == Catch::Approx(1.0));
+}
+
+TEST_CASE("A budget truncates a table larger than itself")
+{
+  // 1500 keys, every one met exactly once, so the budget is the ONLY thing that
+  // can bound the answer -- nothing else in the module distinguishes them. A
+  // 1000-key budget must keep 1000 of 1500; a 10000-key budget must keep all
+  // 1500. Without truncation both report 1500 and this is the only case in the
+  // file that can tell the difference.
+  markov_harness uut{"454-budget-truncate-real"};
+  std::vector<uint64_t> walk{};
+  for (uint64_t i = 1; i <= 1501; ++i) {
+    walk.push_back(i);
+  }
+  uut.walk(walk);
+
+  const auto& stats = uut.publish();
+
+  REQUIRE(count_of(stats, "distinct_keys") == 1500);
+  REQUIRE(count_of(stats, "keys_seen_once") == 1500);
+
+  REQUIRE(count_of(stats, "top_1000_keys_w_cardinality_1_1") == 1000);
+  REQUIRE(rate_of(stats, "top_1000_key_frac") == Catch::Approx(1000.0 / 1500.0).margin(0.005));
+
+  REQUIRE(count_of(stats, "top_10000_keys_w_cardinality_1_1") == 1500);
+  REQUIRE(rate_of(stats, "top_10000_key_frac") == Catch::Approx(1.0));
+  REQUIRE(rate_of(stats, "top_50000_key_frac") == Catch::Approx(1.0));
+
+  // Every key is a singleton, so no occupancy set can reach any of them.
+  REQUIRE(count_of(stats, "repeat_occurrences") == 0);
+  REQUIRE(count_of(stats, "o80_keys") == 0);
+}
+
+TEST_CASE("A budget smaller than the table keeps only the hottest keys")
+{
+  // [0] is met 5 times, [1] 3, [2] 2, and five more keys once each -- eight
+  // keys total. A budget of 1000 takes them all, so to exercise truncation the
+  // check is against the O-sets, which cut at the same histogram: O50 keeps one
+  // key and must therefore be a strict subset of any budget that keeps more.
+  markov_harness uut{"454-budget-truncate"};
+  uut.walk({0, 1, 0, 1, 0, 1, 0, 2, 0, 2, 0});
+
+  const auto& stats = uut.publish();
+
+  REQUIRE(count_of(stats, "distinct_keys") == 3);
+  REQUIRE(count_of(stats, "o50_keys") == 1);
+
+  // Budget covers the table, so it matches the whole-table totals.
+  REQUIRE(count_of(stats, "top_1000_top1_correct") == count_of(stats, "top1_correct"));
+  REQUIRE(count_of(stats, "top_1000_topall_correct") == count_of(stats, "topall_correct"));
+
+  // And it is a superset of O50, which holds only [0].
+  REQUIRE(count_of(stats, "top_1000_top1_correct") >= count_of(stats, "o50_top1_correct"));
+  REQUIRE(count_of(stats, "top_1000_keys_w_cardinality_2_2") == count_of(stats, "o50_keys_w_cardinality_2_2"));
+  REQUIRE(count_of(stats, "top_1000_keys_w_cardinality_1_1") == 2);
+}
+
+TEST_CASE("A key that never predicted correctly contributes no coverage")
+{
+  // [0] is met 5 times and its successor is different every time, so it never
+  // predicts correctly -- but it is by far the most frequent key and is the
+  // whole of the O50 set. Coverage must be zero, not "the set is big so the
+  // number is big".
+  markov_harness uut{"454-occ-coverage-barren"};
+  uut.walk({0, 1, 0, 2, 0, 3, 0, 4, 0, 5, 0});
+
+  const auto& stats = uut.publish();
+
+  REQUIRE(count_of(stats, "o50_keys") >= 1);
+  REQUIRE(count_of(stats, "top1_correct") == 0);
+  REQUIRE(count_of(stats, "o50_top1_correct") == 0);
+  REQUIRE(count_of(stats, "o80_top1_correct") == 0);
+  REQUIRE(rate_of(stats, "o80_top1_coverage") == Catch::Approx(0.0));
+}
+
+TEST_CASE("The successor-cardinality bands partition the table")
+{
+  // Five keys with cardinalities 1, 1, 1, 2, 3 -- the same walk the percentile
+  // case uses, so the two pin the same map from different angles:
+  //   [5] -> {1,2,3}   [4] -> {1,2}   [1] -> {4}   [2] -> {5}   [3] -> {9}
+  // This is also what pins the 1|2 edge, which the width sweep below cannot
+  // reach: a one-successor hub is indistinguishable from its own successor.
+  markov_harness uut{"454-card-bands"};
+  uut.walk({5, 1, 4, 1, 4, 2, 5, 2, 5, 3, 9});
+
+  const auto& stats = uut.publish();
+
+  REQUIRE(count_of(stats, "distinct_keys") == 5);
+  REQUIRE(count_of(stats, "keys_w_cardinality_1_1") == 3);
+  REQUIRE(count_of(stats, "keys_w_cardinality_2_2") == 1);
+  REQUIRE(count_of(stats, "keys_w_cardinality_3_4") == 1);
+  for (const auto* empty : {"keys_w_cardinality_5_8", "keys_w_cardinality_9_16", "keys_w_cardinality_17_32", "keys_w_cardinality_33_64"}) {
+    REQUIRE(count_of(stats, empty) == 0);
+  }
+
+  int64_t total{0};
+  for (const auto* band : {"keys_w_cardinality_1_1", "keys_w_cardinality_2_2", "keys_w_cardinality_3_4", "keys_w_cardinality_5_8", "keys_w_cardinality_9_16",
+                           "keys_w_cardinality_17_32", "keys_w_cardinality_33_64", "keys_w_cardinality_65_plus"}) {
+    total += count_of(stats, band);
+  }
+  REQUIRE(total == count_of(stats, "distinct_keys"));
+}
+
+TEST_CASE("Successor-cardinality bands are closed on both ends")
+{
+  // A hub with n distinct successors has cardinality n; each successor is
+  // followed only by the hub, so all n of them have cardinality 1. Sweeping n
+  // across every band edge is what pins the boundaries -- a band that is
+  // half-open, or that starts a doubling one early, moves a key at 2, 3, 4, 5,
+  // 8, 9, 16, 17, 32 or 33 into the wrong bucket and nowhere else.
+  const auto [width, band] = GENERATE(table<uint64_t, std::string>({
+      {2, "keys_w_cardinality_2_2"},
+      {3, "keys_w_cardinality_3_4"},
+      {4, "keys_w_cardinality_3_4"},
+      {5, "keys_w_cardinality_5_8"},
+      {8, "keys_w_cardinality_5_8"},
+      {9, "keys_w_cardinality_9_16"},
+      {16, "keys_w_cardinality_9_16"},
+      {17, "keys_w_cardinality_17_32"},
+      {32, "keys_w_cardinality_17_32"},
+      {33, "keys_w_cardinality_33_64"},
+      {64, "keys_w_cardinality_33_64"},
+      {65, "keys_w_cardinality_65_plus"},
+  }));
+
+  markov_harness uut{"454-card-band-edge-" + std::to_string(width)};
+  std::vector<uint64_t> walk{};
+  for (uint64_t i = 1; i <= width; ++i) {
+    walk.push_back(0);
+    walk.push_back(i);
+  }
+  walk.push_back(0);
+  uut.walk(walk);
+
+  const auto& stats = uut.publish();
+
+  REQUIRE(count_of(stats, "max_cardinality") == static_cast<int64_t>(width));
+  REQUIRE(count_of(stats, "distinct_keys") == static_cast<int64_t>(width) + 1);
+  REQUIRE(count_of(stats, "keys_w_cardinality_1_1") == static_cast<int64_t>(width));
+
+  // Exactly one key outside the cardinality-1 band, and it is in `band`.
+  for (const auto* candidate : {"keys_w_cardinality_2_2", "keys_w_cardinality_3_4", "keys_w_cardinality_5_8", "keys_w_cardinality_9_16",
+                                "keys_w_cardinality_17_32", "keys_w_cardinality_33_64", "keys_w_cardinality_65_plus"}) {
+    REQUIRE(count_of(stats, candidate) == (candidate == band ? 1 : 0));
+  }
+}
+
 TEST_CASE("The miss stream filter keeps hits out of the sequence entirely")
 {
   // A filtered access must not enter the window either. If it only skipped

@@ -1,6 +1,7 @@
 #include "generic_markov.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <iterator>
 #include <limits>
@@ -89,12 +90,14 @@ uint32_t generic_markov::prefetcher_cache_operate(champsim::address addr, champs
   // Step 0: grade the PREVIOUS access's prediction, which was a statement
   // about this address. Grading it against the access that produced it would
   // report a near-perfect predictor.
+  graded_top1_hit = false;
   if (has_pending) {
     ++scored_predictions;
     if (pending_tied) {
       ++top1_ties;
     }
-    if (!std::empty(pending) && pending.front() == block) {
+    graded_top1_hit = (!std::empty(pending) && pending.front() == block);
+    if (graded_top1_hit) {
       ++top1_correct;
     }
     if (std::find(std::begin(pending), std::end(pending), block) != std::end(pending)) {
@@ -113,6 +116,10 @@ uint32_t generic_markov::prefetcher_cache_operate(champsim::address addr, champs
     // access. A populated key implies a prediction was pending.
     if (found != std::end(entry.candidates)) {
       ++topall_correct;
+      ++entry.topall_correct;
+    }
+    if (graded_top1_hit) {
+      ++entry.top1_correct;
     }
 
     ++train_clock;
@@ -153,8 +160,9 @@ uint32_t generic_markov::prefetcher_cache_operate(champsim::address addr, champs
       const auto keep = std::min(predict_degree, std::size(entry.candidates));
       const auto rank_count = std::min(std::max(predict_degree, std::size_t{2}), std::size(entry.candidates));
       ranked.resize(rank_count);
-      std::partial_sort_copy(std::begin(entry.candidates), std::end(entry.candidates), std::begin(ranked), std::end(ranked),
-                             [](const candidate& lhs, const candidate& rhs) { return (lhs.count != rhs.count) ? (lhs.count > rhs.count) : (lhs.last_seen > rhs.last_seen); });
+      std::partial_sort_copy(
+          std::begin(entry.candidates), std::end(entry.candidates), std::begin(ranked), std::end(ranked),
+          [](const candidate& lhs, const candidate& rhs) { return (lhs.count != rhs.count) ? (lhs.count > rhs.count) : (lhs.last_seen > rhs.last_seen); });
 
       // Did recency rather than count decide rank 1? At large H nearly every
       // key is an all-way tie, so this separates "frequency knew" from
@@ -211,6 +219,7 @@ void generic_markov::prefetcher_end_phase()
   // These cover a map trained over warmup AND the ROI; the per-lookup counters
   // cover the ROI alone. Do not divide one by the other.
   std::map<uint64_t, uint64_t> cardinality_histogram{};
+  std::map<uint64_t, uint64_t> occurrence_histogram{};
   uint64_t sum_cardinality_per_key{0};
   uint64_t sum_cardinality_by_occurrence{0};
   uint64_t total_key_occurrences{0};
@@ -220,6 +229,7 @@ void generic_markov::prefetcher_end_phase()
   for (const auto& [seq, entry] : table) {
     const auto cardinality = static_cast<uint64_t>(std::size(entry.candidates));
     ++cardinality_histogram[cardinality];
+    ++occurrence_histogram[entry.total_count];
     sum_cardinality_per_key += cardinality;
     max_cardinality = std::max(max_cardinality, cardinality);
     if (entry.total_count == 1) {
@@ -251,6 +261,135 @@ void generic_markov::prefetcher_end_phase()
     return max_cardinality;
   };
 
+  // Repeat mass: each key's occurrences past its first sighting. Singletons
+  // contribute nothing, which is the point -- they can never predict.
+  const auto repeat_occurrences = total_key_occurrences - distinct_keys;
+
+  // Keys whose cardinality falls in [lo, hi]. The histogram is already built
+  // for the percentiles above, so this is a walk, not a second pass.
+  const auto cardinality_band = [&](uint64_t lo, uint64_t hi) -> uint64_t {
+    uint64_t keys{0};
+    for (auto it = cardinality_histogram.lower_bound(lo); it != std::end(cardinality_histogram) && it->first <= hi; ++it) {
+      keys += it->second;
+    }
+    return keys;
+  };
+
+  // Fewest keys whose occurrences reach `fraction` of the mass, most frequent
+  // first. Walks the histogram downward and may take part of a bucket, so the
+  // answer is exact rather than bucket-rounded.
+  //
+  // `cut_count` / `from_cut` name the partial bucket, so a second walk can
+  // rebuild the SAME key set: every key above cut_count, plus from_cut of the
+  // keys at it. Which of the tied keys is arbitrary but deterministic (map
+  // order), and the count is what the threshold defines either way.
+  struct occupancy_cut {
+    uint64_t keys{};
+    uint64_t cut_count{};
+    uint64_t from_cut{};
+  };
+
+  const auto occupancy = [&](double fraction, bool repeat_only) -> occupancy_cut {
+    const auto mass = repeat_only ? repeat_occurrences : total_key_occurrences;
+    if (mass == 0) {
+      return {};
+    }
+    const auto target = static_cast<uint64_t>(std::ceil(fraction * static_cast<double>(mass)));
+    uint64_t taken{0};
+    uint64_t cumulative{0};
+    for (auto it = std::rbegin(occurrence_histogram); it != std::rend(occurrence_histogram); ++it) {
+      const auto occurrences = it->first;
+      const auto keys = it->second;
+      const auto per_key = repeat_only ? (occurrences - 1) : occurrences;
+      if (per_key == 0) {
+        continue;
+      }
+      const auto need = target - cumulative;
+      if (per_key * keys >= need) {
+        const auto from_cut = (need + per_key - 1) / per_key;
+        return {taken + from_cut, occurrences, from_cut};
+      }
+      cumulative += per_key * keys;
+      taken += keys;
+    }
+    return {taken, 0, 0};
+  };
+
+  // A hardware budget holds N keys, not a share of the mass. Same cut shape as
+  // occupancy, so the second walk treats both identically. Singletons are
+  // eligible here -- unlike an occupancy set, which cannot reach them -- because
+  // a real table holds whatever it holds.
+  const auto top_n = [&](uint64_t n) -> occupancy_cut {
+    if (n == 0 || distinct_keys == 0) {
+      return {};
+    }
+    uint64_t taken{0};
+    for (auto it = std::rbegin(occurrence_histogram); it != std::rend(occurrence_histogram); ++it) {
+      if (taken + it->second >= n) {
+        return {n, it->first, n - taken};
+      }
+      taken += it->second;
+    }
+    return {taken, 0, 0}; // the whole table is smaller than the budget
+  };
+
+  const auto o50 = occupancy(0.50, true);
+  const auto o80 = occupancy(0.80, true);
+  const auto o90 = occupancy(0.90, true);
+  const auto o80_all = occupancy(0.80, false);
+  const auto top1k = top_n(1000);
+  const auto top10k = top_n(10000);
+  const auto top50k = top_n(50000);
+
+  // Second walk: the credit earned by each occupancy set. A key counts if it is
+  // above the cut, or is one of the first `from_cut` keys sitting exactly on it.
+  // Same bands as the whole-table distribution, so the two are read side by
+  // side: 1, 2, 3-4, 5-8, 9-16, 17-32, 33-64, 65+.
+  constexpr std::size_t band_count{8};
+  const auto band_index = [](uint64_t cardinality) -> std::size_t {
+    if (cardinality <= 2) {
+      return static_cast<std::size_t>(cardinality) - 1;
+    }
+    std::size_t index{2};
+    for (uint64_t bound = 4; bound <= 64 && cardinality > bound; bound *= 2) {
+      ++index;
+    }
+    return index;
+  };
+
+  struct coverage {
+    uint64_t top1{};
+    uint64_t topall{};
+    uint64_t budget{};
+    uint64_t sum_cardinality{};
+    std::array<uint64_t, band_count> bands{};
+  };
+  std::array<coverage, 6> covered{};
+  const std::array<occupancy_cut, 6> cuts{o50, o80, o90, top1k, top10k, top50k};
+  for (std::size_t i = 0; i < std::size(cuts); ++i) {
+    covered.at(i).budget = cuts.at(i).from_cut;
+  }
+  for (const auto& [seq, entry] : table) {
+    for (std::size_t i = 0; i < std::size(cuts); ++i) {
+      const auto& cut = cuts.at(i);
+      if (cut.keys == 0) {
+        continue;
+      }
+      bool included = entry.total_count > cut.cut_count;
+      if (!included && entry.total_count == cut.cut_count && covered.at(i).budget > 0) {
+        --covered.at(i).budget;
+        included = true;
+      }
+      if (included) {
+        covered.at(i).top1 += entry.top1_correct;
+        covered.at(i).topall += entry.topall_correct;
+        const auto cardinality = static_cast<uint64_t>(std::size(entry.candidates));
+        covered.at(i).sum_cardinality += cardinality;
+        ++covered.at(i).bands.at(band_index(cardinality));
+      }
+    }
+  }
+
   // Emitted in this order: module_stat_block keeps insertion order, so each
   // ratio sits with the operands it came from and the groups stay together.
   auto& out = intern_->roi_stats.module_block("generic_markov");
@@ -260,6 +399,118 @@ void generic_markov::prefetcher_end_phase()
   out.set("distinct_keys", as_toml_integer(distinct_keys));
   out.set("total_key_occurrences", as_toml_integer(total_key_occurrences));
   out.set("keys_seen_once", as_toml_integer(keys_seen_once));
+
+  // --- how concentrated is the reoccurrence -------------------------------
+  // oNN_keys: fewest keys holding NN% of the repeat mass. The _by_total_occ
+  // pair uses every occurrence instead, where singletons dilute the answer.
+  out.set("repeat_occurrences", as_toml_integer(repeat_occurrences));
+  out.set("o50_keys", as_toml_integer(o50.keys));
+  out.set("o50_key_frac", ratio(o50.keys, distinct_keys));
+  out.set("o80_keys", as_toml_integer(o80.keys));
+  out.set("o80_key_frac", ratio(o80.keys, distinct_keys));
+  out.set("o90_keys", as_toml_integer(o90.keys));
+  out.set("o90_key_frac", ratio(o90.keys, distinct_keys));
+  out.set("o95_keys", as_toml_integer(occupancy(0.95, true).keys));
+  out.set("o95_key_frac", ratio(occupancy(0.95, true).keys, distinct_keys));
+
+  // Credit earned by each occupancy set: what coverage survives if only these
+  // keys are kept. Denominator is predict_attempts, so it is directly
+  // comparable to the whole-table top1_correct/predict_attempts.
+  out.set("o50_top1_correct", as_toml_integer(covered.at(0).top1));
+  out.set("o50_top1_coverage", ratio(covered.at(0).top1, predict_attempts));
+  out.set("o50_topall_correct", as_toml_integer(covered.at(0).topall));
+  out.set("o50_topall_coverage", ratio(covered.at(0).topall, predict_attempts));
+  out.set("o80_top1_correct", as_toml_integer(covered.at(1).top1));
+  out.set("o80_top1_coverage", ratio(covered.at(1).top1, predict_attempts));
+  out.set("o80_topall_correct", as_toml_integer(covered.at(1).topall));
+  out.set("o80_topall_coverage", ratio(covered.at(1).topall, predict_attempts));
+  out.set("o90_top1_correct", as_toml_integer(covered.at(2).top1));
+  out.set("o90_top1_coverage", ratio(covered.at(2).top1, predict_attempts));
+  out.set("o90_topall_correct", as_toml_integer(covered.at(2).topall));
+  out.set("o90_topall_coverage", ratio(covered.at(2).topall, predict_attempts));
+
+  // Fan-out of the keys that carry the reoccurrence. Same bands as the
+  // whole-table distribution above; each set's bands sum to its own key count.
+  out.set("o50_mean_cardinality", ratio(covered.at(0).sum_cardinality, o50.keys));
+  out.set("o50_keys_w_cardinality_1_1", as_toml_integer(covered.at(0).bands.at(0)));
+  out.set("o50_keys_w_cardinality_2_2", as_toml_integer(covered.at(0).bands.at(1)));
+  out.set("o50_keys_w_cardinality_3_4", as_toml_integer(covered.at(0).bands.at(2)));
+  out.set("o50_keys_w_cardinality_5_8", as_toml_integer(covered.at(0).bands.at(3)));
+  out.set("o50_keys_w_cardinality_9_16", as_toml_integer(covered.at(0).bands.at(4)));
+  out.set("o50_keys_w_cardinality_17_32", as_toml_integer(covered.at(0).bands.at(5)));
+  out.set("o50_keys_w_cardinality_33_64", as_toml_integer(covered.at(0).bands.at(6)));
+  out.set("o50_keys_w_cardinality_65_plus", as_toml_integer(covered.at(0).bands.at(7)));
+
+  out.set("o80_mean_cardinality", ratio(covered.at(1).sum_cardinality, o80.keys));
+  out.set("o80_keys_w_cardinality_1_1", as_toml_integer(covered.at(1).bands.at(0)));
+  out.set("o80_keys_w_cardinality_2_2", as_toml_integer(covered.at(1).bands.at(1)));
+  out.set("o80_keys_w_cardinality_3_4", as_toml_integer(covered.at(1).bands.at(2)));
+  out.set("o80_keys_w_cardinality_5_8", as_toml_integer(covered.at(1).bands.at(3)));
+  out.set("o80_keys_w_cardinality_9_16", as_toml_integer(covered.at(1).bands.at(4)));
+  out.set("o80_keys_w_cardinality_17_32", as_toml_integer(covered.at(1).bands.at(5)));
+  out.set("o80_keys_w_cardinality_33_64", as_toml_integer(covered.at(1).bands.at(6)));
+  out.set("o80_keys_w_cardinality_65_plus", as_toml_integer(covered.at(1).bands.at(7)));
+
+  out.set("o90_mean_cardinality", ratio(covered.at(2).sum_cardinality, o90.keys));
+  out.set("o90_keys_w_cardinality_1_1", as_toml_integer(covered.at(2).bands.at(0)));
+  out.set("o90_keys_w_cardinality_2_2", as_toml_integer(covered.at(2).bands.at(1)));
+  out.set("o90_keys_w_cardinality_3_4", as_toml_integer(covered.at(2).bands.at(2)));
+  out.set("o90_keys_w_cardinality_5_8", as_toml_integer(covered.at(2).bands.at(3)));
+  out.set("o90_keys_w_cardinality_9_16", as_toml_integer(covered.at(2).bands.at(4)));
+  out.set("o90_keys_w_cardinality_17_32", as_toml_integer(covered.at(2).bands.at(5)));
+  out.set("o90_keys_w_cardinality_33_64", as_toml_integer(covered.at(2).bands.at(6)));
+  out.set("o90_keys_w_cardinality_65_plus", as_toml_integer(covered.at(2).bands.at(7)));
+
+  // --- what a FIXED BUDGET of keys would capture ---------------------------
+  // The occupancy sets above are unbounded; these are the N most-recurred keys,
+  // which is the shape real hardware has. key_frac is the share of the table
+  // they occupy, so a small frac with high coverage is the interesting case.
+  out.set("top_1000_key_frac", ratio(top1k.keys, distinct_keys));
+  out.set("top_1000_top1_correct", as_toml_integer(covered.at(3).top1));
+  out.set("top_1000_top1_coverage", ratio(covered.at(3).top1, predict_attempts));
+  out.set("top_1000_topall_correct", as_toml_integer(covered.at(3).topall));
+  out.set("top_1000_topall_coverage", ratio(covered.at(3).topall, predict_attempts));
+  out.set("top_1000_mean_cardinality", ratio(covered.at(3).sum_cardinality, top1k.keys));
+  out.set("top_1000_keys_w_cardinality_1_1", as_toml_integer(covered.at(3).bands.at(0)));
+  out.set("top_1000_keys_w_cardinality_2_2", as_toml_integer(covered.at(3).bands.at(1)));
+  out.set("top_1000_keys_w_cardinality_3_4", as_toml_integer(covered.at(3).bands.at(2)));
+  out.set("top_1000_keys_w_cardinality_5_8", as_toml_integer(covered.at(3).bands.at(3)));
+  out.set("top_1000_keys_w_cardinality_9_16", as_toml_integer(covered.at(3).bands.at(4)));
+  out.set("top_1000_keys_w_cardinality_17_32", as_toml_integer(covered.at(3).bands.at(5)));
+  out.set("top_1000_keys_w_cardinality_33_64", as_toml_integer(covered.at(3).bands.at(6)));
+  out.set("top_1000_keys_w_cardinality_65_plus", as_toml_integer(covered.at(3).bands.at(7)));
+
+  out.set("top_10000_key_frac", ratio(top10k.keys, distinct_keys));
+  out.set("top_10000_top1_correct", as_toml_integer(covered.at(4).top1));
+  out.set("top_10000_top1_coverage", ratio(covered.at(4).top1, predict_attempts));
+  out.set("top_10000_topall_correct", as_toml_integer(covered.at(4).topall));
+  out.set("top_10000_topall_coverage", ratio(covered.at(4).topall, predict_attempts));
+  out.set("top_10000_mean_cardinality", ratio(covered.at(4).sum_cardinality, top10k.keys));
+  out.set("top_10000_keys_w_cardinality_1_1", as_toml_integer(covered.at(4).bands.at(0)));
+  out.set("top_10000_keys_w_cardinality_2_2", as_toml_integer(covered.at(4).bands.at(1)));
+  out.set("top_10000_keys_w_cardinality_3_4", as_toml_integer(covered.at(4).bands.at(2)));
+  out.set("top_10000_keys_w_cardinality_5_8", as_toml_integer(covered.at(4).bands.at(3)));
+  out.set("top_10000_keys_w_cardinality_9_16", as_toml_integer(covered.at(4).bands.at(4)));
+  out.set("top_10000_keys_w_cardinality_17_32", as_toml_integer(covered.at(4).bands.at(5)));
+  out.set("top_10000_keys_w_cardinality_33_64", as_toml_integer(covered.at(4).bands.at(6)));
+  out.set("top_10000_keys_w_cardinality_65_plus", as_toml_integer(covered.at(4).bands.at(7)));
+
+  out.set("top_50000_key_frac", ratio(top50k.keys, distinct_keys));
+  out.set("top_50000_top1_correct", as_toml_integer(covered.at(5).top1));
+  out.set("top_50000_top1_coverage", ratio(covered.at(5).top1, predict_attempts));
+  out.set("top_50000_topall_correct", as_toml_integer(covered.at(5).topall));
+  out.set("top_50000_topall_coverage", ratio(covered.at(5).topall, predict_attempts));
+  out.set("top_50000_mean_cardinality", ratio(covered.at(5).sum_cardinality, top50k.keys));
+  out.set("top_50000_keys_w_cardinality_1_1", as_toml_integer(covered.at(5).bands.at(0)));
+  out.set("top_50000_keys_w_cardinality_2_2", as_toml_integer(covered.at(5).bands.at(1)));
+  out.set("top_50000_keys_w_cardinality_3_4", as_toml_integer(covered.at(5).bands.at(2)));
+  out.set("top_50000_keys_w_cardinality_5_8", as_toml_integer(covered.at(5).bands.at(3)));
+  out.set("top_50000_keys_w_cardinality_9_16", as_toml_integer(covered.at(5).bands.at(4)));
+  out.set("top_50000_keys_w_cardinality_17_32", as_toml_integer(covered.at(5).bands.at(5)));
+  out.set("top_50000_keys_w_cardinality_33_64", as_toml_integer(covered.at(5).bands.at(6)));
+  out.set("top_50000_keys_w_cardinality_65_plus", as_toml_integer(covered.at(5).bands.at(7)));
+  out.set("o80_keys_by_total_occurrence", as_toml_integer(o80_all.keys));
+  out.set("o80_key_frac_by_total_occurrence", ratio(o80_all.keys, distinct_keys));
 
   // --- does a sequence recur? the COVERAGE ceiling ------------------------
   out.set("predict_attempts", as_toml_integer(predict_attempts));
@@ -281,6 +532,18 @@ void generic_markov::prefetcher_end_phase()
   out.set("p75_cardinality", as_toml_integer(percentile(0.75)));
   out.set("p90_cardinality", as_toml_integer(percentile(0.90)));
   out.set("max_cardinality", as_toml_integer(max_cardinality));
+
+  // The successor-cardinality DISTRIBUTION, not just its percentiles: exact for
+  // 1 and 2, then doubling. These bands partition the table -- they must sum to
+  // distinct_keys.
+  out.set("keys_w_cardinality_1_1", as_toml_integer(cardinality_band(1, 1)));
+  out.set("keys_w_cardinality_2_2", as_toml_integer(cardinality_band(2, 2)));
+  out.set("keys_w_cardinality_3_4", as_toml_integer(cardinality_band(3, 4)));
+  out.set("keys_w_cardinality_5_8", as_toml_integer(cardinality_band(5, 8)));
+  out.set("keys_w_cardinality_9_16", as_toml_integer(cardinality_band(9, 16)));
+  out.set("keys_w_cardinality_17_32", as_toml_integer(cardinality_band(17, 32)));
+  out.set("keys_w_cardinality_33_64", as_toml_integer(cardinality_band(33, 64)));
+  out.set("keys_w_cardinality_65_plus", as_toml_integer(cardinality_band(65, std::numeric_limits<uint64_t>::max())));
 
   // --- accuracy, measured rather than inferred ----------------------------
   // top1_rate is only interpretable next to top1_tie_rate, hence adjacent.

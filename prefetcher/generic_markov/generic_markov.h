@@ -43,6 +43,9 @@ public:
   struct successors {
     std::vector<candidate> candidates{};
     uint64_t total_count{};
+    // Per-key credit, so coverage can be attributed to a SUBSET of the table.
+    uint64_t top1_correct{};
+    uint64_t topall_correct{};
   };
 
   using sequence = std::vector<uint64_t>;
@@ -88,6 +91,10 @@ private:
   std::vector<uint64_t> pending{};
   bool has_pending{false};
   bool pending_tied{false};
+
+  // Step 0 grades top-1, step 1 owns the key it belongs to. Carries the verdict
+  // between them.
+  bool graded_top1_hit{false};
 
   // Scratch, so a hot key does not reallocate per lookup.
   std::vector<candidate> ranked{};
