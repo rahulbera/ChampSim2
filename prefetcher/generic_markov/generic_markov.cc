@@ -357,15 +357,33 @@ void generic_markov::prefetcher_end_phase()
     return index;
   };
 
+  // Bits a SIGNED delta needs: 4, 8, 16, 24, 32, then wider. Signed because a
+  // successor is as often below its key as above it.
+  constexpr std::size_t delta_bucket_count{6};
+  const auto delta_bucket = [](int64_t delta) -> std::size_t {
+    std::size_t bucket{0};
+    for (unsigned bits : {4U, 8U, 16U, 24U, 32U}) {
+      const int64_t limit = int64_t{1} << (bits - 1);
+      if (delta >= -limit && delta < limit) {
+        return bucket;
+      }
+      ++bucket;
+    }
+    return delta_bucket_count - 1;
+  };
+
   struct coverage {
     uint64_t top1{};
     uint64_t topall{};
     uint64_t budget{};
     uint64_t sum_cardinality{};
     std::array<uint64_t, band_count> bands{};
+    std::array<uint64_t, delta_bucket_count> delta_bits{};
   };
-  std::array<coverage, 6> covered{};
-  const std::array<occupancy_cut, 6> cuts{o50, o80, o90, top1k, top10k, top50k};
+  // Slot 6 is the whole table: a cut at count 0 includes every key, so the
+  // same loop produces the unfiltered baseline without a second pass.
+  std::array<coverage, 7> covered{};
+  const std::array<occupancy_cut, 7> cuts{o50, o80, o90, top1k, top10k, top50k, occupancy_cut{distinct_keys, 0, 0}};
   for (std::size_t i = 0; i < std::size(cuts); ++i) {
     covered.at(i).budget = cuts.at(i).from_cut;
   }
@@ -386,6 +404,14 @@ void generic_markov::prefetcher_end_phase()
         const auto cardinality = static_cast<uint64_t>(std::size(entry.candidates));
         covered.at(i).sum_cardinality += cardinality;
         ++covered.at(i).bands.at(band_index(cardinality));
+
+        // Per STORED candidate: each is one table slot that would hold a delta.
+        // Measured from the key's last address, which is the whole key at H=1
+        // and the most recent one above it.
+        const auto anchor = static_cast<int64_t>(seq.back());
+        for (const auto& cand : entry.candidates) {
+          ++covered.at(i).delta_bits.at(delta_bucket(static_cast<int64_t>(cand.addr) - anchor));
+        }
       }
     }
   }
@@ -509,6 +535,62 @@ void generic_markov::prefetcher_end_phase()
   out.set("top_50000_keys_w_cardinality_17_32", as_toml_integer(covered.at(5).bands.at(5)));
   out.set("top_50000_keys_w_cardinality_33_64", as_toml_integer(covered.at(5).bands.at(6)));
   out.set("top_50000_keys_w_cardinality_65_plus", as_toml_integer(covered.at(5).bands.at(7)));
+
+  // --- successor deltas: how few bits would encode the stored addresses -----
+  // delta = successor - the key's last address, signed, in cachelines, counted
+  // per STORED candidate since each is one table slot.
+  //
+  // Each candidate lands in the SMALLEST width that holds it, so these
+  // partition the set: 8b means 5..8 bits, not "fits in 8". They sum to the
+  // set's candidate count.
+  out.set("all_delta_4b_candidates", as_toml_integer(covered.at(6).delta_bits.at(0)));
+  out.set("all_delta_8b_candidates", as_toml_integer(covered.at(6).delta_bits.at(1)));
+  out.set("all_delta_16b_candidates", as_toml_integer(covered.at(6).delta_bits.at(2)));
+  out.set("all_delta_24b_candidates", as_toml_integer(covered.at(6).delta_bits.at(3)));
+  out.set("all_delta_32b_candidates", as_toml_integer(covered.at(6).delta_bits.at(4)));
+  out.set("all_delta_wider_candidates", as_toml_integer(covered.at(6).delta_bits.at(5)));
+
+  out.set("o50_delta_4b_candidates", as_toml_integer(covered.at(0).delta_bits.at(0)));
+  out.set("o50_delta_8b_candidates", as_toml_integer(covered.at(0).delta_bits.at(1)));
+  out.set("o50_delta_16b_candidates", as_toml_integer(covered.at(0).delta_bits.at(2)));
+  out.set("o50_delta_24b_candidates", as_toml_integer(covered.at(0).delta_bits.at(3)));
+  out.set("o50_delta_32b_candidates", as_toml_integer(covered.at(0).delta_bits.at(4)));
+  out.set("o50_delta_wider_candidates", as_toml_integer(covered.at(0).delta_bits.at(5)));
+
+  out.set("o80_delta_4b_candidates", as_toml_integer(covered.at(1).delta_bits.at(0)));
+  out.set("o80_delta_8b_candidates", as_toml_integer(covered.at(1).delta_bits.at(1)));
+  out.set("o80_delta_16b_candidates", as_toml_integer(covered.at(1).delta_bits.at(2)));
+  out.set("o80_delta_24b_candidates", as_toml_integer(covered.at(1).delta_bits.at(3)));
+  out.set("o80_delta_32b_candidates", as_toml_integer(covered.at(1).delta_bits.at(4)));
+  out.set("o80_delta_wider_candidates", as_toml_integer(covered.at(1).delta_bits.at(5)));
+
+  out.set("o90_delta_4b_candidates", as_toml_integer(covered.at(2).delta_bits.at(0)));
+  out.set("o90_delta_8b_candidates", as_toml_integer(covered.at(2).delta_bits.at(1)));
+  out.set("o90_delta_16b_candidates", as_toml_integer(covered.at(2).delta_bits.at(2)));
+  out.set("o90_delta_24b_candidates", as_toml_integer(covered.at(2).delta_bits.at(3)));
+  out.set("o90_delta_32b_candidates", as_toml_integer(covered.at(2).delta_bits.at(4)));
+  out.set("o90_delta_wider_candidates", as_toml_integer(covered.at(2).delta_bits.at(5)));
+
+  out.set("top_1000_delta_4b_candidates", as_toml_integer(covered.at(3).delta_bits.at(0)));
+  out.set("top_1000_delta_8b_candidates", as_toml_integer(covered.at(3).delta_bits.at(1)));
+  out.set("top_1000_delta_16b_candidates", as_toml_integer(covered.at(3).delta_bits.at(2)));
+  out.set("top_1000_delta_24b_candidates", as_toml_integer(covered.at(3).delta_bits.at(3)));
+  out.set("top_1000_delta_32b_candidates", as_toml_integer(covered.at(3).delta_bits.at(4)));
+  out.set("top_1000_delta_wider_candidates", as_toml_integer(covered.at(3).delta_bits.at(5)));
+
+  out.set("top_10000_delta_4b_candidates", as_toml_integer(covered.at(4).delta_bits.at(0)));
+  out.set("top_10000_delta_8b_candidates", as_toml_integer(covered.at(4).delta_bits.at(1)));
+  out.set("top_10000_delta_16b_candidates", as_toml_integer(covered.at(4).delta_bits.at(2)));
+  out.set("top_10000_delta_24b_candidates", as_toml_integer(covered.at(4).delta_bits.at(3)));
+  out.set("top_10000_delta_32b_candidates", as_toml_integer(covered.at(4).delta_bits.at(4)));
+  out.set("top_10000_delta_wider_candidates", as_toml_integer(covered.at(4).delta_bits.at(5)));
+
+  out.set("top_50000_delta_4b_candidates", as_toml_integer(covered.at(5).delta_bits.at(0)));
+  out.set("top_50000_delta_8b_candidates", as_toml_integer(covered.at(5).delta_bits.at(1)));
+  out.set("top_50000_delta_16b_candidates", as_toml_integer(covered.at(5).delta_bits.at(2)));
+  out.set("top_50000_delta_24b_candidates", as_toml_integer(covered.at(5).delta_bits.at(3)));
+  out.set("top_50000_delta_32b_candidates", as_toml_integer(covered.at(5).delta_bits.at(4)));
+  out.set("top_50000_delta_wider_candidates", as_toml_integer(covered.at(5).delta_bits.at(5)));
   out.set("o80_keys_by_total_occurrence", as_toml_integer(o80_all.keys));
   out.set("o80_key_frac_by_total_occurrence", ratio(o80_all.keys, distinct_keys));
 

@@ -752,6 +752,108 @@ TEST_CASE("A budget smaller than the table keeps only the hottest keys")
   REQUIRE(count_of(stats, "top_1000_keys_w_cardinality_1_1") == 2);
 }
 
+TEST_CASE("Successor deltas land in the narrowest signed width that holds them")
+{
+  // [100] is given four successors at deltas +1, -8, +7 and +8 from its own
+  // address. Signed 4-bit two's complement covers exactly [-8, +7], so the
+  // first three fit in 4 bits and +8 is the first that does not -- it needs 8.
+  // Getting the sign convention wrong (magnitude, or unsigned) moves -8.
+  markov_harness uut{"454-delta-narrow"};
+  uut.walk({100, 101, 100, 92, 100, 107, 100, 108, 100});
+
+  const auto& stats = uut.publish();
+
+  REQUIRE(count_of(stats, "distinct_keys") == 5);
+  // [100] holds all four; the four successors each hold [100] at deltas
+  // -1, +8, -7, -8 respectively -- of which +8 needs 8 bits.
+  REQUIRE(count_of(stats, "all_delta_4b_candidates") == 6);
+  REQUIRE(count_of(stats, "all_delta_8b_candidates") == 2);
+  REQUIRE(count_of(stats, "all_delta_16b_candidates") == 0);
+  REQUIRE(count_of(stats, "all_delta_wider_candidates") == 0);
+
+  // The buckets partition every stored candidate exactly once.
+  int64_t total{0};
+  for (const auto* b : {"all_delta_4b_candidates", "all_delta_8b_candidates", "all_delta_16b_candidates", "all_delta_24b_candidates",
+                        "all_delta_32b_candidates", "all_delta_wider_candidates"}) {
+    total += count_of(stats, b);
+  }
+  REQUIRE(total == count_of(stats, "sum_cardinality_per_key"));
+}
+
+TEST_CASE("The delta keeps its sign, and two's complement is asymmetric")
+{
+  // Chain, not a round trip, so each edge exists in ONE direction only:
+  //   [5000] -> {4872}   delta -128
+  //   [4872] -> {4873}   delta +1
+  // Signed 8-bit two's complement is [-128, +127]: -128 FITS, +128 does not.
+  // So the sign is the whole difference between an 8-bit and a 16-bit slot,
+  // and measuring the delta backwards moves that candidate one bucket out.
+  markov_harness uut{"454-delta-sign"};
+  uut.walk({5000, 4872, 4873});
+
+  const auto& stats = uut.publish();
+
+  REQUIRE(count_of(stats, "distinct_keys") == 2);
+  REQUIRE(count_of(stats, "all_delta_4b_candidates") == 1); // +1
+  REQUIRE(count_of(stats, "all_delta_8b_candidates") == 1); // -128
+  REQUIRE(count_of(stats, "all_delta_16b_candidates") == 0);
+}
+
+TEST_CASE("At H=2 the delta is measured from the key's LAST address")
+{
+  // Key [1000, 100000] -> {100001}. Anchored on the last element the delta is
+  // +1; anchored on the first it would be 99001, which needs 17 bits. Only a
+  // history longer than 1 can tell those apart -- at H=1 front() and back()
+  // are the same element.
+  markov_harness uut{"454-delta-anchor", {"cache.llc.generic_markov.history_length=2"}};
+  uut.walk({1000, 100000, 100001, 100002});
+
+  const auto& stats = uut.publish();
+
+  REQUIRE(count_of(stats, "distinct_keys") == 2);
+  REQUIRE(count_of(stats, "all_delta_4b_candidates") == 2);
+  REQUIRE(count_of(stats, "all_delta_16b_candidates") == 0);
+  REQUIRE(count_of(stats, "all_delta_24b_candidates") == 0);
+}
+
+TEST_CASE("A far successor needs the wide bucket")
+{
+  // Deltas at each boundary: 2^7 = 128 is the first needing 16 bits, 2^15 the
+  // first needing 24, 2^23 the first needing 32, and 2^31 exceeds 32 bits.
+  const auto [delta, bucket] = GENERATE(table<int64_t, std::string>({
+      {127, "all_delta_8b_candidates"},
+      {128, "all_delta_16b_candidates"},
+      {32767, "all_delta_16b_candidates"},
+      {32768, "all_delta_24b_candidates"},
+      {8388607, "all_delta_24b_candidates"},
+      {8388608, "all_delta_32b_candidates"},
+      {2147483647, "all_delta_32b_candidates"},
+      {2147483648, "all_delta_wider_candidates"},
+  }));
+
+  // Base is large enough that base-delta stays positive for the return edge.
+  const uint64_t base{4000000000ULL};
+  markov_harness uut{"454-delta-far-" + std::to_string(delta)};
+  uut.walk({base, base + static_cast<uint64_t>(delta), base});
+
+  const auto& stats = uut.publish();
+
+  // Two keys: [base] -> {base+delta} and [base+delta] -> {base}. Both edges
+  // have the same magnitude, opposite signs, so both land in `bucket` --
+  // except at a boundary that is asymmetric in two's complement, which -2^31
+  // is: it FITS in 32 bits while +2^31 does not.
+  // The walk makes BOTH edges, +delta and -delta. Two's complement is
+  // asymmetric at these boundaries -- -2^n fits in n+1 bits while +2^n does not
+  // -- so the negative edge may land one bucket below the positive one.
+  REQUIRE(count_of(stats, bucket) >= 1);
+  int64_t total{0};
+  for (const auto* b : {"all_delta_4b_candidates", "all_delta_8b_candidates", "all_delta_16b_candidates", "all_delta_24b_candidates",
+                        "all_delta_32b_candidates", "all_delta_wider_candidates"}) {
+    total += count_of(stats, b);
+  }
+  REQUIRE(total == 2);
+}
+
 TEST_CASE("A key that never predicted correctly contributes no coverage")
 {
   // [0] is met 5 times and its successor is different every time, so it never
