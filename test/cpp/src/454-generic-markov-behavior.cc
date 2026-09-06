@@ -1351,3 +1351,115 @@ TEST_CASE("A filtered alphabet never exceeds the whole table's, or its own candi
     REQUIRE(delta <= candidates);
   }
 }
+
+TEST_CASE("Successors far from their trigger can still be tight among themselves")
+{
+  // The whole point of the metric. Trigger T = 0x100; its four successors sit
+  // around 0x2000, ~7900 cachelines away, but within 9 of each other.
+  //
+  //   [T] -> {0x2000, 0x2003, 0x2001, 0x2009}
+  //
+  // From the TRIGGER every one of them needs 16 bits (7936..7945 signed). From
+  // their own base 0x2000 the three non-base successors need 1, 3 and 9 --
+  // four bits. That gap is the compression case.
+  //
+  // The return legs each add a single-successor key, so the table is
+  //   [T] card 4, [0x2000] [0x2003] [0x2001] [0x2009] card 1 each = 5 keys,
+  // 8 stored candidates. Every one of the 8 needs 16 bits from its trigger.
+  markov_harness uut{"454-cluster-offsets"};
+  uut.walk({0x100, 0x2000, 0x100, 0x2003, 0x100, 0x2001, 0x100, 0x2009, 0x9999});
+  const auto& stats = uut.publish();
+
+  REQUIRE(count_of(stats, "distinct_keys") == 5);
+  REQUIRE(count_of(stats, "sum_cardinality_per_key") == 8);
+
+  // Measured from the trigger: all 8 need 16 bits, nothing is small.
+  REQUIRE(count_of(stats, "all_delta_4b_candidates") == 0);
+  REQUIRE(count_of(stats, "all_delta_16b_candidates") == 8);
+
+  // Measured from the cluster base: one key pays for a base, three offsets
+  // fit in four bits, and nothing else emits an offset at all.
+  REQUIRE(count_of(stats, "all_multi_successor_keys") == 1);
+  REQUIRE(count_of(stats, "all_succ_offset_4b_candidates") == 3);
+  REQUIRE(count_of(stats, "all_succ_offset_8b_candidates") == 0);
+  REQUIRE(count_of(stats, "all_succ_offset_16b_candidates") == 0);
+  REQUIRE(count_of(stats, "all_succ_offset_wider_candidates") == 0);
+}
+
+TEST_CASE("A scattered cluster is reported wide, and single-successor keys emit nothing")
+{
+  // Same shape, but one successor is 0x100000 above the base -- 2^20, so it
+  // needs 21 unsigned bits and lands in the 24b bucket while its neighbour
+  // stays in 4b. Partial clustering has to survive: counting per candidate is
+  // what makes that visible, where a per-key span would report only the worst.
+  markov_harness uut{"454-scattered-cluster"};
+  uut.walk({0x100, 0x2000, 0x100, 0x2001, 0x100, 0x102000, 0x7777});
+  const auto& stats = uut.publish();
+
+  REQUIRE(count_of(stats, "all_multi_successor_keys") == 1);
+  REQUIRE(count_of(stats, "all_succ_offset_4b_candidates") == 1);  // 0x2001 - 0x2000
+  REQUIRE(count_of(stats, "all_succ_offset_24b_candidates") == 1); // 0x102000 - 0x2000
+  REQUIRE(count_of(stats, "all_succ_offset_16b_candidates") == 0);
+
+  // A key with one successor stores it as the base, so it contributes no
+  // offset: 2 offsets from 3 candidates on the only multi-successor key.
+  const auto offsets = count_of(stats, "all_succ_offset_4b_candidates") + count_of(stats, "all_succ_offset_8b_candidates")
+                       + count_of(stats, "all_succ_offset_16b_candidates") + count_of(stats, "all_succ_offset_24b_candidates")
+                       + count_of(stats, "all_succ_offset_32b_candidates") + count_of(stats, "all_succ_offset_wider_candidates");
+  REQUIRE(offsets == 2);
+}
+
+TEST_CASE("A table of single-successor keys emits no offsets at all")
+{
+  // 0x100..0x104: four keys, one successor each. Every one of them IS its own
+  // base, so there is nothing to measure and no bucket may move.
+  markov_harness uut{"454-no-offsets"};
+  uut.walk({0x100, 0x101, 0x102, 0x103, 0x104});
+  const auto& stats = uut.publish();
+
+  REQUIRE(count_of(stats, "distinct_keys") == 4);
+  REQUIRE(count_of(stats, "all_multi_successor_keys") == 0);
+  for (const auto* w : {"4b", "8b", "16b", "24b", "32b", "wider"}) {
+    REQUIRE(count_of(stats, "all_succ_offset_" + std::string{w} + "_candidates") == 0);
+  }
+}
+
+TEST_CASE("Offsets emitted equal one per stored candidate beyond each key's base")
+{
+  // Across a real table: sum of the offset buckets must equal
+  // (candidates in the set) - (keys in the set that hold any successor).
+  // Both sides are published, so this is an exact identity, not a bound.
+  markov_harness uut{"454-offset-accounting"};
+  uut.walk(three_tier_stream());
+  const auto& stats = uut.publish();
+
+  const auto bucket_sum = [&](const std::string& set, const std::string& family) {
+    int64_t total{0};
+    for (const auto* w : {"4b", "8b", "16b", "24b", "32b", "wider"}) {
+      total += count_of(stats, set + family + std::string{w} + "_candidates");
+    }
+    return total;
+  };
+
+  // The whole table publishes its bands unprefixed (keys_w_cardinality_*),
+  // the filtered sets prefix theirs. Same buckets, different naming history.
+  const auto keys_in_set = [&](const std::string& set) {
+    const std::string prefix = (set == "all") ? "" : set + "_";
+    int64_t total{0};
+    for (const auto* b : {"1_1", "2_2", "3_4", "5_8", "9_16", "17_32", "33_64", "65_plus"}) {
+      total += count_of(stats, prefix + "keys_w_cardinality_" + std::string{b});
+    }
+    return total;
+  };
+
+  for (const auto* set : {"all", "o50", "o80", "o90", "top_1000", "top_10000", "top_50000"}) {
+    const std::string name{set};
+    const auto candidates = bucket_sum(name, "_delta_");
+    const auto offsets = bucket_sum(name, "_succ_offset_");
+    // Every key in the set holds at least one successor, and exactly one of
+    // them is the base. So the offsets emitted are candidates minus keys --
+    // an exact identity, not a bound.
+    REQUIRE(candidates > 0);
+    REQUIRE(offsets == candidates - keys_in_set(name));
+  }
+}

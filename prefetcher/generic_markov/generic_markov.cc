@@ -406,6 +406,20 @@ void generic_markov::prefetcher_end_phase()
     return delta_bucket_count - 1;
   };
 
+  // Bits an offset from the cluster's BASE needs. Unsigned, unlike
+  // delta_bucket above: the base is the smallest successor, so nothing sits
+  // below it and there is no sign bit to pay for.
+  const auto offset_bucket = [](uint64_t offset) -> std::size_t {
+    std::size_t bucket{0};
+    for (unsigned bits : {4U, 8U, 16U, 24U, 32U}) {
+      if (offset < (uint64_t{1} << bits)) {
+        return bucket;
+      }
+      ++bucket;
+    }
+    return delta_bucket_count - 1;
+  };
+
   struct coverage {
     uint64_t top1{};
     uint64_t topall{};
@@ -420,6 +434,11 @@ void generic_markov::prefetcher_end_phase()
     // worst trace in the 2026-09-02 sweep holds 12.8M candidates.
     std::vector<uint64_t> successors{};
     std::vector<uint64_t> deltas{};
+    // Successors measured from their own cluster instead of from the trigger:
+    // keys holding more than one successor, and the width each NON-base
+    // successor needs as an offset from the smallest of them.
+    uint64_t multi_keys{};
+    std::array<uint64_t, delta_bucket_count> offset_bits{};
   };
   // Slot 6 is the whole table: a cut at count 0 includes every key, so the
   // same loop produces the unfiltered baseline without a second pass.
@@ -429,6 +448,16 @@ void generic_markov::prefetcher_end_phase()
     covered.at(i).budget = cuts.at(i).from_cut;
   }
   for (const auto& [seq, entry] : table) {
+    const auto cardinality = static_cast<uint64_t>(std::size(entry.candidates));
+    const auto anchor = static_cast<int64_t>(seq.back());
+    // The cluster's base is a property of the entry, not of the cut, so it is
+    // found once here rather than per cut. Candidate addresses are unique, so
+    // exactly one candidate equals it and exactly cardinality - 1 offsets are
+    // emitted -- the base is stored in full and is not an offset.
+    const auto min_successor =
+        (cardinality == 0) ? uint64_t{0} : std::min_element(std::begin(entry.candidates), std::end(entry.candidates), [](const auto& lhs, const auto& rhs) {
+                                             return lhs.addr < rhs.addr;
+                                           })->addr;
     for (std::size_t i = 0; i < std::size(cuts); ++i) {
       const auto& cut = cuts.at(i);
       if (cut.keys == 0) {
@@ -442,14 +471,15 @@ void generic_markov::prefetcher_end_phase()
       if (included) {
         covered.at(i).top1 += entry.top1_correct;
         covered.at(i).topall += entry.topall_correct;
-        const auto cardinality = static_cast<uint64_t>(std::size(entry.candidates));
         covered.at(i).sum_cardinality += cardinality;
         ++covered.at(i).bands.at(band_index(cardinality));
+        if (cardinality >= 2) {
+          ++covered.at(i).multi_keys;
+        }
 
         // Per STORED candidate: each is one table slot that would hold a delta.
         // Measured from the key's last address, which is the whole key at H=1
         // and the most recent one above it.
-        const auto anchor = static_cast<int64_t>(seq.back());
         for (const auto& cand : entry.candidates) {
           const auto delta = static_cast<int64_t>(cand.addr) - anchor;
           ++covered.at(i).delta_bits.at(delta_bucket(delta));
@@ -457,6 +487,9 @@ void generic_markov::prefetcher_end_phase()
           // Two's complement round-trip: the value is only ever compared for
           // equality, so the signed reading does not need to survive.
           covered.at(i).deltas.push_back(static_cast<uint64_t>(delta));
+          if (cand.addr != min_successor) {
+            ++covered.at(i).offset_bits.at(offset_bucket(cand.addr - min_successor));
+          }
         }
       }
     }
@@ -628,6 +661,15 @@ void generic_markov::prefetcher_end_phase()
   // Each candidate lands in the SMALLEST width that holds it, so these
   // partition the set: 8b means 5..8 bits, not "fits in 8". They sum to the
   // set's candidate count.
+  // succ_offset_* asks the same width question about the successors measured
+  // from EACH OTHER rather than from the trigger: base = the smallest
+  // successor of that entry, stored in full, and the other cardinality - 1
+  // measured from it as UNSIGNED offsets. A cluster can sit far from its
+  // trigger and still be tight internally, which is the case a per-entry
+  // base plus narrow offsets would exploit; multi_successor_keys counts the
+  // bases such an encoding would pay for. Keys with one successor emit no
+  // offset -- their single address IS the base.
+  //
   // Delta width says how WIDE a stored successor must be; the two alphabet
   // sizes below say how MANY distinct values there are to store. A small
   // alphabet is the case for a side table of successors (or of deltas) with a
@@ -642,6 +684,13 @@ void generic_markov::prefetcher_end_phase()
   out.set("all_delta_wider_candidates", as_toml_integer(covered.at(6).delta_bits.at(5)));
   out.set("all_unique_successors", as_toml_integer(unique_successors.at(6)));
   out.set("all_unique_deltas", as_toml_integer(unique_deltas.at(6)));
+  out.set("all_multi_successor_keys", as_toml_integer(covered.at(6).multi_keys));
+  out.set("all_succ_offset_4b_candidates", as_toml_integer(covered.at(6).offset_bits.at(0)));
+  out.set("all_succ_offset_8b_candidates", as_toml_integer(covered.at(6).offset_bits.at(1)));
+  out.set("all_succ_offset_16b_candidates", as_toml_integer(covered.at(6).offset_bits.at(2)));
+  out.set("all_succ_offset_24b_candidates", as_toml_integer(covered.at(6).offset_bits.at(3)));
+  out.set("all_succ_offset_32b_candidates", as_toml_integer(covered.at(6).offset_bits.at(4)));
+  out.set("all_succ_offset_wider_candidates", as_toml_integer(covered.at(6).offset_bits.at(5)));
 
   out.set("o50_delta_4b_candidates", as_toml_integer(covered.at(0).delta_bits.at(0)));
   out.set("o50_delta_8b_candidates", as_toml_integer(covered.at(0).delta_bits.at(1)));
@@ -651,6 +700,13 @@ void generic_markov::prefetcher_end_phase()
   out.set("o50_delta_wider_candidates", as_toml_integer(covered.at(0).delta_bits.at(5)));
   out.set("o50_unique_successors", as_toml_integer(unique_successors.at(0)));
   out.set("o50_unique_deltas", as_toml_integer(unique_deltas.at(0)));
+  out.set("o50_multi_successor_keys", as_toml_integer(covered.at(0).multi_keys));
+  out.set("o50_succ_offset_4b_candidates", as_toml_integer(covered.at(0).offset_bits.at(0)));
+  out.set("o50_succ_offset_8b_candidates", as_toml_integer(covered.at(0).offset_bits.at(1)));
+  out.set("o50_succ_offset_16b_candidates", as_toml_integer(covered.at(0).offset_bits.at(2)));
+  out.set("o50_succ_offset_24b_candidates", as_toml_integer(covered.at(0).offset_bits.at(3)));
+  out.set("o50_succ_offset_32b_candidates", as_toml_integer(covered.at(0).offset_bits.at(4)));
+  out.set("o50_succ_offset_wider_candidates", as_toml_integer(covered.at(0).offset_bits.at(5)));
 
   out.set("o80_delta_4b_candidates", as_toml_integer(covered.at(1).delta_bits.at(0)));
   out.set("o80_delta_8b_candidates", as_toml_integer(covered.at(1).delta_bits.at(1)));
@@ -660,6 +716,13 @@ void generic_markov::prefetcher_end_phase()
   out.set("o80_delta_wider_candidates", as_toml_integer(covered.at(1).delta_bits.at(5)));
   out.set("o80_unique_successors", as_toml_integer(unique_successors.at(1)));
   out.set("o80_unique_deltas", as_toml_integer(unique_deltas.at(1)));
+  out.set("o80_multi_successor_keys", as_toml_integer(covered.at(1).multi_keys));
+  out.set("o80_succ_offset_4b_candidates", as_toml_integer(covered.at(1).offset_bits.at(0)));
+  out.set("o80_succ_offset_8b_candidates", as_toml_integer(covered.at(1).offset_bits.at(1)));
+  out.set("o80_succ_offset_16b_candidates", as_toml_integer(covered.at(1).offset_bits.at(2)));
+  out.set("o80_succ_offset_24b_candidates", as_toml_integer(covered.at(1).offset_bits.at(3)));
+  out.set("o80_succ_offset_32b_candidates", as_toml_integer(covered.at(1).offset_bits.at(4)));
+  out.set("o80_succ_offset_wider_candidates", as_toml_integer(covered.at(1).offset_bits.at(5)));
 
   out.set("o90_delta_4b_candidates", as_toml_integer(covered.at(2).delta_bits.at(0)));
   out.set("o90_delta_8b_candidates", as_toml_integer(covered.at(2).delta_bits.at(1)));
@@ -669,6 +732,13 @@ void generic_markov::prefetcher_end_phase()
   out.set("o90_delta_wider_candidates", as_toml_integer(covered.at(2).delta_bits.at(5)));
   out.set("o90_unique_successors", as_toml_integer(unique_successors.at(2)));
   out.set("o90_unique_deltas", as_toml_integer(unique_deltas.at(2)));
+  out.set("o90_multi_successor_keys", as_toml_integer(covered.at(2).multi_keys));
+  out.set("o90_succ_offset_4b_candidates", as_toml_integer(covered.at(2).offset_bits.at(0)));
+  out.set("o90_succ_offset_8b_candidates", as_toml_integer(covered.at(2).offset_bits.at(1)));
+  out.set("o90_succ_offset_16b_candidates", as_toml_integer(covered.at(2).offset_bits.at(2)));
+  out.set("o90_succ_offset_24b_candidates", as_toml_integer(covered.at(2).offset_bits.at(3)));
+  out.set("o90_succ_offset_32b_candidates", as_toml_integer(covered.at(2).offset_bits.at(4)));
+  out.set("o90_succ_offset_wider_candidates", as_toml_integer(covered.at(2).offset_bits.at(5)));
 
   out.set("top_1000_delta_4b_candidates", as_toml_integer(covered.at(3).delta_bits.at(0)));
   out.set("top_1000_delta_8b_candidates", as_toml_integer(covered.at(3).delta_bits.at(1)));
@@ -678,6 +748,13 @@ void generic_markov::prefetcher_end_phase()
   out.set("top_1000_delta_wider_candidates", as_toml_integer(covered.at(3).delta_bits.at(5)));
   out.set("top_1000_unique_successors", as_toml_integer(unique_successors.at(3)));
   out.set("top_1000_unique_deltas", as_toml_integer(unique_deltas.at(3)));
+  out.set("top_1000_multi_successor_keys", as_toml_integer(covered.at(3).multi_keys));
+  out.set("top_1000_succ_offset_4b_candidates", as_toml_integer(covered.at(3).offset_bits.at(0)));
+  out.set("top_1000_succ_offset_8b_candidates", as_toml_integer(covered.at(3).offset_bits.at(1)));
+  out.set("top_1000_succ_offset_16b_candidates", as_toml_integer(covered.at(3).offset_bits.at(2)));
+  out.set("top_1000_succ_offset_24b_candidates", as_toml_integer(covered.at(3).offset_bits.at(3)));
+  out.set("top_1000_succ_offset_32b_candidates", as_toml_integer(covered.at(3).offset_bits.at(4)));
+  out.set("top_1000_succ_offset_wider_candidates", as_toml_integer(covered.at(3).offset_bits.at(5)));
 
   out.set("top_10000_delta_4b_candidates", as_toml_integer(covered.at(4).delta_bits.at(0)));
   out.set("top_10000_delta_8b_candidates", as_toml_integer(covered.at(4).delta_bits.at(1)));
@@ -687,6 +764,13 @@ void generic_markov::prefetcher_end_phase()
   out.set("top_10000_delta_wider_candidates", as_toml_integer(covered.at(4).delta_bits.at(5)));
   out.set("top_10000_unique_successors", as_toml_integer(unique_successors.at(4)));
   out.set("top_10000_unique_deltas", as_toml_integer(unique_deltas.at(4)));
+  out.set("top_10000_multi_successor_keys", as_toml_integer(covered.at(4).multi_keys));
+  out.set("top_10000_succ_offset_4b_candidates", as_toml_integer(covered.at(4).offset_bits.at(0)));
+  out.set("top_10000_succ_offset_8b_candidates", as_toml_integer(covered.at(4).offset_bits.at(1)));
+  out.set("top_10000_succ_offset_16b_candidates", as_toml_integer(covered.at(4).offset_bits.at(2)));
+  out.set("top_10000_succ_offset_24b_candidates", as_toml_integer(covered.at(4).offset_bits.at(3)));
+  out.set("top_10000_succ_offset_32b_candidates", as_toml_integer(covered.at(4).offset_bits.at(4)));
+  out.set("top_10000_succ_offset_wider_candidates", as_toml_integer(covered.at(4).offset_bits.at(5)));
 
   out.set("top_50000_delta_4b_candidates", as_toml_integer(covered.at(5).delta_bits.at(0)));
   out.set("top_50000_delta_8b_candidates", as_toml_integer(covered.at(5).delta_bits.at(1)));
@@ -696,6 +780,13 @@ void generic_markov::prefetcher_end_phase()
   out.set("top_50000_delta_wider_candidates", as_toml_integer(covered.at(5).delta_bits.at(5)));
   out.set("top_50000_unique_successors", as_toml_integer(unique_successors.at(5)));
   out.set("top_50000_unique_deltas", as_toml_integer(unique_deltas.at(5)));
+  out.set("top_50000_multi_successor_keys", as_toml_integer(covered.at(5).multi_keys));
+  out.set("top_50000_succ_offset_4b_candidates", as_toml_integer(covered.at(5).offset_bits.at(0)));
+  out.set("top_50000_succ_offset_8b_candidates", as_toml_integer(covered.at(5).offset_bits.at(1)));
+  out.set("top_50000_succ_offset_16b_candidates", as_toml_integer(covered.at(5).offset_bits.at(2)));
+  out.set("top_50000_succ_offset_24b_candidates", as_toml_integer(covered.at(5).offset_bits.at(3)));
+  out.set("top_50000_succ_offset_32b_candidates", as_toml_integer(covered.at(5).offset_bits.at(4)));
+  out.set("top_50000_succ_offset_wider_candidates", as_toml_integer(covered.at(5).offset_bits.at(5)));
   out.set("o80_keys_by_total_occurrence", as_toml_integer(o80_all.keys));
   out.set("o80_key_frac_by_total_occurrence", ratio(o80_all.keys, distinct_keys));
 
