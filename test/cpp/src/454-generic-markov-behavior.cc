@@ -1,6 +1,7 @@
 #include <array>
 #include <catch.hpp>
 #include <cstdint>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <variant>
@@ -76,6 +77,33 @@ double rate_of(const cache_stats::module_stat_block& stats, const std::string& n
   REQUIRE(found != nullptr);
   REQUIRE(std::holds_alternative<double>(*found));
   return std::get<double>(*found);
+}
+
+// Three occurrence tiers, sized so a 1000-key budget cuts INSIDE the middle
+// one and the partial-bucket arithmetic is exercised rather than skipped:
+//   600 keys trained 5x -> repeat mass 4 each = 2400
+//   800 keys trained 3x -> repeat mass 2 each = 1600
+//   200 keys trained 1x -> repeat mass 0
+// A key is trained once per occurrence that is FOLLOWED by another access, so
+// the unique terminator is never itself a key.
+std::vector<uint64_t> three_tier_stream()
+{
+  std::vector<uint64_t> stream;
+  for (int rep = 0; rep < 5; ++rep) {
+    for (uint64_t i = 0; i < 600; ++i) {
+      stream.push_back(0x1000 + i);
+    }
+  }
+  for (int rep = 0; rep < 3; ++rep) {
+    for (uint64_t i = 0; i < 800; ++i) {
+      stream.push_back(0x5000 + i);
+    }
+  }
+  for (uint64_t i = 0; i < 200; ++i) {
+    stream.push_back(0x9000 + i);
+  }
+  stream.push_back(0xF0000);
+  return stream;
 }
 } // namespace
 
@@ -1106,4 +1134,143 @@ TEST_CASE("A zero history length is refused rather than silently degenerate")
   champsim::runtime_config cfg{};
   cfg.set("cache.llc.generic_markov.history_length=0");
   REQUIRE_THROWS_AS(pref.configure(cfg, "cache.llc.generic_markov"), std::runtime_error);
+}
+
+TEST_CASE("Per-key credit resets at a phase boundary")
+{
+  // Warmup A B A B, the ROI boundary, then A B A.
+  //
+  // Warmup earns key [A] one top-1 and one top-all hit. The ROI earns three of
+  // each, split [A]=1 [B]=2. If the per-key counters survived the boundary the
+  // whole-table sum would read 4 against a global counter of 3 -- and a SUBSET
+  // of the table would then out-score the whole of it, which is impossible.
+  constexpr uint64_t A{0x10};
+  constexpr uint64_t B{0x20};
+
+  markov_harness uut{"454-phase-reset"};
+  uut.walk({A, B, A, B});
+  uut.pref.prefetcher_begin_phase(); // the warmup -> ROI boundary
+  uut.walk({A, B, A});
+
+  const auto& stats = uut.publish();
+
+  // The table survives the boundary: two keys, still trained across both phases.
+  REQUIRE(count_of(stats, "distinct_keys") == 2);
+  REQUIRE(count_of(stats, "total_key_occurrences") == 6);
+
+  // The counters do not.
+  REQUIRE(count_of(stats, "predict_attempts") == 3);
+  REQUIRE(count_of(stats, "top1_correct") == 3);
+  REQUIRE(count_of(stats, "topall_correct") == 3);
+
+  // Summed from the per-key counters. This is the discriminating assertion:
+  // without the reset these read 4.
+  REQUIRE(count_of(stats, "all_top1_correct") == 3);
+  REQUIRE(count_of(stats, "all_topall_correct") == 3);
+  REQUIRE(rate_of(stats, "all_topall_coverage") == Catch::Approx(1.0));
+}
+
+TEST_CASE("Whole-table credit equals the global counters, and bounds every subset")
+{
+  // Across a phase boundary, or the check is vacuous: with one phase there is
+  // no warmup credit for a stale per-key counter to carry in.
+  markov_harness uut{"454-subset-bound"};
+  const auto stream = three_tier_stream();
+  const auto boundary = std::size(stream) / 2;
+  uut.walk({std::begin(stream), std::begin(stream) + static_cast<std::ptrdiff_t>(boundary)});
+  uut.pref.prefetcher_begin_phase();
+  uut.walk({std::begin(stream) + static_cast<std::ptrdiff_t>(boundary), std::end(stream)});
+  const auto& stats = uut.publish();
+
+  // Two independent paths to the same number: incremented globally per event,
+  // and summed per key at end_phase. They must agree exactly.
+  REQUIRE(count_of(stats, "all_top1_correct") == count_of(stats, "top1_correct"));
+  REQUIRE(count_of(stats, "all_topall_correct") == count_of(stats, "topall_correct"));
+
+  const auto whole_top1 = count_of(stats, "all_top1_correct");
+  const auto whole_topall = count_of(stats, "all_topall_correct");
+  REQUIRE(whole_topall > 0); // else the bound below is vacuous
+
+  // Bounding a subset by all_* proves nothing on its own -- both sides sum the
+  // same per-key counters, so it holds with or without the reset. Bounding it
+  // by the GLOBAL counter is the real invariant, and the one that was false:
+  // t50k_topall_correct exceeded topall_correct on 110 of 359 traces.
+  const auto global_top1 = count_of(stats, "top1_correct");
+  const auto global_topall = count_of(stats, "topall_correct");
+  for (const auto* set : {"o50", "o80", "o90", "top_1000", "top_10000", "top_50000"}) {
+    REQUIRE(count_of(stats, std::string{set} + "_top1_correct") <= whole_top1);
+    REQUIRE(count_of(stats, std::string{set} + "_topall_correct") <= whole_topall);
+    REQUIRE(count_of(stats, std::string{set} + "_top1_correct") <= global_top1);
+    REQUIRE(count_of(stats, std::string{set} + "_topall_correct") <= global_topall);
+  }
+}
+
+TEST_CASE("A fixed budget reports the repeat mass it captures")
+{
+  // repeat_occurrences = 600*4 + 800*2 = 4000. A 1000-key budget takes all 600
+  // of the first tier (2400) plus 400 of the second (800) = 3200, exactly 80%.
+  // That is also where the O80 cut lands, so occupancy() and top_n() -- two
+  // separate accumulators over the same histogram -- must agree here.
+  markov_harness uut{"454-budget-mass"};
+  uut.walk(three_tier_stream());
+  const auto& stats = uut.publish();
+
+  REQUIRE(count_of(stats, "distinct_keys") == 1600);
+  REQUIRE(count_of(stats, "total_key_occurrences") == 5600);
+  REQUIRE(count_of(stats, "repeat_occurrences") == 4000);
+
+  REQUIRE(count_of(stats, "top_1000_repeats") == 3200);
+  REQUIRE(rate_of(stats, "top_1000_repeat_frac") == Catch::Approx(0.80));
+  REQUIRE(count_of(stats, "o80_keys") == 1000); // the same cut, from the other side
+
+  // occupancy()'s own accumulator, previously computed and never read. Every
+  // tier divides evenly here, so each cut lands exactly on its target rather
+  // than overshooting by the from_cut rounding.
+  REQUIRE(rate_of(stats, "o50_repeat_frac") == Catch::Approx(0.50));
+  REQUIRE(rate_of(stats, "o80_repeat_frac") == Catch::Approx(0.80));
+  REQUIRE(rate_of(stats, "o90_repeat_frac") == Catch::Approx(0.90));
+
+  // A budget larger than the table holds all of the mass, not a truncated share.
+  REQUIRE(count_of(stats, "top_10000_repeats") == 4000);
+  REQUIRE(rate_of(stats, "top_10000_repeat_frac") == Catch::Approx(1.0));
+  REQUIRE(count_of(stats, "top_50000_repeats") == 4000);
+  REQUIRE(rate_of(stats, "top_50000_repeat_frac") == Catch::Approx(1.0));
+}
+
+TEST_CASE("Every graded prediction is one that was issued")
+{
+  // scored_predictions counts predictions GRADED on the next access;
+  // predict_hits counts them ISSUED. They differ by at most one, in EITHER
+  // direction: a prediction outstanding when the phase ends was issued and not
+  // graded (+1), and one carried in across a phase boundary -- has_pending
+  // deliberately survives prefetcher_begin_phase() while both counters are
+  // zeroed -- is graded and not issued (-1). On the 359-trace sweep the
+  // difference distributes {-1: 56, 0: 188, +1: 115}, so a one-sided bound is
+  // simply false. Anything beyond +/-1 means the two count different events.
+  markov_harness uut{"454-graded-vs-issued"};
+  uut.walk(three_tier_stream());
+  const auto& stats = uut.publish();
+
+  const auto scored = count_of(stats, "scored_predictions");
+  const auto issued = count_of(stats, "predict_hits");
+  REQUIRE(scored > 0);
+  REQUIRE(std::abs(issued - scored) <= 1);
+}
+
+TEST_CASE("Reconfiguring drops the prediction belonging to the cleared window")
+{
+  // configure() clears the history window. The pending prediction was made
+  // FROM that window, so grading it against the next access credits the global
+  // top-1 counter (step 0, outside the window guard) while the per-key one
+  // (step 1, inside it) cannot move -- and the two stop agreeing.
+  markov_harness uut{"454-reconfigure"};
+  uut.walk({0x10, 0x20, 0x10});
+
+  champsim::runtime_config cfg{};
+  uut.pref.configure(cfg, "cache.llc.generic_markov");
+  uut.access(0x20);
+
+  const auto& stats = uut.publish();
+  REQUIRE(count_of(stats, "all_top1_correct") == count_of(stats, "top1_correct"));
+  REQUIRE(count_of(stats, "all_topall_correct") == count_of(stats, "topall_correct"));
 }

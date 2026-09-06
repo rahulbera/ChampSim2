@@ -72,6 +72,13 @@ void generic_markov::configure(const champsim::runtime_config& cfg, std::string_
   }
 
   history.clear();
+  // The pending prediction belongs to the window just cleared: grading it
+  // against the next access would credit a key the new window cannot reach,
+  // and the global counter would move while the per-key one did not.
+  pending.clear();
+  has_pending = false;
+  pending_tied = false;
+  graded_top1_hit = false;
   history.reserve(history_length + 1); // step 2 pushes before it erases
   ranked.reserve(std::max(predict_degree, std::size_t{2}));
 }
@@ -195,8 +202,9 @@ uint32_t generic_markov::prefetcher_cache_fill(champsim::address addr, long set,
 
 void generic_markov::prefetcher_begin_phase()
 {
-  // Only the counters reset. The table, window and pending prediction do not:
-  // the address stream does not restart at a phase boundary.
+  // The counters reset -- including the per-key credit at the bottom, which
+  // lives inside the table. The candidate lists, the window and the pending
+  // prediction do not: the address stream does not restart at a phase boundary.
   train_events = 0;
   predict_attempts = 0;
   predict_hits = 0;
@@ -209,6 +217,19 @@ void generic_markov::prefetcher_begin_phase()
   topall_correct = 0;
   predicted_addresses = 0;
   // train_clock is deliberately absent: see its declaration.
+
+  // Per-key credit is a per-phase counter that happens to live in the table.
+  // Leaving it would put warmup+ROI credit over an ROI-only denominator, so a
+  // subset would out-score the GLOBAL counters below -- t50k_topall_correct
+  // exceeded topall_correct on 110 of 359 traces before this loop existed.
+  // (It would still not exceed all_*: those sum these same per-key counters,
+  // so that comparison holds either way and proves nothing.)
+  // total_count and the candidate lists are NOT touched: training carries
+  // across the boundary, only the grading does not.
+  for (auto& [seq, entry] : table) {
+    entry.top1_correct = 0;
+    entry.topall_correct = 0;
+  }
 }
 
 void generic_markov::prefetcher_end_phase()
@@ -287,6 +308,12 @@ void generic_markov::prefetcher_end_phase()
     uint64_t keys{};
     uint64_t cut_count{};
     uint64_t from_cut{};
+    // Mass these keys hold, in the units the cut was taken in: repeat mass
+    // (occurrences - 1) everywhere except occupancy(_, false), which counts
+    // every occurrence. For occupancy() it reaches the requested fraction by
+    // construction -- from_cut rounds up, so it can overshoot by up to
+    // per_key - 1. For top_n() it is the answer: what a fixed budget captures.
+    uint64_t mass{};
   };
 
   const auto occupancy = [&](double fraction, bool repeat_only) -> occupancy_cut {
@@ -307,12 +334,12 @@ void generic_markov::prefetcher_end_phase()
       const auto need = target - cumulative;
       if (per_key * keys >= need) {
         const auto from_cut = (need + per_key - 1) / per_key;
-        return {taken + from_cut, occurrences, from_cut};
+        return {taken + from_cut, occurrences, from_cut, cumulative + per_key * from_cut};
       }
       cumulative += per_key * keys;
       taken += keys;
     }
-    return {taken, 0, 0};
+    return {taken, 0, 0, cumulative};
   };
 
   // A hardware budget holds N keys, not a share of the mass. Same cut shape as
@@ -324,13 +351,19 @@ void generic_markov::prefetcher_end_phase()
       return {};
     }
     uint64_t taken{0};
+    uint64_t mass{0};
     for (auto it = std::rbegin(occurrence_histogram); it != std::rend(occurrence_histogram); ++it) {
-      if (taken + it->second >= n) {
-        return {n, it->first, n - taken};
+      const auto occurrences = it->first;
+      const auto keys = it->second;
+      const auto per_key = occurrences - 1; // singletons hold no repeat mass
+      if (taken + keys >= n) {
+        const auto from_cut = n - taken;
+        return {n, occurrences, from_cut, mass + per_key * from_cut};
       }
-      taken += it->second;
+      mass += per_key * keys;
+      taken += keys;
     }
-    return {taken, 0, 0}; // the whole table is smaller than the budget
+    return {taken, 0, 0, mass}; // the whole table is smaller than the budget
   };
 
   const auto o50 = occupancy(0.50, true);
@@ -383,7 +416,7 @@ void generic_markov::prefetcher_end_phase()
   // Slot 6 is the whole table: a cut at count 0 includes every key, so the
   // same loop produces the unfiltered baseline without a second pass.
   std::array<coverage, 7> covered{};
-  const std::array<occupancy_cut, 7> cuts{o50, o80, o90, top1k, top10k, top50k, occupancy_cut{distinct_keys, 0, 0}};
+  const std::array<occupancy_cut, 7> cuts{o50, o80, o90, top1k, top10k, top50k, occupancy_cut{distinct_keys, 0, 0, repeat_occurrences}};
   for (std::size_t i = 0; i < std::size(cuts); ++i) {
     covered.at(i).budget = cuts.at(i).from_cut;
   }
@@ -432,16 +465,32 @@ void generic_markov::prefetcher_end_phase()
   out.set("repeat_occurrences", as_toml_integer(repeat_occurrences));
   out.set("o50_keys", as_toml_integer(o50.keys));
   out.set("o50_key_frac", ratio(o50.keys, distinct_keys));
+  out.set("o50_repeat_frac", ratio(o50.mass, repeat_occurrences)); // must be >= 0.50
   out.set("o80_keys", as_toml_integer(o80.keys));
   out.set("o80_key_frac", ratio(o80.keys, distinct_keys));
+  out.set("o80_repeat_frac", ratio(o80.mass, repeat_occurrences)); // must be >= 0.80
   out.set("o90_keys", as_toml_integer(o90.keys));
   out.set("o90_key_frac", ratio(o90.keys, distinct_keys));
+  out.set("o90_repeat_frac", ratio(o90.mass, repeat_occurrences)); // must be >= 0.90
   out.set("o95_keys", as_toml_integer(occupancy(0.95, true).keys));
   out.set("o95_key_frac", ratio(occupancy(0.95, true).keys, distinct_keys));
 
   // Credit earned by each occupancy set: what coverage survives if only these
   // keys are kept. Denominator is predict_attempts, so it is directly
-  // comparable to the whole-table top1_correct/predict_attempts.
+  // comparable to the whole-table figures published immediately below.
+  //
+  // all_* is slot 6, the unfiltered table. Summed from the same per-key
+  // counters as every subset, so a subset can never exceed it; it must also
+  // equal the global top1_correct/topall_correct, which the tests pin.
+  // *_coverage divides by predict_attempts (every lookup). The similarly named
+  // top1_rate/topall_rate below divide the SAME numerator by
+  // scored_predictions (lookups that made a prediction) and read far higher --
+  // 45.2% vs 70.1% on the 359-trace sweep. Coverage and accuracy, not variants.
+  out.set("all_top1_correct", as_toml_integer(covered.at(6).top1));
+  out.set("all_top1_coverage", ratio(covered.at(6).top1, predict_attempts));
+  out.set("all_topall_correct", as_toml_integer(covered.at(6).topall));
+  out.set("all_topall_coverage", ratio(covered.at(6).topall, predict_attempts));
+
   out.set("o50_top1_correct", as_toml_integer(covered.at(0).top1));
   out.set("o50_top1_coverage", ratio(covered.at(0).top1, predict_attempts));
   out.set("o50_topall_correct", as_toml_integer(covered.at(0).topall));
@@ -492,6 +541,8 @@ void generic_markov::prefetcher_end_phase()
   // which is the shape real hardware has. key_frac is the share of the table
   // they occupy, so a small frac with high coverage is the interesting case.
   out.set("top_1000_key_frac", ratio(top1k.keys, distinct_keys));
+  out.set("top_1000_repeats", as_toml_integer(top1k.mass));
+  out.set("top_1000_repeat_frac", ratio(top1k.mass, repeat_occurrences));
   out.set("top_1000_top1_correct", as_toml_integer(covered.at(3).top1));
   out.set("top_1000_top1_coverage", ratio(covered.at(3).top1, predict_attempts));
   out.set("top_1000_topall_correct", as_toml_integer(covered.at(3).topall));
@@ -507,6 +558,8 @@ void generic_markov::prefetcher_end_phase()
   out.set("top_1000_keys_w_cardinality_65_plus", as_toml_integer(covered.at(3).bands.at(7)));
 
   out.set("top_10000_key_frac", ratio(top10k.keys, distinct_keys));
+  out.set("top_10000_repeats", as_toml_integer(top10k.mass));
+  out.set("top_10000_repeat_frac", ratio(top10k.mass, repeat_occurrences));
   out.set("top_10000_top1_correct", as_toml_integer(covered.at(4).top1));
   out.set("top_10000_top1_coverage", ratio(covered.at(4).top1, predict_attempts));
   out.set("top_10000_topall_correct", as_toml_integer(covered.at(4).topall));
@@ -522,6 +575,8 @@ void generic_markov::prefetcher_end_phase()
   out.set("top_10000_keys_w_cardinality_65_plus", as_toml_integer(covered.at(4).bands.at(7)));
 
   out.set("top_50000_key_frac", ratio(top50k.keys, distinct_keys));
+  out.set("top_50000_repeats", as_toml_integer(top50k.mass));
+  out.set("top_50000_repeat_frac", ratio(top50k.mass, repeat_occurrences));
   out.set("top_50000_top1_correct", as_toml_integer(covered.at(5).top1));
   out.set("top_50000_top1_coverage", ratio(covered.at(5).top1, predict_attempts));
   out.set("top_50000_topall_correct", as_toml_integer(covered.at(5).topall));

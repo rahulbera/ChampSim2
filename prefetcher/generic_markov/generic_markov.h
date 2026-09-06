@@ -44,6 +44,9 @@ public:
     std::vector<candidate> candidates{};
     uint64_t total_count{};
     // Per-key credit, so coverage can be attributed to a SUBSET of the table.
+    // PER-PHASE, like the globals they sum to: prefetcher_begin_phase() walks
+    // the table and zeroes these. Any counter added here must be zeroed there
+    // too, or it lands over an ROI-only denominator.
     uint64_t top1_correct{};
     uint64_t topall_correct{};
   };
@@ -103,8 +106,9 @@ private:
   // than anything learned since.
   uint64_t train_clock{};
 
-  // Per-phase counters. The TABLE is not reset -- training carries across the
-  // warmup boundary on purpose.
+  // Per-phase counters. The table's candidate lists and total_count are not
+  // reset -- training carries across the warmup boundary on purpose -- but the
+  // per-key credit inside it IS: see successors::top1_correct.
   uint64_t train_events{};
   uint64_t predict_attempts{};
   uint64_t predict_hits{};
