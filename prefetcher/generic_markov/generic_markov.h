@@ -17,7 +17,7 @@
  * "Prefetching Using Markov Predictors", IEEE Trans. Computers 48(2), 1999,
  * with that design's hardware constraints deliberately removed.
  *
- * Learns {A,B,C,D} -> {E,F,G,H}: the left side is the last `history_length`
+ * Learns {A,B,C,D} -> {E,F,G,H}: the TRIGGER SEQUENCE is the last `history_length`
  * cacheline addresses, the right side the SET of one-step successors.
  *
  * A measurement instrument, not a prefetcher. It issues nothing while

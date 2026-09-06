@@ -1274,3 +1274,80 @@ TEST_CASE("Reconfiguring drops the prediction belonging to the cleared window")
   REQUIRE(count_of(stats, "all_top1_correct") == count_of(stats, "top1_correct"));
   REQUIRE(count_of(stats, "all_topall_correct") == count_of(stats, "topall_correct"));
 }
+
+TEST_CASE("The successor and delta alphabets are counted, and are different questions")
+{
+  // A B A C A B A B, with A=0x10 B=0x20 C=0x30. Four STORED candidates:
+  //   [A] -> {B, C}   [B] -> {A}   [C] -> {A}
+  //
+  // Successor alphabet {B, C, A} = 3: A is stored twice, under two triggers.
+  // Delta alphabet {B-A, C-A, A-B, A-C} = {+16, +32, -16, -32} = 4: those two
+  // stored A's sit at DIFFERENT distances from their own triggers. So here the
+  // delta alphabet is the LARGER of the two, and a counter that answered one
+  // question with the other cannot pass.
+  constexpr uint64_t A{0x10};
+  constexpr uint64_t B{0x20};
+  constexpr uint64_t C{0x30};
+
+  markov_harness uut{"454-alphabets"};
+  uut.walk({A, B, A, C, A, B, A, B});
+  const auto& stats = uut.publish();
+
+  REQUIRE(count_of(stats, "distinct_keys") == 3);
+  REQUIRE(count_of(stats, "all_unique_successors") == 3);
+  REQUIRE(count_of(stats, "all_unique_deltas") == 4);
+
+  // Four candidates across the table, so neither alphabet is degenerate here.
+  REQUIRE(count_of(stats, "sum_cardinality_per_key") == 4);
+
+  // The table is far smaller than any budget, so every cut is the whole table.
+  REQUIRE(count_of(stats, "top_1000_unique_successors") == 3);
+  REQUIRE(count_of(stats, "top_1000_unique_deltas") == 4);
+}
+
+TEST_CASE("A constant stride collapses the delta alphabet but not the successor alphabet")
+{
+  // 0x100..0x104 walked once. Four triggers, four stored candidates, four
+  // DISTINCT successors -- but every delta is +1, so a single delta covers the
+  // whole table. This is the case the delta counter exists to detect, and the
+  // one where the two counters diverge hardest in the useful direction.
+  markov_harness uut{"454-stride-alphabet"};
+  uut.walk({0x100, 0x101, 0x102, 0x103, 0x104});
+  const auto& stats = uut.publish();
+
+  REQUIRE(count_of(stats, "distinct_keys") == 4);
+  REQUIRE(count_of(stats, "sum_cardinality_per_key") == 4);
+  REQUIRE(count_of(stats, "all_unique_successors") == 4);
+  REQUIRE(count_of(stats, "all_unique_deltas") == 1);
+}
+
+TEST_CASE("A filtered alphabet never exceeds the whole table's, or its own candidate count")
+{
+  markov_harness uut{"454-alphabet-bounds"};
+  uut.walk(three_tier_stream());
+  const auto& stats = uut.publish();
+
+  const auto whole_succ = count_of(stats, "all_unique_successors");
+  const auto whole_delta = count_of(stats, "all_unique_deltas");
+  REQUIRE(whole_succ > 0);
+  REQUIRE(whole_delta > 0);
+
+  for (const auto* set : {"o50", "o80", "o90", "top_1000", "top_10000", "top_50000"}) {
+    const std::string name{set};
+    const auto succ = count_of(stats, name + "_unique_successors");
+    const auto delta = count_of(stats, name + "_unique_deltas");
+    // Non-degenerate: a <= bound is satisfied by zero, so an alphabet only
+    // ever collected for the whole table would slip past the bounds alone.
+    REQUIRE(succ > 0);
+    REQUIRE(delta > 0);
+    REQUIRE(succ <= whole_succ);
+    REQUIRE(delta <= whole_delta);
+
+    // An alphabet cannot hold more symbols than the set has stored candidates.
+    const auto candidates = count_of(stats, name + "_delta_4b_candidates") + count_of(stats, name + "_delta_8b_candidates")
+                            + count_of(stats, name + "_delta_16b_candidates") + count_of(stats, name + "_delta_24b_candidates")
+                            + count_of(stats, name + "_delta_32b_candidates") + count_of(stats, name + "_delta_wider_candidates");
+    REQUIRE(succ <= candidates);
+    REQUIRE(delta <= candidates);
+  }
+}
