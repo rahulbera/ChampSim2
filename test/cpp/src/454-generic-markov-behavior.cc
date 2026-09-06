@@ -1223,6 +1223,18 @@ TEST_CASE("A fixed budget reports the repeat mass it captures")
   REQUIRE(rate_of(stats, "top_1000_repeat_frac") == Catch::Approx(0.80));
   REQUIRE(count_of(stats, "o80_keys") == 1000); // the same cut, from the other side
 
+  // The mass integers behind those fractions. 600 keys at 4 = 2400, then the
+  // second tier at 2 each: o50 needs 2000, o80 3200, o90 3600.
+  REQUIRE(count_of(stats, "o50_repeats") == 2000);
+  REQUIRE(count_of(stats, "o80_repeats") == 3200);
+  REQUIRE(count_of(stats, "o90_repeats") == 3600);
+
+  // The key count each budget took. 1000 is a strict cut; both larger budgets
+  // exceed the 1600-key table and take all of it rather than reporting N.
+  REQUIRE(count_of(stats, "top_1000_keys") == 1000);
+  REQUIRE(count_of(stats, "top_10000_keys") == 1600);
+  REQUIRE(count_of(stats, "top_50000_keys") == 1600);
+
   // occupancy()'s own accumulator, previously computed and never read. Every
   // tier divides evenly here, so each cut lands exactly on its target rather
   // than overshooting by the from_cut rounding.

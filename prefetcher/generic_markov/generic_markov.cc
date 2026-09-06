@@ -528,12 +528,15 @@ void generic_markov::prefetcher_end_phase()
   out.set("repeat_occurrences", as_toml_integer(repeat_occurrences));
   out.set("o50_keys", as_toml_integer(o50.keys));
   out.set("o50_key_frac", ratio(o50.keys, distinct_keys));
+  out.set("o50_repeats", as_toml_integer(o50.mass));
   out.set("o50_repeat_frac", ratio(o50.mass, repeat_occurrences)); // must be >= 0.50
   out.set("o80_keys", as_toml_integer(o80.keys));
   out.set("o80_key_frac", ratio(o80.keys, distinct_keys));
+  out.set("o80_repeats", as_toml_integer(o80.mass));
   out.set("o80_repeat_frac", ratio(o80.mass, repeat_occurrences)); // must be >= 0.80
   out.set("o90_keys", as_toml_integer(o90.keys));
   out.set("o90_key_frac", ratio(o90.keys, distinct_keys));
+  out.set("o90_repeats", as_toml_integer(o90.mass));
   out.set("o90_repeat_frac", ratio(o90.mass, repeat_occurrences)); // must be >= 0.90
   out.set("o95_keys", as_toml_integer(occupancy(0.95, true).keys));
   out.set("o95_key_frac", ratio(occupancy(0.95, true).keys, distinct_keys));
@@ -603,6 +606,7 @@ void generic_markov::prefetcher_end_phase()
   // The occupancy sets above are unbounded; these are the N most-recurred keys,
   // which is the shape real hardware has. key_frac is the share of the table
   // they occupy, so a small frac with high coverage is the interesting case.
+  out.set("top_1000_keys", as_toml_integer(top1k.keys));
   out.set("top_1000_key_frac", ratio(top1k.keys, distinct_keys));
   out.set("top_1000_repeats", as_toml_integer(top1k.mass));
   out.set("top_1000_repeat_frac", ratio(top1k.mass, repeat_occurrences));
@@ -620,6 +624,7 @@ void generic_markov::prefetcher_end_phase()
   out.set("top_1000_keys_w_cardinality_33_64", as_toml_integer(covered.at(3).bands.at(6)));
   out.set("top_1000_keys_w_cardinality_65_plus", as_toml_integer(covered.at(3).bands.at(7)));
 
+  out.set("top_10000_keys", as_toml_integer(top10k.keys));
   out.set("top_10000_key_frac", ratio(top10k.keys, distinct_keys));
   out.set("top_10000_repeats", as_toml_integer(top10k.mass));
   out.set("top_10000_repeat_frac", ratio(top10k.mass, repeat_occurrences));
@@ -637,6 +642,7 @@ void generic_markov::prefetcher_end_phase()
   out.set("top_10000_keys_w_cardinality_33_64", as_toml_integer(covered.at(4).bands.at(6)));
   out.set("top_10000_keys_w_cardinality_65_plus", as_toml_integer(covered.at(4).bands.at(7)));
 
+  out.set("top_50000_keys", as_toml_integer(top50k.keys));
   out.set("top_50000_key_frac", ratio(top50k.keys, distinct_keys));
   out.set("top_50000_repeats", as_toml_integer(top50k.mass));
   out.set("top_50000_repeat_frac", ratio(top50k.mass, repeat_occurrences));
