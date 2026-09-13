@@ -540,6 +540,22 @@ jobs:
         python3 test/ramulator2/run_integration.py --binary bin/champsim \
           --output-dir "$RUNNER_TEMP/native-integration"
 
+    # Non-PIE code takes a native function's address through a PLT stub in the
+    # executable, which once made the provenance check fingerprint the program.
+    # Separate object/binary roots leave the main build alone; the helper builds
+    # the native library again for the new object root, so this runs last.
+    - name: Check library provenance from a non-PIE executable
+      run: |
+        obj="$RUNNER_TEMP/nopie-obj"
+        bin="$RUNNER_TEMP/nopie-bin"
+        mkdir -p "$obj"
+        cp .csconfig/registry.inc .csconfig/registry.cc.inc "$obj/"
+        env -u CXXFLAGS -u CPPFLAGS -u LDFLAGS -u CFLAGS make -j6 OBJ_ROOT="$obj" BIN_ROOT="$bin" \
+          CXXFLAGS='-fno-pie -no-pie' LDFLAGS=-no-pie "$bin/champsim"
+        readelf -h "$bin/champsim" | grep -q 'Type: *EXEC'
+        "$bin/champsim" --config configs/ramulator2.toml --knobs > "$RUNNER_TEMP/nopie-knobs.toml"
+        grep -q '^dram-model = "ramulator2"$' "$RUNNER_TEMP/nopie-knobs.toml"
+
     - uses: actions/upload-artifact@v7
       if: always()
       with:

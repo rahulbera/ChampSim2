@@ -277,7 +277,9 @@ Public headers and the adapter remain C++17. Only the private native translation
 unit uses C++20. A helper builds the pinned native shared library with Python
 bindings disabled, records compiler/dependency/source identity, verifies effective
 ABI settings, and invalidates objects on build-mode/compiler/root changes.
-Runtime checks the identity of the loaded shared object.
+Runtime checks the identity of the loaded shared object. It asks the dynamic
+loader which file it loaded for `libramulator.so`, so PIE and non-PIE executables
+fingerprint the same library; CI runs a non-PIE `--knobs` check.
 
 This is a C++ boundary, not a stable versioned C ABI. A compiler/layout probe and
 pinned dependencies reduce mismatch risks; they do not certify arbitrary compiler

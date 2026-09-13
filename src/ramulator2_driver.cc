@@ -15,6 +15,7 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <link.h>
 #include <sstream>
 #include <string_view>
 
@@ -77,12 +78,35 @@ std::string fingerprint(const std::string& content)
   text << std::hex << std::setfill('0') << std::setw(16) << value;
   return text.str();
 }
+// Ask the dynamic loader which file it loaded for the executable's DT_NEEDED
+// entry. Resolving the address of a native function instead (dladdr) names the
+// executable itself in a non-PIE build, where non-PIC code takes that address
+// through a canonical PLT stub in the program.
+constexpr auto native_library = "libramulator.so";
+std::string loaded_library()
+{
+  const std::string name{native_library};
+  void* handle = dlopen(native_library, RTLD_LAZY | RTLD_NOLOAD);
+  require(handle != nullptr, "the dynamic loader has not loaded " + name + "; link it as a shared library with WITH_RAMULATOR2=1");
+  link_map* map = nullptr;
+  const bool mapped = dlinfo(handle, RTLD_DI_LINKMAP, &map) == 0 && map != nullptr && map->l_name != nullptr;
+  const std::string path = mapped ? map->l_name : "";
+  dlclose(handle);
+  require(mapped, "cannot read the dynamic loader's path for " + name);
+  const auto main_program = "the dynamic loader resolved " + name + " to the main program ('" + path
+                            + "'), not a separate shared object, so its provenance cannot be checked; load the native library dynamically "
+                              "(PIE and non-PIE executables both can)";
+  require(!path.empty(), main_program);
+  std::error_code error;
+  const auto library = std::filesystem::canonical(path, error);
+  require(!error, "cannot resolve '" + path + "', the dynamic loader's path for " + name);
+  const auto program = std::filesystem::canonical("/proc/self/exe", error);
+  require(error || library != program, main_program);
+  return path;
+}
 void verify_library()
 {
-  Dl_info info{};
-  require(dladdr(reinterpret_cast<void*>(&Ramulator::Config::parse_config_string), &info) != 0 && info.dli_fname,
-          "cannot identify loaded library; rebuild with the ramulator2 helper");
-  require(fingerprint(read_file(info.dli_fname)) == champsim::native_build::fingerprint,
+  require(fingerprint(read_file(loaded_library())) == champsim::native_build::fingerprint,
           "loaded library differs from build provenance; rebuild WITH_RAMULATOR2=1");
 }
 int integer(const ConfigNode& node, const std::string& field)
