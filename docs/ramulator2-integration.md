@@ -134,7 +134,10 @@ controller or a second native simulator.
    it submits the accepted FIFO prefix. There is no new per-core fairness policy.
 2. It validates the source ID and cache-block address, copies the parent packet,
    and assigns an internal parent ID. Callback state exists before the first
-   native submission.
+   native submission. An invalid source ID, or a non-prefetch request (load,
+   RFO, write or translation) whose cache block is not wholly inside native
+   capacity, stops the run with an error. An out-of-range `PREFETCH` packet is
+   answered or dropped locally instead, as described below.
 3. A 64-byte cache block becomes two adjacent transactions for the 32-byte LPDDR5
    fixture, or one transaction for DDR4. With a native transaction larger than
    the cache block, it submits one block-sized request fitting inside that
@@ -150,6 +153,29 @@ controller or a second native simulator.
    every fragment completes, using the original packet's response fields.
    Response-suppressed reads still finish bookkeeping. Writes produce no
    unsolicited upstream response.
+
+**Out-of-range prefetches.** Physical-address caches (L1D, L2C and LLC by
+default, where `virtual_prefetch` is false) forward prefetches without a range
+or page-boundary check. The shipped `next_line` prefetcher requests the next
+cache block and `va_ampm_lite` can request up to 256 blocks ahead; neither stops
+at a page boundary. (`ip_stride` and `spp_dev` keep physical prefetches inside
+the triggering page.) `VirtualMemory` allocates frames only below capacity, so
+once it maps the top physical frame such a prefetch can reach the memory feeder
+with a cache block at or past native capacity. Legacy `MEMORY_CONTROLLER` reads
+only the address fields its geometry defines and ignores higher bits, so it
+aliases the request to an in-range location and serves it with DRAM timing. The
+native model has no location to alias, so the adapter never submits such a
+packet. When the packet reaches the head of its feeder queue (RQ, PQ or WQ, in
+FIFO order behind earlier entries), the adapter pops it and counts it in
+`out_of_range_prefetches`. A read with `response_requested` gets the original
+packet back immediately, exactly as fast warmup returns reads. A
+response-suppressed read or a write gets no response. The handling is the same
+in warmup and measured phases and counts as progress. It creates no parent,
+native attempt, acceptance, completion, rejection or read-latency sample.
+Out-of-range load, RFO, write and translation requests, like invalid source IDs,
+still stop the run: `VirtualMemory` places every translated page and page-table
+entry below capacity, so one would indicate a bug. Test 705's cases for this
+policy postdate the counts recorded in section 3.
 
 The native frontend shim forwards requests while reporting the actual compiled
 core count; upstream `External` reports one core. Native controllers, schedulers,
@@ -193,11 +219,21 @@ plus raw native statistics YAML. Native-only output does not invent legacy
 bus-utilization or congestion counters.
 
 Adapter counters describe parent and fragment acceptance/completion, rejected
-submission attempts, live outstanding parents/fragments, total completed-read
-latency in picoseconds, and its sample count. Parent admission and latency start
-at the **first accepted fragment**. That latency excludes time waiting in the
-feeder before any fragment is accepted. A rejection count measures attempts,
-not unique rejected requests.
+submission attempts, out-of-range prefetches, live outstanding
+parents/fragments, total completed-read latency in picoseconds, and its sample
+count. Parent admission and latency start at the **first accepted fragment**.
+That latency excludes time waiting in the feeder before any fragment is
+accepted. A rejection count measures attempts, not unique rejected requests.
+
+`out_of_range_prefetches` (next to `rejected_submissions` in the adapter table)
+is a per-phase event count of `PREFETCH` packets popped because their cache block
+is not wholly inside native capacity. Warmup pops are counted too, but reports
+cover measured phases only, so like every other adapter event counter a warmup
+count is reset at the next phase without being reported. Those packets are
+never submitted and do not appear in any other adapter counter or latency
+sample. With the shipped prefetchers, a nonzero value means a physical-address
+prefetcher ran past the top physical frame. The legacy controller would have
+aliased those requests to in-range locations and charged them DRAM timing.
 
 Live gauges include earlier-phase work. Consequently, a phase may complete more
 requests than it accepts. Native write completion means the native callback's
@@ -351,13 +387,14 @@ fragments_end = fragments_begin
 ```
 
 Here “parents” means admitted parents, including partially admitted ones.
-Completely unaccepted feeder heads are outside these gauges and need separate
-queue accounting. A partially admitted parent can remain outstanding with zero
-currently outstanding fragments.
+Completely unaccepted feeder heads and out-of-range prefetches are outside these
+gauges and need separate queue accounting. A partially admitted parent can
+remain outstanding with zero currently outstanding fragments.
 
 Also require one native completion per accepted fragment, one upstream response
-per completed response-requested read, original response metadata, no write or
-suppressed-read response, and no accepted fragment retried. In a controlled
+per completed response-requested read (plus one immediate response per
+response-requested out-of-range prefetch read), original response metadata, no
+write or suppressed-read response, and no accepted fragment retried. In a controlled
 recovery harness, continue clocks after stopping the producer and consume responses
 to check eventual cleanup. Do not add that diagnostic drain to normal measured
 simulation retirement.

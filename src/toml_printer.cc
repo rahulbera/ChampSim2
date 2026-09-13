@@ -412,6 +412,7 @@ std::vector<std::string> champsim::toml_printer::format(const ramulator2_statist
               {"accepted_fragments", native_value(stats.accepted_fragments)},
               {"completed_fragments", native_value(stats.completed_fragments)},
               {"rejected_submissions", native_value(stats.rejected_submissions)},
+              {"out_of_range_prefetches", native_value(stats.out_of_range_prefetches)},
               {"outstanding_parents", native_value(stats.outstanding_parents)},
               {"outstanding_fragments", native_value(stats.outstanding_fragments)},
               {"total_read_latency_ps", native_value(stats.total_read_latency_ps)},

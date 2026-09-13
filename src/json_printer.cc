@@ -101,6 +101,7 @@ void to_json(nlohmann::json& j, const ramulator2_statistics& stats)
          {"accepted_fragments", stats.accepted_fragments},
          {"completed_fragments", stats.completed_fragments},
          {"rejected_submissions", stats.rejected_submissions},
+         {"out_of_range_prefetches", stats.out_of_range_prefetches},
          {"outstanding_parents", stats.outstanding_parents},
          {"outstanding_fragments", stats.outstanding_fragments},
          {"total_read_latency_ps", stats.total_read_latency_ps},

@@ -67,7 +67,13 @@ class ramulator2_memory_backend final : public champsim::memory_backend, public 
     }
   }
 
-  uint64_t validate(const request_type& packet) const
+  // Returns the packet's cache block, or nullopt for a PREFETCH whose block is
+  // not wholly inside native capacity. Physical prefetchers (next_line,
+  // va_ampm_lite) do not stop at page boundaries, so once the top frame is
+  // mapped they can legitimately ask for a block past the end; legacy slices
+  // address bits and aliases it. No load, RFO, write or translation path
+  // produces such an address, so those still throw, as do invalid core IDs.
+  std::optional<uint64_t> validate(const request_type& packet) const
   {
     if (packet.cpu >= champsim::defs::num_cpus) {
       throw std::runtime_error{fmt::format("ramulator2: invalid core id {} (expected less than {})", packet.cpu, champsim::defs::num_cpus)};
@@ -76,6 +82,9 @@ class ramulator2_memory_backend final : public champsim::memory_backend, public 
     const auto block = address - address % BLOCK_SIZE;
     const auto bytes = static_cast<uint64_t>(capacity.count());
     if (block >= bytes || BLOCK_SIZE > bytes - block) {
+      if (packet.type == access_type::PREFETCH) {
+        return std::nullopt;
+      }
       throw std::runtime_error{fmt::format("ramulator2: request address {:#x} is out of range for {} bytes", address, bytes)};
     }
     return block;
@@ -132,9 +141,15 @@ class ramulator2_memory_backend final : public champsim::memory_backend, public 
     while (!queue.requests->empty()) {
       if (!queue.head) {
         const auto block = validate(queue.requests->front());
-        if (warmup) {
+        // Fast warmup and an out-of-range prefetch (in either phase) both
+        // return a requested read at once and drop everything else, without
+        // native submission or latency bookkeeping.
+        if (warmup || !block) {
           if (!queue.write && queue.requests->front().response_requested) {
             queue.returned->emplace_back(queue.requests->front());
+          }
+          if (!block) {
+            ++counters.out_of_range_prefetches;
           }
           queue.requests->pop_front();
           ++progress;
@@ -142,7 +157,7 @@ class ramulator2_memory_backend final : public champsim::memory_backend, public 
         }
         const auto fragments = std::max<std::size_t>(1, BLOCK_SIZE / transaction_bytes);
         const auto id = next_parent++;
-        parents.emplace(id, parent_request{queue.requests->front(), queue.returned, queue.write, block, fragments});
+        parents.emplace(id, parent_request{queue.requests->front(), queue.returned, queue.write, *block, fragments});
         queue.head = id;
       }
       // A later warmup must not bypass an already partially submitted request.

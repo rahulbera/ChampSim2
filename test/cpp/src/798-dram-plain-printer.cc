@@ -146,12 +146,14 @@ TEST_CASE("Native plain statistics identify the backend and keep independent ada
   phase.roi_ramulator2->accepted_reads = 2;
   phase.roi_ramulator2->accepted_fragments = 4;
   phase.roi_ramulator2->outstanding_parents = 1;
+  phase.roi_ramulator2->out_of_range_prefetches = 5;
   phase.roi_ramulator2->native.values = {{{"memory_system", "controller", "channel0", "read_hits"}, int64_t{3}}};
   const auto lines = champsim::plain_printer::format(phase);
   REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"Ramulator2 Statistics"}));
   REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"accepted_reads = 2"}));
   REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"accepted_fragments = 4"}));
   REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"outstanding_parents = 1"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"out_of_range_prefetches = 5"}));
   REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"read_hits = 3"}));
   REQUIRE(std::find(lines.begin(), lines.end(), "DRAM Statistics") == lines.end());
   REQUIRE(std::none_of(lines.begin(), lines.end(), [](const auto& line) { return line.find("DBUS") != std::string::npos; }));
@@ -165,6 +167,7 @@ TEST_CASE("Native JSON preserves independent counters, typed leaves and escaped 
   phase.roi_ramulator2->accepted_reads = 2;
   phase.roi_ramulator2->accepted_fragments = 4;
   phase.roi_ramulator2->outstanding_parents = 1;
+  phase.roi_ramulator2->out_of_range_prefetches = 5;
   phase.roi_ramulator2->native.yaml = "count: 42\n";
   phase.roi_ramulator2->native.values = {{{"memory_system", "controller", "channel0", "count"}, int64_t{42}},
                                          {{"plugin.with.dots", "0", "enabled"}, true},
@@ -180,6 +183,7 @@ TEST_CASE("Native JSON preserves independent counters, typed leaves and escaped 
   REQUIRE(roi.at("ramulator2").at("adapter").at("accepted_reads") == 2);
   REQUIRE(roi.at("ramulator2").at("adapter").at("accepted_fragments") == 4);
   REQUIRE(roi.at("ramulator2").at("adapter").at("outstanding_parents") == 1);
+  REQUIRE(roi.at("ramulator2").at("adapter").at("out_of_range_prefetches") == 5);
   REQUIRE(doc.at(0).at("sim").at("ramulator2").at("adapter").at("completed_reads") == 1);
   REQUIRE_FALSE(roi.contains("DRAM"));
   const auto& native = roi.at("ramulator2").at("native");

@@ -679,8 +679,10 @@ TEST_CASE("Native TOML keeps parent admission, fragments and live work independe
   phase.roi_ramulator2->accepted_reads = 2;
   phase.roi_ramulator2->accepted_fragments = 4;
   phase.roi_ramulator2->outstanding_parents = 1;
+  phase.roi_ramulator2->out_of_range_prefetches = 5;
   phase.sim_ramulator2 = phase.roi_ramulator2;
   phase.sim_ramulator2->completed_reads = 1;
+  phase.sim_ramulator2->out_of_range_prefetches = 6;
   std::vector<champsim::phase_stats> phases{phase};
   std::ostringstream output;
   champsim::toml_printer{output, true}.print(phases);
@@ -691,9 +693,48 @@ TEST_CASE("Native TOML keeps parent admission, fragments and live work independe
   REQUIRE(roi["ramulator2"]["adapter"]["accepted_reads"].value<int64_t>() == 2);
   REQUIRE(roi["ramulator2"]["adapter"]["accepted_fragments"].value<int64_t>() == 4);
   REQUIRE(roi["ramulator2"]["adapter"]["outstanding_parents"].value<int64_t>() == 1);
+  REQUIRE(roi["ramulator2"]["adapter"]["out_of_range_prefetches"].value<int64_t>() == 5);
   REQUIRE(doc["phase"]["simulation"]["sim"]["ramulator2"]["adapter"]["completed_reads"].value<int64_t>() == 1);
+  REQUIRE(doc["phase"]["simulation"]["sim"]["ramulator2"]["adapter"]["out_of_range_prefetches"].value<int64_t>() == 6);
   REQUIRE_FALSE(roi["dram"]);
   REQUIRE(output.str().find("dbus") == std::string::npos);
+}
+
+TEST_CASE("The native adapter table pins every counter in order, out-of-range prefetches beside rejected submissions")
+{
+  champsim::ramulator2_statistics given{};
+  given.accepted_reads = 1;
+  given.accepted_writes = 2;
+  given.completed_reads = 3;
+  given.completed_writes = 4;
+  given.accepted_fragments = 5;
+  given.completed_fragments = 6;
+  given.rejected_submissions = 7;
+  given.out_of_range_prefetches = 8;
+  given.outstanding_parents = 9;
+  given.outstanding_fragments = 10;
+  given.total_read_latency_ps = 11;
+  given.read_latency_samples = 12;
+
+  const std::vector<std::string> expected{"[ramulator2]",
+                                          "native_yaml = \"\"",
+                                          "",
+                                          "[ramulator2.adapter]",
+                                          "accepted_reads = 1",
+                                          "accepted_writes = 2",
+                                          "completed_reads = 3",
+                                          "completed_writes = 4",
+                                          "accepted_fragments = 5",
+                                          "completed_fragments = 6",
+                                          "rejected_submissions = 7",
+                                          "out_of_range_prefetches = 8",
+                                          "outstanding_parents = 9",
+                                          "outstanding_fragments = 10",
+                                          "total_read_latency_ps = 11",
+                                          "read_latency_samples = 12",
+                                          "",
+                                          "[ramulator2.native]"};
+  REQUIRE_THAT(champsim::toml_printer::format(given, "ramulator2"), Catch::Matchers::RangeEquals(expected));
 }
 
 TEST_CASE("Native TOML preserves typed scalars, escaped paths, raw YAML and integer range")

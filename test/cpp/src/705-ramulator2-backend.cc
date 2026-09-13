@@ -1,5 +1,6 @@
 #include <limits>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include "channel.h"
@@ -7,6 +8,7 @@
 #include "operable.h"
 #include "ramulator2_memory_backend.h"
 #include "ramulator2_test_driver.hpp"
+#include "util/to_underlying.h"
 
 namespace
 {
@@ -269,6 +271,166 @@ TEST_CASE("Native source identity is preserved and invalid IDs fail even during 
   REQUIRE(uut.feeder.add_rq(request));
   uut.step();
   REQUIRE(std::get<2>(uut.state->accepted.at(0)) == request.cpu);
+}
+
+namespace
+{
+// ramulator2_test::driver reports 16 MiB. The first address past it is the
+// block a physical next_line prefetcher asks for after the top frame's last
+// cache block.
+constexpr uint64_t fixture_capacity = uint64_t{1} << 24;
+
+champsim::channel::request_type prefetch_request(uint64_t address)
+{
+  auto request = read_request(address);
+  request.type = access_type::PREFETCH;
+  return request;
+}
+
+void require_original_response(const champsim::channel& feeder, const champsim::channel::request_type& original)
+{
+  REQUIRE(feeder.returned.size() == 1);
+  REQUIRE(feeder.returned.front().address == original.address);
+  REQUIRE(feeder.returned.front().v_address == original.v_address);
+  REQUIRE(feeder.returned.front().data == original.data);
+  REQUIRE(feeder.returned.front().pf_metadata == original.pf_metadata);
+  REQUIRE(feeder.returned.front().instr_depend_on_me == original.instr_depend_on_me);
+}
+} // namespace
+
+TEST_CASE("An out-of-range prefetch read is answered without a native submission and counted in either phase")
+{
+  const bool warmup = GENERATE(false, true);
+  CAPTURE(warmup);
+  fixture uut;
+  REQUIRE(static_cast<uint64_t>(uut.backend->size().count()) == fixture_capacity);
+  uut.memory().warmup = warmup;
+  uut.memory().begin_phase();
+  const auto request = prefetch_request(fixture_capacity);
+  REQUIRE(uut.feeder.add_pq(request));
+  long progress = 0;
+  REQUIRE_NOTHROW(progress = uut.step());
+  REQUIRE(progress > 0);
+  REQUIRE(uut.feeder.PQ.empty());
+  require_original_response(uut.feeder, request);
+  REQUIRE(uut.state->attempts.empty());
+  const auto stats = uut.stats();
+  REQUIRE(stats.out_of_range_prefetches == 1);
+  REQUIRE(stats.accepted_reads == 0);
+  REQUIRE(stats.completed_reads == 0);
+  REQUIRE(stats.rejected_submissions == 0);
+  REQUIRE(stats.read_latency_samples == 0);
+  REQUIRE(stats.outstanding_parents == 0);
+
+  // A prefetch-as-load cache forwards its PREFETCH packets through RQ.
+  uut.feeder.returned.clear();
+  const auto through_rq = prefetch_request(fixture_capacity + 0x1234);
+  REQUIRE(uut.feeder.add_rq(through_rq));
+  REQUIRE_NOTHROW(uut.step());
+  REQUIRE(uut.feeder.RQ.empty());
+  require_original_response(uut.feeder, through_rq);
+  REQUIRE(uut.state->attempts.empty());
+  REQUIRE(uut.stats().out_of_range_prefetches == 2);
+
+  // The counter is a per-phase event count.
+  uut.memory().begin_phase();
+  REQUIRE(uut.stats().out_of_range_prefetches == 0);
+}
+
+TEST_CASE("Response-suppressed and write-queue out-of-range prefetches are removed and counted without a response")
+{
+  const bool warmup = GENERATE(false, true);
+  CAPTURE(warmup);
+  fixture uut;
+  uut.memory().warmup = warmup;
+  uut.memory().begin_phase();
+  auto suppressed = prefetch_request(fixture_capacity);
+  suppressed.response_requested = false;
+  REQUIRE(uut.feeder.add_pq(suppressed));
+  auto write = prefetch_request(std::numeric_limits<uint64_t>::max());
+  REQUIRE(write.response_requested); // deliberately left true: a write never answers upstream
+  REQUIRE(uut.feeder.add_wq(write));
+  REQUIRE_NOTHROW(uut.step());
+  REQUIRE(uut.feeder.PQ.empty());
+  REQUIRE(uut.feeder.WQ.empty());
+  REQUIRE(uut.feeder.returned.empty());
+  REQUIRE(uut.state->attempts.empty());
+  REQUIRE(uut.stats().out_of_range_prefetches == 2);
+  REQUIRE(uut.stats().accepted_writes == 0);
+}
+
+TEST_CASE("Out-of-range demand requests and invalid prefetch sources still fail in either phase")
+{
+  const bool warmup = GENERATE(false, true);
+  CAPTURE(warmup);
+  for (const auto type : {access_type::LOAD, access_type::RFO, access_type::WRITE, access_type::TRANSLATION}) {
+    CAPTURE(access_type_names.at(champsim::to_underlying(type)));
+    for (const bool write_queue : {false, true}) {
+      CAPTURE(write_queue);
+      fixture uut;
+      uut.memory().warmup = warmup;
+      auto request = read_request(fixture_capacity);
+      request.type = type;
+      REQUIRE((write_queue ? uut.feeder.add_wq(request) : uut.feeder.add_rq(request)));
+      REQUIRE_THROWS_WITH(uut.step(), Catch::Matchers::ContainsSubstring("out of range"));
+      REQUIRE(uut.feeder.RQ.size() + uut.feeder.WQ.size() == 1);
+      REQUIRE(uut.feeder.returned.empty());
+      REQUIRE(uut.state->attempts.empty());
+      REQUIRE(uut.stats().out_of_range_prefetches == 0);
+    }
+  }
+  fixture uut;
+  uut.memory().warmup = warmup;
+  auto request = prefetch_request(fixture_capacity);
+  request.cpu = static_cast<uint32_t>(champsim::defs::num_cpus);
+  REQUIRE(uut.feeder.add_pq(request));
+  REQUIRE_THROWS_WITH(uut.step(), Catch::Matchers::ContainsSubstring("core id"));
+  REQUIRE(uut.feeder.PQ.size() == 1);
+  REQUIRE(uut.feeder.returned.empty());
+  REQUIRE(uut.stats().out_of_range_prefetches == 0);
+}
+
+TEST_CASE("An out-of-range prefetch waits behind a rejected head in its own feeder queue")
+{
+  fixture uut;
+  const auto head = prefetch_request(0x2000);
+  const auto beyond = prefetch_request(fixture_capacity);
+  REQUIRE(uut.feeder.add_pq(head));
+  REQUIRE(uut.feeder.add_pq(beyond));
+  uut.state->decisions = {false};
+  REQUIRE(uut.step() == 0);
+  REQUIRE(uut.feeder.PQ.size() == 2);
+  REQUIRE(uut.feeder.returned.empty());
+  REQUIRE(uut.stats().out_of_range_prefetches == 0);
+
+  // Once the head is admitted, the packet behind it is answered in the same step.
+  REQUIRE(uut.step() > 0);
+  REQUIRE(uut.feeder.PQ.empty());
+  require_original_response(uut.feeder, beyond);
+  REQUIRE(uut.state->accepted == std::vector<ramulator2_test::driver_state::submission>{{false, 0x2000, 0, BLOCK_SIZE}});
+  const auto stats = uut.stats();
+  REQUIRE(stats.out_of_range_prefetches == 1);
+  REQUIRE(stats.rejected_submissions == 1);
+  REQUIRE(stats.accepted_reads == 1);
+  REQUIRE(stats.outstanding_parents == 1);
+}
+
+TEST_CASE("A prefetch in the last native cache block is still submitted and answered natively")
+{
+  fixture uut;
+  const auto request = prefetch_request(fixture_capacity - 1);
+  REQUIRE(uut.feeder.add_pq(request));
+  uut.step();
+  REQUIRE(uut.feeder.PQ.empty());
+  REQUIRE(uut.feeder.returned.empty());
+  REQUIRE(uut.state->accepted == std::vector<ramulator2_test::driver_state::submission>{{false, fixture_capacity - BLOCK_SIZE, 0, BLOCK_SIZE}});
+  uut.state->complete_on_tick = {0};
+  uut.step();
+  require_original_response(uut.feeder, request);
+  const auto stats = uut.stats();
+  REQUIRE(stats.accepted_reads == 1);
+  REQUIRE(stats.completed_reads == 1);
+  REQUIRE(stats.out_of_range_prefetches == 0);
 }
 
 TEST_CASE("Fast warmup returns reads while native maintenance clocks advance without submissions")
