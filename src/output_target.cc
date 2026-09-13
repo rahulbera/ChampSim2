@@ -19,7 +19,6 @@
 #include <cerrno>
 #include <cstdio>
 #include <fcntl.h>
-#include <fstream>
 #include <random>
 #include <system_error>
 #include <unistd.h>
@@ -31,8 +30,9 @@
 namespace
 {
 namespace fs = std::filesystem;
+using file_status = struct stat;
 
-bool same_file(const struct stat& lhs, const struct stat& rhs) { return lhs.st_dev == rhs.st_dev && lhs.st_ino == rhs.st_ino; }
+bool same_file(const file_status& lhs, const file_status& rhs) { return lhs.st_dev == rhs.st_dev && lhs.st_ino == rhs.st_ino; }
 
 // `name` resolved as open() resolves it: one symbolic link at a time, a
 // relative link from the directory that holds it, and each directory
@@ -94,26 +94,49 @@ std::optional<std::string> read_head(int descriptor, std::size_t size)
   return head;
 }
 
-// A new, empty, uniquely named file beside `target`, created exclusively so it
-// can never be someone else's file. Created with the usual permissions of a
-// new file. Empty if the directory will not take it.
-std::optional<fs::path> create_sibling(const fs::path& target)
+// A temporary file in `directory`, created exclusively so that it can never be
+// someone else's file, with the usual permissions of a new file. The name has
+// a fixed length and does not embed the target's, so any target name that
+// fits the directory leaves room for it. The descriptor is open for writing;
+// on failure it is -1 and `error` holds errno.
+struct temporary_file {
+  fs::path path;
+  int descriptor{-1};
+  int error{0};
+};
+
+temporary_file create_temporary(const fs::path& directory)
 {
   constexpr int max_attempts = 100;
   std::random_device entropy;
+  temporary_file created;
   for (int attempt = 0; attempt < max_attempts; ++attempt) {
-    const auto candidate = target.parent_path() / fmt::format(".{}.{:08x}{:08x}.tmp", target.filename().string(), entropy(), entropy());
-    errno = 0;
-    if (std::FILE* created = std::fopen(candidate.string().c_str(), "wx"); created != nullptr) {
-      std::fclose(created);
-      return candidate;
+    created.path = directory / fmt::format(".champsim-toml-{:08x}{:08x}.tmp", entropy(), entropy());
+    created.descriptor = ::open(created.path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOCTTY | O_CLOEXEC, 0666);
+    if (created.descriptor >= 0) {
+      return created;
     }
-    if (errno != EEXIST) {
-      return std::nullopt;
+    created.error = errno;
+    if (created.error != EEXIST) {
+      break;
     }
   }
-  return std::nullopt;
+  return created;
 }
+
+// Whether `directory` accepts a new file, leaving nothing behind.
+bool accepts_new_file(const fs::path& directory)
+{
+  const auto probe = create_temporary(directory);
+  if (probe.descriptor < 0) {
+    return false;
+  }
+  ::close(probe.descriptor);
+  ::unlink(probe.path.c_str());
+  return true;
+}
+
+std::string describe(int error) { return std::generic_category().message(error); }
 
 int write_all(int descriptor, std::string_view bytes)
 {
@@ -144,8 +167,7 @@ plan_result plan(const std::string& name, const std::vector<std::string>& traces
 
   // What open() reaches through the name, if anything. Every decision below
   // is about that file, never about the spelling.
-  struct stat reached {
-  };
+  file_status reached{};
   const bool exists = ::stat(name.c_str(), &reached) == 0;
   if (!exists && errno != ENOENT) {
     return cannot_open();
@@ -153,8 +175,7 @@ plan_result plan(const std::string& name, const std::vector<std::string>& traces
 
   // Where it is, so that a replacement can be made in its directory.
   auto located = resolve(name);
-  struct stat at_location {
-  };
+  file_status at_location{};
   const bool location_exists = located && ::lstat(located->c_str(), &at_location) == 0;
   const int location_errno = errno;
   if (exists) {
@@ -209,18 +230,22 @@ plan_result plan(const std::string& name, const std::vector<std::string>& traces
     }
   }
 
-  // The replacement is created beside the target, so that directory must
-  // accept a new file.
   if (!located) {
+    // Reachable only through the kernel, so there is no directory to put a
+    // replacement in.
+    return plan_result{target{name, reachable, write_mode::in_place}, {}};
+  }
+  // A replacement is created beside the target. Where it cannot be -- a
+  // directory that refuses new files -- an existing file is still written in
+  // place, as are hard-linked files, which a rename would split.
+  const bool replaceable = !exists || reached.st_nlink <= 1;
+  if (replaceable && accepts_new_file(located->parent_path())) {
+    return plan_result{target{name, *located, write_mode::replace_by_rename}, {}};
+  }
+  if (!exists) {
     return cannot_open();
   }
-  const auto probe = create_sibling(*located);
-  if (!probe) {
-    return cannot_open();
-  }
-  std::error_code remove_error;
-  fs::remove(*probe, remove_error);
-  return plan_result{target{name, *located, write_mode::replace_by_rename}, {}};
+  return plan_result{target{name, *located, write_mode::in_place}, {}};
 }
 
 operations system_operations()
@@ -257,36 +282,52 @@ write_result write(const target& destination, std::string_view document, const o
     return result;
   }
 
-  // A regular target receives a finished document by rename, so a write that
-  // fails here -- or a run killed while writing -- leaves whatever the target
-  // held before exactly as it was.
-  const auto temporary = create_sibling(destination.path);
-  if (!temporary) {
-    return failed();
-  }
-  bool written = false;
-  {
-    std::ofstream file{*temporary, std::ios::binary};
-    file.write(std::data(document), static_cast<std::streamsize>(std::size(document)));
-    file.flush();
-    written = static_cast<bool>(file);
-    file.close();
-    written = written && !file.fail();
-  }
-  std::error_code replace_error;
-  if (written) {
-    // rename substitutes a new file: carry over an existing document's
-    // permissions rather than the defaults it was created with.
-    if (const auto previous = fs::status(destination.path, replace_error); fs::is_regular_file(previous)) {
-      fs::permissions(*temporary, previous.permissions(), replace_error);
+  // The finished document is written to a new sibling and renamed over the
+  // target, so a write that fails here -- a full disk -- or a run killed
+  // before the rename leaves whatever the target held before as it was.
+  auto temporary = create_temporary(destination.path.parent_path());
+  if (temporary.descriptor < 0) {
+    // The directory took a probe at startup but refuses a file now. Every
+    // check writing in place needs has passed, and this is the only copy.
+    if (ops.write_in_place(destination.path, document) != 0) {
+      return failed();
     }
-    written = ops.rename(*temporary, destination.path) == 0;
+    result.messages.push_back(fmt::format("WARNING: could not create a temporary file beside '{}' ({}); wrote the TOML statistics in place instead.",
+                                          destination.name, describe(temporary.error)));
+    result.written = true;
+    return result;
   }
-  if (!written) {
-    fs::remove(*temporary, replace_error);
+
+  // rename substitutes a new file: carry over an existing document's
+  // permissions rather than the defaults it was created with.
+  if (file_status previous{}; ::lstat(destination.path.c_str(), &previous) == 0 && S_ISREG(previous.st_mode)) {
+    ::fchmod(temporary.descriptor, previous.st_mode & 07777);
+  }
+  const int write_error = write_all(temporary.descriptor, document);
+  const int close_error = ::close(temporary.descriptor) == 0 ? 0 : errno;
+  if (write_error != 0 || close_error != 0) {
+    ::unlink(temporary.path.c_str());
     return failed();
   }
-  result.written = true;
+
+  const int rename_error = ops.rename(temporary.path, destination.path);
+  if (rename_error == 0) {
+    result.written = true;
+    return result;
+  }
+  // rename can fail where writing does not: EBUSY for a file bind-mounted into
+  // a container, EPERM for another user's file in a sticky directory.
+  const int in_place_error = ops.write_in_place(destination.path, document);
+  if (in_place_error == 0) {
+    ::unlink(temporary.path.c_str());
+    result.messages.push_back(
+        fmt::format("WARNING: could not rename the TOML statistics over '{}' ({}); wrote them in place instead.", destination.name, describe(rename_error)));
+    result.written = true;
+    return result;
+  }
+  result.messages.push_back(fmt::format("ERROR: failed to write the TOML statistics to '{}': renaming failed ({}), and so did writing in place ({}). "
+                                        "The complete document is kept in '{}'.",
+                                        destination.name, describe(rename_error), describe(in_place_error), temporary.path.string()));
   return result;
 }
 } // namespace champsim::output

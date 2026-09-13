@@ -29,9 +29,13 @@
 namespace champsim::output
 {
 enum class write_mode {
-  // A finished document in a new sibling file is renamed over the target.
+  // A finished document in a new '.champsim-toml-<16 hex>.tmp' sibling is
+  // renamed over the target; if that rename fails, the target is written in
+  // place instead.
   replace_by_rename,
-  // The target is opened, truncated and written only once the run is over.
+  // The target is opened, truncated and written only once the run is over:
+  // anything but a regular file, a hard-linked file (a rename would split its
+  // links), or a file whose directory refuses a new sibling.
   in_place,
 };
 
@@ -55,7 +59,8 @@ struct plan_result {
 plan_result plan(const std::string& name, const std::vector<std::string>& traces);
 
 // The filesystem calls whose failure the final write has to survive, as a
-// seam for tests. Each returns 0 or an errno value.
+// seam for tests. Each returns 0 or an errno value. write_in_place opens with
+// O_TRUNC, so it is only ever called after the run.
 struct operations {
   std::function<int(const std::filesystem::path& from, const std::filesystem::path& to)> rename;
   std::function<int(const std::filesystem::path& path, std::string_view document)> write_in_place;

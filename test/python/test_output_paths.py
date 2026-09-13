@@ -3,6 +3,7 @@ import hashlib
 import os
 from pathlib import Path
 import re
+import shutil
 import signal
 import stat
 import subprocess
@@ -197,6 +198,79 @@ class OutputPathTests(unittest.TestCase):
                 self.assertEqual(stat.S_IMODE(document.stat().st_mode), expected_mode)
                 self.assertEqual(output.is_symlink(), "symlink" in existing)
                 self.assertEqual(sorted(path.name for path in results.iterdir()), ["run.toml"])
+
+    def test_long_output_name_is_replaced_by_rename(self):
+        # NAME_MAX is 255 bytes on common filesystems; the temporary sibling's
+        # name must not grow with the target's.
+        with tempfile.TemporaryDirectory() as tmp:
+            self.trace(tmp)
+            name = "r" * 240 + ".toml"
+            for instructions in (500, 1000):
+                result = self.simulate(tmp, name, instructions=instructions)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(tomllib.loads((Path(tmp) / name).read_text())["meta"]["simulation_instructions"], instructions)
+            self.assertEqual(sorted(path.name for path in Path(tmp).iterdir()), sorted([name, "trace.champsim2"]))
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "permissions do not bind the superuser")
+    def test_files_in_a_read_only_directory_are_written_in_place(self):
+        for existing in ("empty file", "statistics document"):
+            with self.subTest(existing=existing), tempfile.TemporaryDirectory() as tmp:
+                self.trace(tmp)
+                results = Path(tmp) / "results"
+                results.mkdir()
+                document = results / "run.toml"
+                if existing == "empty file":
+                    document.touch()
+                else:
+                    first = self.simulate(tmp, document, instructions=500)
+                    self.assertEqual(first.returncode, 0, first.stderr)
+                results.chmod(0o555)
+                try:
+                    result = self.simulate(tmp, document, instructions=1000)
+                finally:
+                    results.chmod(0o755)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(tomllib.loads(document.read_text())["meta"]["simulation_instructions"], 1000)
+                self.assertEqual(sorted(path.name for path in results.iterdir()), ["run.toml"])
+
+    def test_hard_linked_statistics_document_updates_every_link(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.trace(tmp)
+            document = Path(tmp) / "run.toml"
+            other = Path(tmp) / "latest.toml"
+            first = self.simulate(tmp, document, instructions=500)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            other.hardlink_to(document)
+            result = self.simulate(tmp, document, instructions=1000)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for path in (document, other):
+                self.assertEqual(tomllib.loads(path.read_text())["meta"]["simulation_instructions"], 1000)
+            self.assertEqual(document.stat().st_nlink, 2)
+            self.assertTrue(os.path.samefile(document, other))
+
+    def test_failed_rename_writes_the_statistics_document_in_place(self):
+        # A single file bind-mounted into a container refuses rename (EBUSY)
+        # but can be written; strace injects that failure without privileges.
+        strace = shutil.which("strace")
+        if strace is None:
+            self.skipTest("strace is not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            self.trace(tmp)
+            probe = subprocess.run([strace, "-f", "-o", os.devnull, "-e", "inject=rename,renameat,renameat2:error=EBUSY", "true"], capture_output=True, timeout=30)
+            if probe.returncode != 0:
+                self.skipTest(f"strace cannot inject faults here: {probe.stderr.decode(errors='replace')}")
+            document = Path(tmp) / "run.toml"
+            first = self.simulate(tmp, document, instructions=500)
+            self.assertEqual(first.returncode, 0, first.stderr)
+
+            arguments = ["--trace-version", "2", "-w", "0", "-i", "1000", "--hide-heartbeat", "--toml", str(document), "--"]
+            command = [strace, "-f", "-o", os.devnull, "-e", "inject=rename,renameat,renameat2:error=EBUSY", str(BINARY), *arguments]
+            command += [str(Path(tmp) / "trace.champsim2")] * self.cores
+            result = subprocess.run(command, cwd=tmp, capture_output=True, text=True, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("in place", result.stderr)
+            self.assertEqual(tomllib.loads(document.read_text())["meta"]["simulation_instructions"], 1000)
+            self.assertEqual(sorted(path.name for path in Path(tmp).iterdir()), ["run.toml", "trace.champsim2"])
 
     @unittest.skipUnless(resource is not None and hasattr(signal, "SIGXFSZ"), "needs RLIMIT_FSIZE to make the final write fail")
     def test_failed_write_leaves_an_existing_statistics_document_intact(self):
