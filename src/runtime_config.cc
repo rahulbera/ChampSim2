@@ -61,6 +61,10 @@ void champsim::runtime_config::load_file(const std::string& path)
   // configuration file has no such key, and is loaded whole. Without this, the
   // [config] root table would prefix every key and none would be consumed.
   if (const auto* meta = table["meta"].as_table(); meta != nullptr && meta->contains("schema_version")) {
+    const auto schema = (*meta)["schema_version"];
+    if (!schema.is_integer() || (schema.value<int64_t>() != 1 && schema.value<int64_t>() != 2)) {
+      throw std::runtime_error(fmt::format("runtime config: '{}' has unsupported schema_version; expected integer 1 or 2", path));
+    }
     const auto* config = table["config"].as_table();
     if (config == nullptr) {
       throw std::runtime_error(fmt::format("runtime config: '{}' is a statistics document with no [config] section", path));

@@ -362,3 +362,26 @@ TEST_CASE("A statistics document with no [config] section is rejected")
   champsim::runtime_config cfg{};
   REQUIRE_THROWS_WITH(cfg.load_file(doc.path), Catch::Matchers::ContainsSubstring("no [config] section"));
 }
+
+TEST_CASE("A schema two statistics replay loads only its native effective configuration")
+{
+  temp_toml doc{"[meta]\nschema_version = 2\n[meta.ramulator2]\nyaml = \"original archive\"\n"
+                "[config]\ndram-model = \"ramulator2\"\n[config.ramulator2]\nconfig = \"/tmp/native.yaml\"\n"
+                "config_hash = \"a1b2\"\nrevision = \"pinned\"\n"};
+  champsim::runtime_config cfg;
+  cfg.load_file(doc.path);
+  REQUIRE(cfg.value<std::string>("dram-model", "legacy") == "ramulator2");
+  REQUIRE(cfg.value<std::string>("ramulator2.config", "") == "/tmp/native.yaml");
+  REQUIRE(cfg.value<std::string>("ramulator2.config_hash", "") == "a1b2");
+  REQUIRE(cfg.value<std::string>("ramulator2.revision", "") == "pinned");
+  REQUIRE(cfg.unconsulted_keys().empty());
+}
+
+TEST_CASE("Unsupported or malformed statistics schemas fail before loading configuration")
+{
+  const auto version = GENERATE("0", "3", "-1", "\"2\"", "2.0", "true");
+  temp_toml doc{std::string{"[meta]\nschema_version = "} + version + "\n[config]\ndram-model = \"legacy\"\n"};
+  champsim::runtime_config cfg;
+  REQUIRE_THROWS_WITH(cfg.load_file(doc.path), Catch::Matchers::ContainsSubstring("schema_version"));
+  REQUIRE(cfg.applied().empty());
+}

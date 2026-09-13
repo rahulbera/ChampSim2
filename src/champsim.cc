@@ -174,6 +174,8 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
   auto memory_stats = env.memory_view().statistics();
   stats.sim_dram_stats = std::move(memory_stats.sim_dram);
   stats.roi_dram_stats = std::move(memory_stats.roi_dram);
+  stats.sim_ramulator2 = std::move(memory_stats.sim_ramulator2);
+  stats.roi_ramulator2 = std::move(memory_stats.roi_ramulator2);
 
   return stats;
 }

@@ -1,10 +1,14 @@
 #include <catch.hpp>
+#include <cmath>
+#include <limits>
+#include <sstream>
 #include <fmt/core.h>
 
 #include "cache_stats.h"
 #include "core_stats.h"
 #include "dram_stats.h"
 #include "stats_printer.h"
+#include <toml++/toml.hpp>
 
 // The TOML statistics printer. These tests pin the exact emitted text, in the
 // same spirit as 198/498/798 for the plain printer: the document is a public
@@ -665,4 +669,103 @@ TEST_CASE("The configuration id is a content hash of the effective configuration
   REQUIRE(champsim::toml_printer::config_id(a) != champsim::toml_printer::config_id(c));
   REQUIRE_THAT(champsim::toml_printer::config_id(a), Catch::Matchers::StartsWith("0x"));
   REQUIRE(std::size(champsim::toml_printer::config_id(a)) == 18);
+}
+
+TEST_CASE("Native TOML keeps parent admission, fragments and live work independent")
+{
+  champsim::phase_stats phase{};
+  phase.name = "Simulation";
+  phase.roi_ramulator2.emplace();
+  phase.roi_ramulator2->accepted_reads = 2;
+  phase.roi_ramulator2->accepted_fragments = 4;
+  phase.roi_ramulator2->outstanding_parents = 1;
+  phase.sim_ramulator2 = phase.roi_ramulator2;
+  phase.sim_ramulator2->completed_reads = 1;
+  std::vector<champsim::phase_stats> phases{phase};
+  std::ostringstream output;
+  champsim::toml_printer{output, true}.print(phases);
+  const auto doc = toml::parse(output.str());
+  const auto roi = doc["phase"]["simulation"]["roi"];
+  REQUIRE(doc["meta"]["schema_version"].value<int>() == 2);
+  REQUIRE(doc["meta"]["dram_model"].value<std::string>() == "ramulator2");
+  REQUIRE(roi["ramulator2"]["adapter"]["accepted_reads"].value<int64_t>() == 2);
+  REQUIRE(roi["ramulator2"]["adapter"]["accepted_fragments"].value<int64_t>() == 4);
+  REQUIRE(roi["ramulator2"]["adapter"]["outstanding_parents"].value<int64_t>() == 1);
+  REQUIRE(doc["phase"]["simulation"]["sim"]["ramulator2"]["adapter"]["completed_reads"].value<int64_t>() == 1);
+  REQUIRE_FALSE(roi["dram"]);
+  REQUIRE(output.str().find("dbus") == std::string::npos);
+}
+
+TEST_CASE("Native TOML preserves typed scalars, escaped paths, raw YAML and integer range")
+{
+  champsim::phase_stats phase{};
+  phase.name = "Simulation";
+  phase.roi_ramulator2.emplace();
+  auto& stats = *phase.roi_ramulator2;
+  stats.accepted_reads = std::numeric_limits<uint64_t>::max();
+  stats.native.yaml = "native: \"quoted\"\n  values: [1, 2]\n";
+  stats.native.values = {{{"memory_system", "controller", "channel0", "count"}, int64_t{42}},
+                         {{"memory_system", "controller", "channel1", "count"}, uint64_t{43}},
+                         {{"plugin.with.dots", "0", "name\"\n"}, std::string{"a\tb\\c"}},
+                         {{"plugin.with.dots", "1", "enabled"}, true},
+                         {{"whole"}, 2.0},
+                         {{"precise"}, 0.123456789012345},
+                         {{"nan"}, std::numeric_limits<double>::quiet_NaN()},
+                         {{"positive_infinity"}, std::numeric_limits<double>::infinity()},
+                         {{"negative_infinity"}, -std::numeric_limits<double>::infinity()},
+                         {{"signed_min"}, std::numeric_limits<int64_t>::min()},
+                         {{"unsigned_max"}, std::numeric_limits<uint64_t>::max()}};
+  std::vector<champsim::phase_stats> phases{phase};
+  std::ostringstream output;
+  champsim::toml_printer{output}.print(phases);
+  const auto doc = toml::parse(output.str());
+  const auto memory = doc["phase"]["simulation"]["roi"]["ramulator2"];
+  const auto native = memory["native"];
+  REQUIRE(memory["native_yaml"].value<std::string>() == stats.native.yaml);
+  REQUIRE(native["memory_system"]["controller"]["channel0"]["count"].value<int64_t>() == 42);
+  REQUIRE(native["memory_system"]["controller"]["channel1"]["count"].value<int64_t>() == 43);
+  REQUIRE(native["plugin.with.dots"]["0"]["name\"\n"].value<std::string>() == "a\tb\\c");
+  REQUIRE(native["plugin.with.dots"]["1"]["enabled"].value<bool>() == true);
+  REQUIRE(native["whole"].is_floating_point());
+  REQUIRE(native["whole"].value<double>() == 2.0);
+  REQUIRE(native["precise"].value<double>() == 0.123456789012345);
+  REQUIRE(std::isnan(native["nan"].value_or(0.0)));
+  REQUIRE(native["positive_infinity"].value<double>() == std::numeric_limits<double>::infinity());
+  REQUIRE(native["negative_infinity"].value<double>() == -std::numeric_limits<double>::infinity());
+  REQUIRE(native["signed_min"].value<int64_t>() == std::numeric_limits<int64_t>::min());
+  // TOML's signed integer range cannot represent uint64_t max. A decimal
+  // string keeps every digit; a float would silently lose low bits.
+  REQUIRE(native["unsigned_max"].value<std::string>() == "18446744073709551615");
+  REQUIRE(memory["adapter"]["accepted_reads"].value<std::string>() == "18446744073709551615");
+  REQUIRE_FALSE(doc["phase"]["simulation"]["sim"]);
+}
+
+TEST_CASE("Native run metadata archives the original YAML and complete driver provenance")
+{
+  champsim::toml_printer::run_info info{};
+  info.ramulator2.emplace();
+  info.ramulator2->path = "/tmp/original name.yaml";
+  info.ramulator2->hash = "1234567890abcdef";
+  info.ramulator2->revision = "native-revision";
+  info.ramulator2->library_hash = "fedcba0987654321";
+  info.ramulator2->build = "{\"compiler\":\"g++\"}";
+  info.ramulator2->yaml = "Frontend:\n  impl: External\n# untouched bytes\n";
+  info.overrides = {{"ramulator2.config", "\"original name.yaml\""}};
+  info.config_toml = "[config]\ndram-model = \"ramulator2\"\n[config.ramulator2]\nconfig = \"/tmp/original name.yaml\"\nconfig_hash = "
+                     "\"1234567890abcdef\"\nrevision = \"native-revision\"";
+  std::vector<champsim::phase_stats> phases;
+  std::ostringstream output;
+  champsim::toml_printer{output, false, info}.print(phases);
+  const auto doc = toml::parse(output.str());
+  REQUIRE(doc["meta"]["schema_version"].value<int>() == 2);
+  REQUIRE(doc["meta"]["dram_model"].value<std::string>() == "ramulator2");
+  const auto native = doc["meta"]["ramulator2"];
+  REQUIRE(native["config"].value<std::string>() == "/tmp/original name.yaml");
+  REQUIRE(native["config_hash"].value<std::string>() == "1234567890abcdef");
+  REQUIRE(native["revision"].value<std::string>() == "native-revision");
+  REQUIRE(native["library_hash"].value<std::string>() == "fedcba0987654321");
+  REQUIRE(native["build"].value<std::string>() == info.ramulator2->build);
+  REQUIRE(native["yaml"].value<std::string>() == info.ramulator2->yaml);
+  REQUIRE(doc["config_override"]["ramulator2.config"].value<std::string>() == "original name.yaml");
+  REQUIRE(doc["config"]["ramulator2"]["config"].value<std::string>() == "/tmp/original name.yaml");
 }

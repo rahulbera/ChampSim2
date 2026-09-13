@@ -350,6 +350,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   // What produced this document, so that a result file states which machine and
   // which run it came from.
   champsim::toml_printer::run_info run{};
+  run.ramulator2 = gen_environment.memory_view().config_record();
   // Identifies the MACHINE rather than the build: a content hash of the
   // effective configuration, so two runs that simulate the same thing share it
   // however their configuration was expressed.

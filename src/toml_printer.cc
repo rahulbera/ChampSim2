@@ -17,11 +17,14 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <iterator>
+#include <limits>
 #include <numeric>
 #include <ratio>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 #include <fmt/core.h>
@@ -319,7 +322,7 @@ std::vector<std::string> champsim::toml_printer::format(champsim::phase_stats& s
   // so it is written only on request; [meta].sim_stats records which, so its
   // absence is never ambiguous. Note this is NOT the plain printer's rule,
   // which keys the same decision on NUM_CPUS > 1.
-  const auto emit_section = [&lines, &root](std::string_view section, auto& cores, auto& caches, auto& channels) {
+  const auto emit_section = [&lines, &root](std::string_view section, auto& cores, auto& caches, auto& channels, const auto& native) {
     for (std::size_t i = 0; i < std::size(cores); ++i) {
       append_block(lines, format(cores.at(i), fmt::format("{}.{}.core.cpu{}", root, section, i)));
     }
@@ -327,14 +330,18 @@ std::vector<std::string> champsim::toml_printer::format(champsim::phase_stats& s
     for (std::size_t i = 0; i < std::size(caches); ++i) {
       append_block(lines, format(caches.at(i), fmt::format("{}.{}.cache.{}", root, section, cache_keys.at(i))));
     }
-    for (std::size_t i = 0; i < std::size(channels); ++i) {
-      append_block(lines, format(channels.at(i), fmt::format("{}.{}.dram.channel{}", root, section, i)));
+    if (native) {
+      append_block(lines, format(*native, fmt::format("{}.{}.ramulator2", root, section)));
+    } else {
+      for (std::size_t i = 0; i < std::size(channels); ++i) {
+        append_block(lines, format(channels.at(i), fmt::format("{}.{}.dram.channel{}", root, section, i)));
+      }
     }
   };
 
-  emit_section("roi", stats.roi_cpu_stats, stats.roi_cache_stats, stats.roi_dram_stats);
+  emit_section("roi", stats.roi_cpu_stats, stats.roi_cache_stats, stats.roi_dram_stats, stats.roi_ramulator2);
   if (include_sim) {
-    emit_section("sim", stats.sim_cpu_stats, stats.sim_cache_stats, stats.sim_dram_stats);
+    emit_section("sim", stats.sim_cpu_stats, stats.sim_cache_stats, stats.sim_dram_stats, stats.sim_ramulator2);
   }
 
   return lines;
@@ -364,6 +371,63 @@ void emit_node(std::vector<std::string>& lines, const std::string& path, const c
   }
 }
 } // namespace
+
+namespace
+{
+// TOML integers are signed 64-bit. Oversized unsigned counters use decimal
+// strings, preserving every digit instead of silently rounding through double.
+std::string native_value(const champsim::native_scalar& value)
+{
+  return std::visit(
+      [](const auto& scalar) -> std::string {
+        using type = std::decay_t<decltype(scalar)>;
+        if constexpr (std::is_same_v<type, std::string>) {
+          return quote(scalar);
+        } else if constexpr (std::is_same_v<type, uint64_t>) {
+          const auto decimal = fmt::format("{}", scalar);
+          return scalar > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ? quote(decimal) : decimal;
+        } else if constexpr (std::is_same_v<type, double>) {
+          auto text = fmt::format("{}", scalar);
+          if (std::isfinite(scalar) && text.find_first_of(".eE") == std::string::npos) {
+            text += ".0";
+          }
+          return text;
+        } else {
+          return fmt::format("{}", scalar);
+        }
+      },
+      value);
+}
+} // namespace
+
+std::vector<std::string> champsim::toml_printer::format(const ramulator2_statistics& stats, std::string_view path)
+{
+  std::vector<std::string> lines;
+  emit_table(lines, path, {{"native_yaml", quote(stats.native.yaml)}});
+  emit_table(lines, fmt::format("{}.adapter", path),
+             {{"accepted_reads", native_value(stats.accepted_reads)},
+              {"accepted_writes", native_value(stats.accepted_writes)},
+              {"completed_reads", native_value(stats.completed_reads)},
+              {"completed_writes", native_value(stats.completed_writes)},
+              {"accepted_fragments", native_value(stats.accepted_fragments)},
+              {"completed_fragments", native_value(stats.completed_fragments)},
+              {"rejected_submissions", native_value(stats.rejected_submissions)},
+              {"outstanding_parents", native_value(stats.outstanding_parents)},
+              {"outstanding_fragments", native_value(stats.outstanding_fragments)},
+              {"total_read_latency_ps", native_value(stats.total_read_latency_ps)},
+              {"read_latency_samples", native_value(stats.read_latency_samples)}});
+  config_node root;
+  for (const auto& statistic : stats.native.values) {
+    auto* node = &root;
+    for (std::size_t i = 0; i + 1 < statistic.path.size(); ++i) {
+      node = &node->tables[key(statistic.path.at(i))];
+    }
+    node->scalars.emplace_back(key(statistic.path.at(statistic.path.size() - 1)), native_value(statistic.value));
+  }
+  lines.emplace_back("");
+  emit_node(lines, fmt::format("{}.native", path), root);
+  return lines;
+}
 
 std::string champsim::toml_printer::config_id(const std::vector<std::pair<std::string, std::string>>& effective)
 {
@@ -409,8 +473,14 @@ std::vector<std::string> champsim::toml_printer::format(std::vector<phase_stats>
 {
   std::vector<std::string> lines{"# ChampSim statistics. Ratios are rounded to two decimals; the exact",
                                  "# operands of every ratio are emitted alongside it. An undefined ratio", "# is `nan` rather than a missing key."};
+  const bool native = info.ramulator2.has_value() || std::any_of(stats.begin(), stats.end(), [](const auto& phase) {
+                        return phase.roi_ramulator2.has_value() || phase.sim_ramulator2.has_value();
+                      });
+  if (native) {
+    lines.emplace_back("# Unsigned integers above INT64_MAX are exact decimal strings; native floats are unrounded.");
+  }
   emit_table(lines, "meta",
-             {{"schema_version", "1"},
+             {{"schema_version", native ? "2" : "1"},
               {"num_cpus", fmt::format("{}", NUM_CPUS)},
               {"sim_stats", include_sim ? "true" : "false"},
               {"build_id", quote(info.build_id)},
@@ -419,6 +489,19 @@ std::vector<std::string> champsim::toml_printer::format(std::vector<phase_stats>
               {"trace_version", fmt::format("{}", info.trace_version)},
               {"command_line", quote(info.command_line)},
               {"config_files", quote(info.config_files)}});
+  if (native) {
+    lines.emplace_back("dram_model = \"ramulator2\"");
+  }
+  if (info.ramulator2) {
+    const auto& record = *info.ramulator2;
+    emit_table(lines, "meta.ramulator2",
+               {{"config", quote(record.path)},
+                {"config_hash", quote(record.hash)},
+                {"revision", quote(record.revision)},
+                {"library_hash", quote(record.library_hash)},
+                {"build", quote(record.build)},
+                {"yaml", quote(record.yaml)}});
+  }
 
   // The effective configuration, rendered by format_config(). The header is
   // emitted even when the record is empty -- as it is in every unit test that

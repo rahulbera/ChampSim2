@@ -53,7 +53,7 @@ public:
 
 // The machine-readable statistics format. Each component formats into the
 // dotted TOML table path it is given, which is what makes the pieces testable
-// in isolation -- json_printer has no such seam, which is why it has no tests.
+// in isolation; JSON compatibility is checked through its stream output.
 class toml_printer
 {
   std::ostream& stream;
@@ -90,6 +90,8 @@ public:
     // syntax. [config] records what config.sh generated from; this records
     // what the run changed on top of it.
     std::vector<std::pair<std::string, std::string>> overrides{};
+    // Immutable native configuration/provenance; independent of phase counters.
+    std::optional<ramulator2_config_record> ramulator2{};
   };
 
   // `run_info` cannot appear in a default argument of this class: its default
@@ -102,6 +104,7 @@ public:
   static std::vector<std::string> format(O3_CPU::stats_type stats, std::string_view path);
   static std::vector<std::string> format(CACHE::stats_type stats, std::string_view path);
   static std::vector<std::string> format(dram_stats stats, std::string_view path);
+  static std::vector<std::string> format(const ramulator2_statistics& stats, std::string_view path);
   static std::vector<std::string> format(phase_stats& stats, bool include_sim = false);
   // The effective configuration -- flat dotted keys with values already in
   // TOML syntax -- rendered as the nested [config] table tree.

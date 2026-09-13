@@ -26,6 +26,7 @@
 #include "cache_stats.h"
 #include "core_stats.h"
 #include "dram_stats.h"
+#include "memory_stats.h"
 
 namespace champsim
 {
@@ -44,6 +45,7 @@ struct phase_stats {
   std::vector<O3_CPU::stats_type> roi_cpu_stats, sim_cpu_stats;
   std::vector<CACHE::stats_type> roi_cache_stats, sim_cache_stats;
   std::vector<dram_stats> roi_dram_stats, sim_dram_stats;
+  std::optional<ramulator2_statistics> roi_ramulator2{}, sim_ramulator2{};
 };
 
 } // namespace champsim
