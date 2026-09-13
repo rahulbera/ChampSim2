@@ -190,10 +190,26 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
       // reproduce its run would replay it at a different heartbeat.
       runtime_cfg.override_effective("sim.heartbeat_frequency", heartbeat_frequency);
     }
-    sim_knobs.deadlock_cycle = runtime_cfg.positive_value<int>("sim.deadlock_cycle", sim_knobs.deadlock_cycle);
     sim_knobs.livelock_period = runtime_cfg.positive_value<uint64_t>("sim.livelock_period", sim_knobs.livelock_period);
 
     built_environment.emplace(runtime_cfg);
+    auto deadlock_default = sim_knobs.deadlock_cycle;
+    if (built_environment->memory_view().name() == "ramulator2") {
+      // Native refresh can block all demand progress longer than the legacy
+      // 500-tick guard. Allow 10 us, measured in the actual simulation quantum,
+      // without treating idle native ticks as progress or changing explicit overrides.
+      auto quantum = champsim::chrono::picoseconds::max();
+      for (const champsim::operable& op : built_environment->operable_view()) {
+        if (op.clock_period <= champsim::chrono::picoseconds::zero()) {
+          throw std::runtime_error{"runtime config: ramulator2 requires a positive operable clock period"};
+        }
+        quantum = std::min(quantum, op.clock_period);
+      }
+      constexpr champsim::chrono::picoseconds allowance{10'000'000};
+      const auto ticks = allowance / quantum + (allowance % quantum != champsim::chrono::picoseconds::zero());
+      deadlock_default = std::max(deadlock_default, static_cast<int>(ticks));
+    }
+    sim_knobs.deadlock_cycle = runtime_cfg.positive_value<int>("sim.deadlock_cycle", deadlock_default);
   } catch (const std::runtime_error& err) {
     fmt::print(stderr, "ERROR: {}\n", err.what());
     return 1;
