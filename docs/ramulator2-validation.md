@@ -3,9 +3,9 @@
 This record covers the optional backend added on `feat/ramulator`. The default
 remains legacy; the same enabled executable can select either backend at runtime.
 The completed task reviews approved the driver/build boundary, request adapter,
-native default guard, reporting/replay, and CLI input protection. Final portable
-Task 5 tooling and whole-branch checks are listed separately below; they are not
-claimed complete merely because earlier task suites passed.
+native default guard, reporting/replay, and CLI input protection. Portable Task 5 oracle and one-/two-core integration checks also passed. Remaining
+hosted-CI and whole-branch checks are listed separately below; they are not claimed
+complete merely because local task suites passed.
 
 ## Reproduce locally
 
@@ -148,7 +148,9 @@ results are not committed. Historical comparison baseline:
 | Exported CI environment Python | 61 tests passed | Native mode/root/compiler inherited as environment variables, matching CI |
 | Adapter deterministic + ASan/UBSan/leaks | 195 assertions / 16 cases, both pass | Task 3 core; callbacks, retries, epochs, teardown |
 | Native default guard | Four CLI cases and 195 adapter assertions pass; protected cold DDR4/LPDDR5 retire 10k | `c6e7997b`; explicit 500 reproduces premature abort |
-| Direct native versus driver prototype | Identical attempt/callback streams and all 44 DDR4 / 48 LPDDR5 typed memory leaves | 22 requests; 1,043 / 683 real rejections; two synchronous writes each |
+| Portable direct native versus driver oracle | Identical attempt/callback streams and all 44 DDR4 / 48 LPDDR5 typed memory leaves | 22 transactions; 1,065 / 705 attempts; 1,043 / 683 rejects; 22 callbacks and seven split parents each |
+| Portable one-core integration | All 164 config leaves and 566 / 574 / 646 / 566 phase leaves match replay; digest/default-guard checks pass | DDR4, LPDDR5, multichannel and independent frequency changes |
+| Independent portable two-core integration | All 301 config leaves; 1,487 / 1,495 / 1,573 / 1,487 phase leaves match replay | Same four cases, actual CPU1 activity and both native channels verified |
 | Final one-core legacy comparison | Six comparisons: SQLite warmed/cold and omnetpp warmed × omitted/explicit; all 237 phase / 177 prior config leaves match | `b5addb74` |
 | Final two-core legacy comparison | Four comparisons: mixed warmed/cold × omitted/explicit; all 695 phase / 314 prior config leaves match | `b5addb74` |
 | Real two-core environment | 732 assertions / 14 cases | `c6e7997b`; source 0/1 served by DDR4 and LPDDR5 |
@@ -194,11 +196,32 @@ Named TOML and native `--knobs` parse; the unnamed stdout TOML tail parses. Miss
 output directories and `/dev/full` return nonzero. Full-suite VMEM capacity warnings
 are existing diagnostic noise, not pristine logs or unexplained test failures.
 
-Still pending when this record was written: portable Task 5 runner verification,
-multi-channel/frequency generated-input comparisons, standalone harness checks,
-CI execution on hosted runners, and whole-branch review. Earlier passing
-checks above do not substitute for these. The responsible validators will update
-this section when their evidence is available.
+Portable oracle evidence is retained in `task5-oracle-final/{summary,commands}.json`;
+one-core generated integration in `task5-tooling-onecore/{summary,commands}.json`.
+The one-core runs include writes, 12 LPDDR5 rejections, and outstanding parents
+at retirement in all four cases.
+
+Portable two-core generated-input evidence also demonstrates actual writebacks,
+retries and live requests at retirement:
+
+| Case | Accepted writes | Rejected submissions | Outstanding parents | Outstanding fragments |
+| --- | ---: | ---: | ---: | ---: |
+| DDR4 | 5,187 | 0 | 39 | 39 |
+| LPDDR5 | 5,131 | 159,684 | 34 | 65 |
+| Two native channels | 5,145 | 0 | 49 | 49 |
+| Independent core/cache frequency change | 5,176 | 0 | 43 | 43 |
+
+All four two-core runs and replays exit successfully. CPU1 native counters are
+active, and the multichannel case has activity in channel0 and channel1. The
+nonzero outstanding values demonstrate retirement without a post-run drain.
+Generated trace SHA256 is
+`bd30cd675aec8aa50a343481ecff24c8c9c20784861bcb3d7376a7f139c67516` and stays unchanged.
+Evidence: `task5-validation/twocore-deterministic-integration/{summary,commands,independent-cpu1-checks}.json`.
+
+Still pending when this record was written: standalone harness checks, CI execution
+on hosted runners, and whole-branch review. Earlier passing checks above do not
+substitute for these. The responsible validators will update this section when
+their evidence is available.
 
 ## Validation input incident and recovery
 
