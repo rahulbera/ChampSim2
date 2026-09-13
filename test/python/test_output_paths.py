@@ -107,6 +107,40 @@ class OutputPathTests(unittest.TestCase):
                 self.assertEqual(trace.read_bytes(), b"a disposable trace that must survive")
                 self.assertIn("aliases an input trace", result.stderr)
 
+    def test_output_spelled_through_a_missing_or_non_directory_component_is_refused(self):
+        # The kernel cannot open any of these names. Folding '..' by text instead
+        # turned each into an existing file, which the run then replaced.
+        cases = {
+            "missing/../configuration": lambda tmp: "missing/../machine.toml",
+            "absolute missing/../configuration": lambda tmp: f"{tmp}/missing/../machine.toml",
+            "missing/../trace": lambda tmp: "missing/../trace.champsim2",
+            "regular file/../notes": lambda tmp: "machine.toml/../notes.txt",
+            "dangling symlink to missing/../notes": lambda tmp: self.symlink(tmp, "latest.toml", "missing/../notes.txt"),
+        }
+        for case, spelling in cases.items():
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                trace = self.trace(tmp)
+                config = Path(tmp) / "machine.toml"
+                config.write_text("[ooo_cpu.cpu0]\nrob_size = 352\n")
+                notes = Path(tmp) / "notes.txt"
+                notes.write_text("precious\n")
+                protected = {path: path.read_bytes() for path in (trace, config, notes)}
+                output = spelling(tmp)
+                before = sorted(path.name for path in Path(tmp).iterdir())
+
+                result = self.simulate(tmp, output, "--config", str(config))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("cannot open", result.stderr)
+                self.assertNotIn("ChampSim completed", result.stdout)
+                self.assertEqual({path: path.read_bytes() for path in protected}, protected)
+                self.assertEqual(sorted(path.name for path in Path(tmp).iterdir()), before)
+
+    @staticmethod
+    def symlink(directory, name, target):
+        link = Path(directory) / name
+        link.symlink_to(target)
+        return name
+
     def test_startup_failure_leaves_an_existing_statistics_document_intact(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.trace(tmp)
