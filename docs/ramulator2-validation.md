@@ -147,8 +147,9 @@ results are not committed. Historical comparison baseline:
 | --- | --- | --- |
 | Final production enabled C++ | 17,414 assertions; 859 passed, one intentional skip | `b5addb74` |
 | Final production disabled C++ | 16,988 assertions; 853 passed, seven native skips | `b5addb74` |
-| Final production Python | Enabled 61 passed; disabled 57 passed, four native skips | `b5addb74` |
-| Exported CI environment Python | 61 tests passed | Native mode/root/compiler inherited as environment variables, matching CI |
+| Final production Python | Enabled: all 61 methods passed. Disabled: 58 passed and three native-only methods skipped, which unittest summarizes as `Ran 61 tests ... OK (skipped=4)` because one of them skips two subtests (not 57 passed and four skips) | `b5addb74`, configured tree with `bin/champsim` built |
+| Native-job environment Python | 61 tests passed | Native mode/root/compiler exported as the `native` job exports them, in a configured tree with an enabled `bin/champsim`. This is not the hosted `python` job, which never runs `config.sh` or builds |
+| Python after the fresh-checkout test fix | Unconfigured, unbuilt checkout: `Ran 61 tests ... OK (skipped=6)`, 55 passed and the six methods that need `bin/champsim` skipped. Configured disabled tree with `bin/champsim`: `OK (skipped=4)`, 58 passed, three native-only methods skipped. Configured enabled tree with an enabled `bin/champsim` and the native mode/root/compiler exported: `Ran 61 tests ... OK`, all 61 passed | Test-only change on `74159f1e`; local Linux runs, not hosted CI. The unconfigured run used the `python` job's discovery command under GNU Make 4.3 and 4.4.1, and its `coverage run`/`coverage lcov` step in a virtual environment without PyYAML. Before the change, the same command failed one test on the missing `_configuration.mk` |
 | Adapter deterministic + ASan/UBSan/leaks | 195 assertions / 16 cases, both pass | Task 3 core; callbacks, retries, epochs, teardown |
 | Native default guard | Four CLI cases and 195 adapter assertions pass; protected cold DDR4/LPDDR5 retire 10k | `c6e7997b`; explicit 500 reproduces premature abort |
 | Portable direct native versus driver oracle | Identical attempt/callback streams and all 44 DDR4 / 48 LPDDR5 typed memory leaves | 22 transactions; 1,065 / 705 attempts; 1,043 / 683 rejects; 22 callbacks and seven split parents each |
