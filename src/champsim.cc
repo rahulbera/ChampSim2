@@ -18,6 +18,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
+#include <iostream>
 #include <numeric>
 #include <vector>
 #include <fmt/chrono.h>
@@ -123,6 +125,11 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
 
     if (stalled_cycle >= knobs.deadlock_cycle || livelock_trigger) {
       std::for_each(std::begin(operables), std::end(operables), [](champsim::operable& c) { c.print_deadlock(); });
+      // abort() flushes nothing. With stdout a pipe or a file, as in a batch
+      // job, the buffered tail of these diagnostics -- the memory backend's,
+      // printed last -- would otherwise be lost.
+      std::cout.flush();
+      std::fflush(stdout);
       abort();
     }
 

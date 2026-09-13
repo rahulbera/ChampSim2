@@ -90,7 +90,12 @@ supported. Mixed capacities, periods, or transaction sizes are rejected.
 
 `dram-model` defaults to `legacy`. Do not combine native selection with `pmem.*`
 keys from `sample.toml`/`lnc.toml` or a full legacy `--knobs` dump: inactive keys
-are errors. Native `--knobs` reports only the selected backend's keys. For example:
+are errors. Remove `sim.deadlock_cycle` from such a file too, or start from native
+`--knobs`. A legacy dump or statistics document records 500 and `sample.toml` sets
+1,000, and an explicit value replaces the native 10 µs no-progress default (40,000
+ticks at 250 ps); one observed DDR4 refresh stalled demand for 350,693 ps. A
+native run keeps the explicit value but warns on stderr when it allows less than
+10 µs. Native `--knobs` reports only the selected backend's keys. For example:
 
 ```bash
 bin/champsim --config configs/ramulator2.toml --knobs > native-knobs.toml

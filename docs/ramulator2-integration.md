@@ -53,7 +53,11 @@ Native mode rejects every explicit `pmem.*` setting, with a diagnostic directing
 the user to the YAML. Legacy mode similarly rejects `ramulator2.*` settings.
 This preserves strict unused-key validation and avoids silently ignoring an old
 configuration. A complete legacy TOML cannot simply be overlaid with a native
-selector: remove its `pmem` table first.
+selector: remove its `pmem` table and its `sim.deadlock_cycle` key first, or start
+from native `--knobs`. Every legacy `--knobs` dump and statistics document records
+`sim.deadlock_cycle = 500` (`configs/sample.toml` sets 1,000), and an explicit value
+replaces the native no-progress default described below, so a converted DDR4
+configuration can abort inside its first refresh stall.
 
 The initial supported native shape is `External` + `GenericDRAM` +
 `CacheLineInterleave`. There must be a nonempty power-of-two number of controllers,
@@ -224,7 +228,10 @@ A valid DDR4 refresh exposed a too-short inherited no-progress guard:
 421 × 833 ps = 350,693 ps exceeded 500 × 250 ps = 125,000 ps. The native default
 is now `max(500, ceil(10 microseconds / minimum actual operable period))`:
 40,000 global ticks at 250 ps. Legacy keeps 500, and explicit positive
-`sim.deadlock_cycle` settings remain authoritative. Idle native ticks do not
+`sim.deadlock_cycle` settings remain authoritative. In native mode an explicit
+value whose ticks cover less than 10 µs prints one stderr warning naming the value,
+the stall it allows in picoseconds and this machine's native default, and saying
+that legacy configurations record 500; it is not changed. Idle native ticks do not
 pretend to be progress. The 10 µs allowance is a practical default, not a bound
 derived from every possible native plugin/device pause.
 

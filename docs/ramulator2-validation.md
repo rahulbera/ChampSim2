@@ -135,7 +135,9 @@ refresh stalled demand for 421 × 833 ps = 350,693 ps, exceeding the old 500 × 
 `max(500, ceil(10 microseconds / minimum actual positive operable period))` only
 when native mode omits `sim.deadlock_cycle`. The default is 40,000 at 250 ps and
 60,241 at 166 ps. Explicit positive overrides remain unchanged. Custom devices
-with stalls longer than 10 µs may require an explicit larger threshold.
+with stalls longer than 10 µs may require an explicit larger threshold. Because
+legacy `--knobs` dumps and statistics documents record `sim.deadlock_cycle = 500`,
+a native run with an explicit value below the 10 µs allowance now warns on stderr.
 
 ## Verified evidence
 

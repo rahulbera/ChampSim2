@@ -324,6 +324,8 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 
     built_environment.emplace(runtime_cfg);
     auto deadlock_default = sim_knobs.deadlock_cycle;
+    // Native mode only: the 10 us allowance in simulator ticks, and the tick.
+    std::optional<std::pair<long long, champsim::chrono::picoseconds>> native_allowance{};
     if (built_environment->memory_view().name() == "ramulator2") {
       // Native refresh can block all demand progress longer than the legacy
       // 500-tick guard. Allow 10 us, measured in the actual simulation quantum,
@@ -338,8 +340,24 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
       constexpr champsim::chrono::picoseconds allowance{10'000'000};
       const auto ticks = allowance / quantum + (allowance % quantum != champsim::chrono::picoseconds::zero());
       deadlock_default = std::max(deadlock_default, static_cast<int>(ticks));
+      native_allowance.emplace(ticks, quantum);
     }
     sim_knobs.deadlock_cycle = runtime_cfg.positive_value<int>("sim.deadlock_cycle", deadlock_default);
+
+    // An explicit value stays authoritative, but a short one is almost always
+    // inherited rather than chosen: every legacy --knobs dump and statistics
+    // document records sim.deadlock_cycle = 500, and 500 ticks at 250 ps abort
+    // inside the first DDR4 refresh stall. Stderr, so --knobs stays TOML.
+    const auto applied_settings = runtime_cfg.applied();
+    const bool explicit_deadlock_cycle =
+        std::any_of(std::cbegin(applied_settings), std::cend(applied_settings), [](const auto& setting) { return setting.first == "sim.deadlock_cycle"; });
+    if (native_allowance && explicit_deadlock_cycle && sim_knobs.deadlock_cycle < native_allowance->first) {
+      fmt::print(stderr,
+                 "WARNING: sim.deadlock_cycle = {} allows only {} ps without progress, less than the 10 us ramulator2 allowance ({} ticks, this machine's "
+                 "native default). The explicit value is kept. Legacy --knobs dumps and statistics documents record 500: remove sim.deadlock_cycle from "
+                 "a converted configuration, or raise it.\n",
+                 sim_knobs.deadlock_cycle, (native_allowance->second * sim_knobs.deadlock_cycle).count(), deadlock_default);
+    }
   } catch (const std::runtime_error& err) {
     fmt::print(stderr, "ERROR: {}\n", err.what());
     return 1;

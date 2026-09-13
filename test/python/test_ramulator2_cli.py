@@ -1,13 +1,31 @@
 """Runtime CLI regressions; run against CHAMPSIM_BINARY or the local build."""
 import os
 from pathlib import Path
+import re
+import signal
 import subprocess
+import sys
 import tempfile
 import tomllib
 import unittest
 
+try:
+    import resource
+except ImportError:  # not POSIX
+    resource = None
+
 ROOT = Path(__file__).resolve().parents[2]
 BINARY = Path(os.environ.get('CHAMPSIM_BINARY', ROOT / 'bin' / 'champsim')).resolve()
+
+sys.path.insert(0, str(ROOT / 'test' / 'ramulator2'))
+from generate_trace import generate  # noqa: E402
+
+GUARD_WARNING = 'WARNING: sim.deadlock_cycle'
+
+
+def no_core_dump():
+    if resource is not None:
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
 
 @unittest.skipUnless(BINARY.is_file(), 'build the ChampSim executable first')
@@ -27,6 +45,10 @@ class RamulatorCliTests(unittest.TestCase):
         if '# DRAM backends (dram-model): legacy, ramulator2' not in self.knobs().stdout:
             self.skipTest('native backend is disabled in this binary')
         return ('dram-model=ramulator2', f'ramulator2.config=configs/ramulator2/{fixture}.yaml')
+
+    def cores(self):
+        listing = self.knobs().stdout
+        return len(re.findall(r'^ooo_cpu\.cpu[0-9]+\.frequency\s*=', listing, re.MULTILINE))
 
     def test_legacy_preserves_default_and_explicit_no_progress_threshold(self):
         self.assertEqual(self.effective()['sim']['deadlock_cycle'], 500)
@@ -66,6 +88,75 @@ class RamulatorCliTests(unittest.TestCase):
         self.assertIn("controller impl 'BlockHammer' is not supported with ChampSim's External frontend", result.stderr)
         self.assertIn('supported: GenericDDR, LPDDR5, LPDDR6, GDDR7, HBM12, HBM34, PRAC', result.stderr)
         self.assertEqual(result.stdout, '')
+
+    def test_native_warns_when_an_explicit_guard_is_shorter_than_ten_microseconds(self):
+        settings = self.native_settings()
+        with tempfile.TemporaryDirectory() as tmp:
+            # What a legacy --knobs dump or statistics document carries, converted
+            # as the migration advice used to say: pmem removed, native selected.
+            converted = Path(tmp) / 'converted.toml'
+            converted.write_text('dram-model = "ramulator2"\n\n[sim]\ndeadlock_cycle = 500\n')
+            cases = {
+                '--set 500': ([], ('sim.deadlock_cycle=500',), 500),
+                '--config 500': (['--config', str(converted)], (), 500),
+                '--set 39999': ([], ('sim.deadlock_cycle=39999',), 39999),
+            }
+            for name, (arguments, extra, ticks) in cases.items():
+                with self.subTest(case=name):
+                    command = [str(BINARY), '--knobs', *arguments]
+                    for setting in (*settings, *extra):
+                        command.extend(['--set', setting])
+                    result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, timeout=30)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    # The value stays authoritative and stdout stays a TOML document.
+                    self.assertEqual(tomllib.loads(result.stdout)['sim']['deadlock_cycle'], ticks)
+                    warnings = [line for line in result.stderr.splitlines() if line.startswith(GUARD_WARNING)]
+                    self.assertEqual(len(warnings), 1, result.stderr)
+                    self.assertIn(f'sim.deadlock_cycle = {ticks}', warnings[0])
+                    self.assertIn(f'{ticks * 250} ps', warnings[0])
+                    self.assertIn('40000', warnings[0])
+                    self.assertIn('500', warnings[0])
+                    self.assertIn('remove', warnings[0])
+                    self.assertNotIn(GUARD_WARNING, result.stdout)
+
+    def test_no_guard_warning_when_the_key_is_absent_long_enough_or_legacy(self):
+        cases = {'legacy explicit 500': ('sim.deadlock_cycle=500',)}
+        if '# DRAM backends (dram-model): legacy, ramulator2' in self.knobs().stdout:
+            settings = self.native_settings()
+            cases.update({
+                'native absent': settings,
+                'native explicit 40000': (*settings, 'sim.deadlock_cycle=40000'),
+                'native explicit 90000': (*settings, 'sim.deadlock_cycle=90000'),
+            })
+        for name, settings in cases.items():
+            with self.subTest(case=name):
+                result = self.knobs(*settings)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn(GUARD_WARNING, result.stderr)
+
+    def test_no_progress_abort_delivers_every_diagnostic_through_a_pipe(self):
+        backends = {'legacy': ((), re.compile(r'^(\[WQ\] entry: +[0-9]+ .*|WQ empty)$'))}
+        if '# DRAM backends (dram-model): legacy, ramulator2' in self.knobs().stdout:
+            backends['ramulator2'] = (self.native_settings(), re.compile(r'^  (Last completion [0-9]+ ps ago|No native completion yet)$'))
+        cores = self.cores()
+        with tempfile.TemporaryDirectory() as tmp:
+            trace = Path(tmp) / 'stall.champsim2'
+            generate(trace, 4096)
+            for backend, (settings, final_line) in backends.items():
+                with self.subTest(backend=backend):
+                    command = [str(BINARY), '--trace-version', '2', '-w', '0', '-i', '1000', '--hide-heartbeat']
+                    for setting in (*settings, 'sim.deadlock_cycle=1'):
+                        command.extend(['--set', setting])
+                    command.extend(['--', *([str(trace)] * cores)])
+                    # stdout is a pipe, as in a batch job: fully buffered.
+                    result = subprocess.run(command, cwd=ROOT, capture_output=True, timeout=60, preexec_fn=no_core_dump)
+                    self.assertEqual(result.returncode, -signal.SIGABRT, result.stderr.decode(errors='replace'))
+                    stdout = result.stdout.decode(errors='replace')
+                    self.assertIn('DEADLOCK!', stdout)
+                    # The memory backend is the last operable, so its diagnostic is
+                    # the last thing printed -- and the first thing a lost buffer loses.
+                    lines = [line for line in stdout.splitlines() if line.strip()]
+                    self.assertRegex(lines[-1], final_line)
 
     def test_native_rejects_an_operable_clock_that_rounds_to_zero(self):
         result = self.knobs(*self.native_settings(), 'cache.llc.frequency=2000000')
