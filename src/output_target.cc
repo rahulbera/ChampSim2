@@ -19,6 +19,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <fcntl.h>
+#include <iostream>
 #include <random>
 #include <system_error>
 #include <unistd.h>
@@ -201,10 +202,17 @@ plan_result plan(const std::string& name, const std::vector<std::string>& traces
   if (exists && S_ISDIR(reached.st_mode)) {
     return cannot_open();
   }
+  // The file the shell redirected stdout or stderr to is not replaced, checked
+  // or truncated: renaming over a log would unlink everything the run printed.
+  for (const int stream : {STDOUT_FILENO, STDERR_FILENO}) {
+    if (file_status open_stream{}; exists && ::fstat(stream, &open_stream) == 0 && same_file(open_stream, reached)) {
+      return plan_result{target{name, reachable, write_mode::standard_stream, stream}, {}};
+    }
+  }
   if (exists && !S_ISREG(reached.st_mode)) {
-    // /dev/null, the pipe or terminal behind /dev/stdout, a FIFO, a process
-    // substitution's /dev/fd entry: written in place, unprobed, because
-    // opening a FIFO here would consume the reader waiting for the document.
+    // /dev/null, a FIFO, a process substitution's /dev/fd entry: written in
+    // place, unprobed, because opening a FIFO here would consume the reader
+    // waiting for the document.
     return plan_result{target{name, reachable, write_mode::in_place}, {}};
   }
 
@@ -224,9 +232,14 @@ plan_result plan(const std::string& name, const std::vector<std::string>& traces
       return cannot_open();
     }
     if (!std::empty(*head) && *head != signature) {
-      return refuse(fmt::format("TOML output '{}' is not a ChampSim statistics document; refusing to replace it. If it is a trace, --toml took it as the "
-                                "output filename: use --toml=FILE, or put -- before the trace paths.",
-                                name));
+      // /dev/fd/N, /dev/stdin and the like name an open descriptor, not a
+      // trace path the optional value swallowed. (/dev/shm can hold traces.)
+      const bool descriptor_name =
+          name.rfind("/dev/fd/", 0) == 0 || name.rfind("/proc/", 0) == 0 || name == "/dev/stdin" || name == "/dev/stdout" || name == "/dev/stderr";
+      return refuse(fmt::format("TOML output '{}' is not a ChampSim statistics document; refusing to replace it.{}", name,
+                                descriptor_name ? ""
+                                                : " If it is a trace, --toml took it as the output filename: use --toml=FILE, or put -- before the "
+                                                  "trace paths."));
     }
   }
 
@@ -273,6 +286,19 @@ write_result write(const target& destination, std::string_view document, const o
     result.messages.push_back(fmt::format("ERROR: failed to write the TOML statistics to '{}'.", destination.name));
     return result;
   };
+
+  if (destination.mode == write_mode::standard_stream) {
+    // After the plain report, which is still buffered in stdout.
+    std::cout.flush();
+    std::fflush(stdout);
+    std::FILE* const stream = destination.stream == STDERR_FILENO ? stderr : stdout;
+    const bool complete = std::fwrite(std::data(document), 1, std::size(document), stream) == std::size(document);
+    if (std::fflush(stream) != 0 || !complete) {
+      return failed();
+    }
+    result.written = true;
+    return result;
+  }
 
   if (destination.mode == write_mode::in_place) {
     if (ops.write_in_place(destination.path, document) != 0) {

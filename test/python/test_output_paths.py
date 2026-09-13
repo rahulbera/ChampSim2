@@ -88,6 +88,20 @@ class OutputPathTests(unittest.TestCase):
             self.assertEqual(config.read_bytes(), before)
             self.assertIn("not a ChampSim statistics document", result.stderr)
 
+    @unittest.skipUnless(os.path.exists("/dev/fd"), "needs /dev/fd")
+    def test_refusal_through_a_descriptor_name_does_not_blame_a_trace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.trace(tmp)
+            notes = Path(tmp) / "notes.txt"
+            notes.write_text("precious\n")
+            with notes.open("rb") as held:
+                descriptor = held.fileno()
+                result = self.simulate(tmp, f"/dev/fd/{descriptor}", pass_fds=(descriptor,))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("not a ChampSim statistics document", result.stderr)
+            self.assertNotIn("trace", result.stderr.split("ERROR:", 1)[1])
+            self.assertEqual(notes.read_text(), "precious\n")
+
     def test_output_cannot_alias_a_trace_by_name_symlink_or_hardlink(self):
         for alias in ("name", "relative", "symlink", "hardlink"):
             with self.subTest(alias=alias), tempfile.TemporaryDirectory() as tmp:
@@ -307,19 +321,63 @@ class OutputPathTests(unittest.TestCase):
             self.assertIn("cannot open", result.stderr)
             self.assertEqual(document.read_bytes(), before)
 
+    def assert_report_then_document(self, text, previous=""):
+        """The plain report, then one parseable statistics document to the end."""
+        self.assertTrue(text.startswith(previous), text[:200])
+        completed = text.find("ChampSim completed all CPUs")
+        signature = text.find("# ChampSim statistics.")
+        self.assertGreaterEqual(completed, 0, text[-400:])
+        self.assertGreater(signature, completed)
+        self.assertEqual(tomllib.loads(text[signature:])["meta"]["simulation_instructions"], 1000)
+
+    def test_standard_stream_targets_receive_the_document_after_the_report(self):
+        # Replacing the file a shell redirected stdout to would unlink the log
+        # the report was written to, and a non-empty log is not a statistics
+        # document: the stream itself is the target.
+        cases = {
+            "/dev/stdout": ("/dev/stdout", "stdout"),
+            "/proc/self/fd/1": ("/proc/self/fd/1", "stdout"),
+            "the log's own name": ("run.log", "stdout"),
+            "/dev/stderr": ("/dev/stderr", "stderr"),
+        }
+        for case, (output, stream) in cases.items():
+            if output.startswith("/") and not os.path.exists(output):
+                continue
+            for previous in ("", "previous line 1\nprevious line 2\n"):
+                with self.subTest(case=case, previous=bool(previous)), tempfile.TemporaryDirectory() as tmp:
+                    trace = self.trace(tmp)
+                    log = Path(tmp) / "run.log"
+                    log.write_text(previous)
+                    inode = log.stat().st_ino
+                    arguments = ["--trace-version", "2", "-w", "0", "-i", "1000", "--hide-heartbeat", "--toml", output, "--", *([str(trace)] * self.cores)]
+                    with log.open("ab") as appended:
+                        redirect = {"stdout": appended, "stderr": subprocess.PIPE} if stream == "stdout" else {"stdout": subprocess.PIPE, "stderr": appended}
+                        result = subprocess.run([str(BINARY), *arguments], cwd=tmp, timeout=120, **redirect)
+                    text = log.read_text()
+                    self.assertEqual(result.returncode, 0, (result.stderr or result.stdout or b"").decode(errors="replace") + text[-400:])
+                    if stream == "stdout":
+                        self.assert_report_then_document(text, previous)
+                    else:
+                        self.assertTrue(text.startswith(previous))
+                        self.assertIn("ChampSim completed all CPUs", result.stdout.decode())
+                        signature = text.find("# ChampSim statistics.")
+                        self.assertEqual(tomllib.loads(text[signature:])["meta"]["simulation_instructions"], 1000)
+                    self.assertEqual(log.stat().st_ino, inode)
+                    self.assertEqual(sorted(path.name for path in Path(tmp).iterdir()), ["run.log", "trace.champsim2"])
+
+        with self.subTest(case="/dev/stdout through a pipe"), tempfile.TemporaryDirectory() as tmp:
+            self.trace(tmp)
+            result = self.simulate(tmp, "/dev/stdout")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assert_report_then_document(result.stdout)
+
     def test_special_files_are_written_in_place(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.trace(tmp)
-            for device in ("/dev/null", "/dev/stdout"):
-                if not os.path.exists(device):
-                    continue
-                with self.subTest(output=device):
-                    result = self.simulate(tmp, device)
+            if os.path.exists("/dev/null"):
+                with self.subTest(output="/dev/null"):
+                    result = self.simulate(tmp, "/dev/null")
                     self.assertEqual(result.returncode, 0, result.stderr)
-                    if device == "/dev/stdout":
-                        # The document's own stream is not the report's buffer, so
-                        # it need not follow the report; it only has to arrive.
-                        self.assertIn("# ChampSim statistics.", result.stdout)
 
             if not hasattr(os, "mkfifo"):
                 return

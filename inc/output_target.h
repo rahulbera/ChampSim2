@@ -37,6 +37,11 @@ enum class write_mode {
   // anything but a regular file, a hard-linked file (a rename would split its
   // links), or a file whose directory refuses a new sibling.
   in_place,
+  // The target is the file behind standard output or standard error -- a
+  // log the shell redirected to, the pipe or terminal behind /dev/stdout --
+  // so the document is written to that stream after everything already
+  // printed, as an unnamed --toml writes it to stdout.
+  standard_stream,
 };
 
 struct target {
@@ -46,6 +51,8 @@ struct target {
   // followed, so a replacement lands where the link points.
   std::filesystem::path path;
   write_mode mode{write_mode::replace_by_rename};
+  // STDOUT_FILENO or STDERR_FILENO for write_mode::standard_stream.
+  int stream{-1};
 };
 
 struct plan_result {
