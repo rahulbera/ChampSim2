@@ -120,7 +120,17 @@ public:
   template <typename T>
   void override_effective(std::string_view key, T effective) const
   {
-    note_consulted(key, value_type{static_cast<int64_t>(effective)});
+    if constexpr (std::is_convertible_v<T, std::string_view>) {
+      note_consulted(key, value_type{std::string{effective}});
+    } else if constexpr (std::is_same_v<T, bool>) {
+      note_consulted(key, value_type{effective});
+    } else if constexpr (std::is_floating_point_v<T>) {
+      note_consulted(key, value_type{static_cast<double>(effective)});
+    } else if constexpr (std::is_unsigned_v<T>) {
+      note_consulted_raw(key, std::to_string(effective));
+    } else {
+      note_consulted(key, value_type{static_cast<int64_t>(effective)});
+    }
   }
 
 private:

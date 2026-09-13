@@ -8,6 +8,41 @@ BIN_ROOT:=bin
 OBJ_ROOT:=.csconfig
 DEP_ROOT:=$(OBJ_ROOT)
 
+WITH_RAMULATOR2 ?= 0
+RAMULATOR2_ROOT ?=
+# Quote arbitrary user flags as one shell argument, including embedded apostrophes.
+shellquote = '$(subst ','"'"',$1)'
+# GNU Make stores bundled short flags first; ignore long options and assignments.
+make_short_flags := $(if $(findstring =,$(firstword $(MAKEFLAGS))),,$(filter-out --%,$(firstword $(MAKEFLAGS))))
+make_no_execute := $(strip $(foreach flag,n q t,$(findstring $(flag),$(make_short_flags))))
+native_helper = python3 $(ROOT_DIR)/config/ramulator2_build.py --mode=$(call shellquote,$(WITH_RAMULATOR2)) --root=$(call shellquote,$(RAMULATOR2_ROOT)) --obj=$(call shellquote,$(OBJ_ROOT)) --cxx=$(call shellquote,$(CXX)) --flags=$(call shellquote,$(user_build_flags))
+user_build_flags := $(CPPFLAGS) $(CXXFLAGS) $(LDFLAGS)
+ifeq (,$(make_no_execute))
+ifneq (,$(filter-out clean compile_commands_clean configclean pytest maketest,$(MAKECMDGOALS))$(if $(MAKECMDGOALS),,all))
+native_prepare := $(shell $(native_helper) >&2; echo $$?)
+ifneq ($(native_prepare),0)
+$(error Native/compiler build preparation failed; see diagnostic and $(OBJ_ROOT)/ramulator2-native/build.log)
+endif
+endif
+endif
+# These recipes also make a fresh dry-run printable without creating any files.
+$(OBJ_ROOT)/compiler.stamp $(OBJ_ROOT)/ramulator2_build.h:
+	$(native_helper)
+
+ifeq ($(WITH_RAMULATOR2),1)
+native_library := $(abspath $(RAMULATOR2_ROOT))/libramulator.so
+$(native_library):
+	$(native_helper)
+native_private_options := -isystem $(call shellquote,$(abspath $(RAMULATOR2_ROOT))/src) -std=c++20
+override LDFLAGS += -Wl,-rpath,$(call shellquote,$(abspath $(RAMULATOR2_ROOT)))
+override LDLIBS += -ldl
+endif
+$(OBJ_ROOT)/ramulator2_driver.o $(DEP_ROOT)/ramulator2_driver.d: private native_options = $(native_private_options)
+$(OBJ_ROOT)/ramulator2_driver.o $(DEP_ROOT)/ramulator2_driver.d: $(OBJ_ROOT)/ramulator2_build.h
+.PHONY: ramulator2
+ramulator2:
+	@test "$(WITH_RAMULATOR2)" = 1 || { echo 'Use WITH_RAMULATOR2=1 RAMULATOR2_ROOT=/path/to/ramulator2'; exit 1; }
+
 override MODULE_ROOT += $(ROOT_DIR)
 override BRANCH_ROOT += $(addsuffix /branch,$(MODULE_ROOT))
 override BTB_ROOT += $(addsuffix /btb,$(MODULE_ROOT))
@@ -117,7 +152,7 @@ attach_options = $(call reverse, $(addprefix @,$(filter %.options, $^)))
 
 # All .o files should be made like .cc files
 define obj_recipe
-	$(CXX) $(attach_options) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $(filter %.cc, $^)
+	$(CXX) $(attach_options) $(CPPFLAGS) $(CXXFLAGS) $(native_options) -c -o $@ $(filter %.cc, $^)
 endef
 
 # All .d files should be preprocessed only.
@@ -127,7 +162,7 @@ endef
 # instead of aborting make with "No rule to make target".
 DEPFLAGS = -MM -MP -MT $@ -MT $(@:.d=.o)
 define dep_recipe
-	$(CXX) $(attach_options) $(DEPFLAGS) $(CPPFLAGS) -MF $@ $(filter %.cc, $^)
+	$(CXX) $(attach_options) $(DEPFLAGS) $(CPPFLAGS) $(native_options) -MF $@ $(filter %.cc, $^)
 endef
 
 ### Module support
@@ -153,7 +188,7 @@ nonbase_module_objs =
 base_source_dir = src
 base_include_dir = inc
 test_source_dir = test/cpp/src
-base_options = absolute.options global.options
+base_options = absolute.options global.options $(OBJ_ROOT)/compiler.stamp
 
 ifeq (,$(OBJ_ROOT))
 	$(error The value of OBJ_ROOT cannot be empty)
@@ -162,7 +197,7 @@ endif
 # Generated configuration makefile contains:
 #  - $(executable_name), the list of all executables in the configuration
 #  - All dependencies and flags assigned according to the modules
-ifeq (,$(filter clean compile_commands_clean configclean pytest maketest, $(MAKECMDGOALS)))
+ifeq (,$(filter clean compile_commands_clean configclean pytest maketest ramulator2, $(MAKECMDGOALS)))
 include _configuration.mk
 else
 # The clean targets need $(executable_name) from the fragment, but must still
@@ -249,9 +284,11 @@ $(test_main_name): override LDLIBS += -lCatch2Main -lCatch2
 $(test_main_name): $(call get_base_objs,TEST) $(test_base_objs) $(base_module_objs) $(nonbase_module_objs) | $$(dir $$@)
 $(executable_name): $(call get_base_objs,$(sim_key)) $(base_module_objs) $(nonbase_module_objs) | $$(dir $$@)
 
+$(executable_name) $(test_main_name): $(OBJ_ROOT)/ramulator2_build.h $(native_library)
+
 # Link main executables
 $(executable_name) $(test_main_name):
-	$(CXX) $(LDFLAGS) -o $@ $^ $(LOADLIBES) $(LDLIBS)
+	$(CXX) $(LDFLAGS) -o $@ $(filter %.o,$^) $(native_library) $(LOADLIBES) $(LDLIBS)
 
 # compile_commands: Create compile_commands.json file
 #
@@ -286,8 +323,11 @@ test: $(test_main_name)
 pytest:
 	PYTHONPATH=$(PYTHONPATH):$(ROOT_DIR) python3 -m unittest discover -v --start-directory='test/python'
 
-ifeq (,$(filter clean compile_commands compile_commands_clean configclean pytest maketest, $(MAKECMDGOALS)))
+ifeq (,$(make_no_execute))
+ifeq (,$(filter clean compile_commands compile_commands_clean configclean pytest maketest ramulator2, $(MAKECMDGOALS)))
 -include $(patsubst $(OBJ_ROOT)/%.o,$(DEP_ROOT)/%.d,$(foreach key,TEST $(sim_key),$(call get_base_objs,$(key))) $(test_base_objs) $(base_module_objs))
+endif
+
 endif
 
 ifeq (maketest,$(findstring maketest,$(MAKECMDGOALS)))
