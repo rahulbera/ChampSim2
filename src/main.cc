@@ -16,11 +16,14 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <numeric>
 #include <optional>
+#include <random>
 #include <string>
 #include <vector>
 #include <CLI/CLI.hpp>
@@ -61,6 +64,57 @@ const unsigned LOG2_BLOCK_SIZE = champsim::lg2(BLOCK_SIZE);
 const unsigned LOG2_PAGE_SIZE = champsim::lg2(PAGE_SIZE);
 
 #ifndef CHAMPSIM_TEST_BUILD
+namespace
+{
+// The file a named --toml document replaces, with every symbolic link
+// followed -- a dangling one included -- so that the rename lands where the
+// link points and leaves the link itself alone. Empty on any error.
+std::optional<std::filesystem::path> resolve_output_target(const std::filesystem::path& name)
+{
+  namespace fs = std::filesystem;
+  constexpr int max_links = 40; // Linux's own limit
+  std::error_code error;
+  fs::path path = name;
+  for (int hop = 0; hop < max_links; ++hop) {
+    const auto followed = fs::status(path, error);
+    if (followed.type() == fs::file_type::none) {
+      return std::nullopt;
+    }
+    if (fs::exists(followed) || !fs::is_symlink(fs::symlink_status(path, error))) {
+      const auto resolved = fs::weakly_canonical(path, error);
+      return error ? std::nullopt : std::optional{resolved};
+    }
+    const auto link = fs::read_symlink(path, error);
+    if (error) {
+      return std::nullopt;
+    }
+    path = link.is_absolute() ? link : fs::absolute(path, error).parent_path() / link;
+  }
+  return std::nullopt;
+}
+
+// A new, empty, uniquely named file beside `target`, created exclusively so it
+// can never be someone else's file. Created with the usual permissions of a
+// new file. Empty if the directory will not take it.
+std::optional<std::filesystem::path> create_sibling(const std::filesystem::path& target)
+{
+  constexpr int max_attempts = 100;
+  std::random_device entropy;
+  for (int attempt = 0; attempt < max_attempts; ++attempt) {
+    const auto candidate = target.parent_path() / fmt::format(".{}.{:08x}{:08x}.tmp", target.filename().string(), entropy(), entropy());
+    errno = 0;
+    if (std::FILE* created = std::fopen(candidate.string().c_str(), "wx"); created != nullptr) {
+      std::fclose(created);
+      return candidate;
+    }
+    if (errno != EEXIST) {
+      return std::nullopt;
+    }
+  }
+  return std::nullopt;
+}
+} // namespace
+
 int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 {
   // The runtime configuration store. --config and --set apply to it in argv
@@ -156,16 +210,26 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     return 1;
   }
 
-  // An optional --toml argument can consume the next trace pathname. Check
-  // positional arguments before opening any output, so that mistake is harmless.
+  // An optional --toml argument can consume the next trace pathname. When that
+  // leaves too few traces, this check catches it; when one path too many was
+  // given, the count still matches, and only the output checks below stand
+  // between the consumed trace and its replacement by statistics.
   if (!list_knobs && std::size(trace_names) != NUM_CPUS) {
     fmt::print(stderr, "ERROR: expected {} trace(s), got {}. Use -- before trace paths when omitting the --toml filename.\n", NUM_CPUS, std::size(trace_names));
     return 1;
   }
 
-  // Same reasoning as the guard above: a statistics path that cannot be written
-  // should cost nothing, but finding that out after the run costs the run. The
-  // probe truncates the file, which the run would do anyway.
+  // Everything about a named --toml output is checked here, before a trace is
+  // opened, and nothing here writes to it: a statistics path that cannot be
+  // written should cost nothing, and a startup error must not cost an earlier
+  // document. A regular file (or a path with nothing there yet) is replaced
+  // only at the end of a successful run, by renaming a finished document over
+  // it; `toml_target` is that file, with its links followed. An existing
+  // target that is not a regular file -- /dev/null, the pipe or terminal
+  // behind /dev/stdout, a FIFO, a process substitution's /dev/fd entry -- is
+  // written in place, unprobed: opening a FIFO here would consume the reader
+  // waiting for the document. A directory is refused.
+  std::optional<std::filesystem::path> toml_target{};
   if (!list_knobs && toml_option->count() > 0 && !std::empty(toml_file_name)) {
     std::error_code output_error;
     const auto output_path = std::filesystem::weakly_canonical(toml_file_name, output_error);
@@ -178,9 +242,56 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
         return 1;
       }
     }
-    if (const std::ofstream probe{toml_file_name}; !probe) {
+
+    const auto cannot_open = [&toml_file_name] {
       fmt::print(stderr, "ERROR: cannot open '{}' to receive the TOML statistics.\n", toml_file_name);
       return 1;
+    };
+    std::error_code status_error;
+    const auto output_status = std::filesystem::status(toml_file_name, status_error);
+    if (output_status.type() == std::filesystem::file_type::none || std::filesystem::is_directory(output_status)) {
+      return cannot_open();
+    }
+    if (!std::filesystem::exists(output_status) || std::filesystem::is_regular_file(output_status)) {
+      toml_target = resolve_output_target(toml_file_name);
+      if (!toml_target) {
+        return cannot_open();
+      }
+
+      if (std::filesystem::is_regular_file(output_status)) {
+        // A trace the optional value consumed, a --config source, the native
+        // YAML: none of them begins like a statistics document, and replacing
+        // any of them would be unrecoverable.
+        std::ifstream existing{*toml_target, std::ios::binary};
+        if (!existing) {
+          return cannot_open();
+        }
+        const auto& signature = champsim::toml_printer::document_signature;
+        std::string head(std::size(signature), '\0');
+        existing.read(std::data(head), static_cast<std::streamsize>(std::size(head)));
+        head.resize(static_cast<std::size_t>(existing.gcount()));
+        if (!std::empty(head) && head != signature) {
+          fmt::print(stderr,
+                     "ERROR: TOML output '{}' is not a ChampSim statistics document; refusing to replace it. If it is a trace, --toml took it as the "
+                     "output filename: use --toml=FILE, or put -- before the trace paths.\n",
+                     toml_file_name);
+          return 1;
+        }
+        // Renaming would replace a read-only document; opening it for writing
+        // (without truncation) is what refuses, as writing in place used to.
+        if (const std::fstream writable{*toml_target, std::ios::in | std::ios::out | std::ios::binary}; !writable) {
+          return cannot_open();
+        }
+      }
+
+      // The replacement is created beside the target, so that directory must
+      // accept a new file.
+      const auto probe = create_sibling(*toml_target);
+      if (!probe) {
+        return cannot_open();
+      }
+      std::error_code remove_error;
+      std::filesystem::remove(*probe, remove_error);
     }
   }
 
@@ -388,13 +499,38 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     if (toml_file_name.empty()) {
       champsim::toml_printer{std::cout, toml_sim_stats, run}.print(phase_stats);
     } else {
-      std::ofstream toml_file{toml_file_name};
-      champsim::toml_printer{toml_file, toml_sim_stats, run}.print(phase_stats);
-      toml_file.flush();
+      // A regular target receives a finished document by rename, so a write
+      // that fails here -- or a run killed while writing -- leaves whatever
+      // the target held before exactly as it was. Other targets (/dev/stdout,
+      // a FIFO) are written in place.
+      const auto temporary = toml_target ? create_sibling(*toml_target) : std::optional<std::filesystem::path>{};
+      bool written = !toml_target || temporary.has_value();
+      if (written) {
+        std::ofstream toml_file{toml_target ? *temporary : std::filesystem::path{toml_file_name}};
+        champsim::toml_printer{toml_file, toml_sim_stats, run}.print(phase_stats);
+        toml_file.flush();
+        written = static_cast<bool>(toml_file);
+        toml_file.close();
+        written = written && !toml_file.fail();
+      }
+
+      std::error_code replace_error;
+      if (written && toml_target) {
+        // rename substitutes a new file: carry over an existing document's
+        // permissions rather than the defaults it was created with.
+        if (const auto previous = std::filesystem::status(*toml_target, replace_error); std::filesystem::is_regular_file(previous)) {
+          std::filesystem::permissions(*temporary, previous.permissions(), replace_error);
+        }
+        std::filesystem::rename(*temporary, *toml_target, replace_error);
+        written = !replace_error;
+      }
 
       // A full disk here would otherwise discard the run's only
       // machine-readable output and still report success.
-      if (!toml_file) {
+      if (!written) {
+        if (temporary) {
+          std::filesystem::remove(*temporary, replace_error);
+        }
         fmt::print(stderr, "ERROR: failed to write the TOML statistics to '{}'.\n", toml_file_name);
         return 1;
       }

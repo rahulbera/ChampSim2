@@ -53,8 +53,9 @@ Do not build or run concurrently against a native root that another build may
 replace: Ramulator emits `libramulator.so` into its source directory even when
 CMake's build directory is elsewhere. Independent roots are required for such
 parallel work. Named `--toml FILE -- TRACE...` commands keep output and input
-arguments unambiguous. Existing direct/canonical/symlink/hardlink trace aliases
-are rejected before destructive output opens.
+arguments unambiguous. Direct/canonical/symlink/hardlink trace aliases of the
+output, and an existing non-empty regular file that is not a statistics document,
+are rejected at startup; nothing is written to the output until the run succeeds.
 
 ## Native boundary and reproducibility
 
@@ -260,11 +261,24 @@ checks reverified both canonical and protected scratch hashes. Evidence:
 `task4-recovery.json`, `task4-recovery-zstd.log`, and the native protected-trace
 manifest. The recovery was exact, not a replacement trace of similar provenance.
 
-The remedial CLI commit (`1d741c50` in main, isolated `ee18d4cc`) validates trace
-count before output opening, skips output probes for `--knobs`, and rejects
-filesystem aliases of traces. All resumed validation uses named outputs, `--`,
-protected scratch copies and checksum guards. This prevents ordinary accidental
-aliasing; it does not claim protection from concurrent malicious path renames.
+The remedial CLI commit (`1d741c50` in main, isolated `ee18d4cc`) validated trace
+count before output opening, skipped output probes for `--knobs`, and rejected
+filesystem aliases of traces. All resumed validation used named outputs, `--`,
+protected scratch copies and checksum guards. That commit did not close every
+ordinary accident. With one trace path more than the binary has cores, the
+optional `--toml` value still consumed the first trace, the count check passed, and
+the startup probe truncated the trace before the run overwrote it with statistics
+and exited 0. The probe also truncated a `--config` source or an earlier results
+document before a startup error such as a replay `config_hash` mismatch.
+
+The CLI no longer writes to a named output at startup. It refuses an existing
+non-empty regular file that does not begin with `# ChampSim statistics.`, probes
+writability by creating and removing a temporary sibling file, and replaces a
+regular file only by renaming a finished document over it after a successful run.
+Existing targets that are not regular files, such as `/dev/null`, FIFOs and the
+pipes behind `/dev/stdout` or process substitution, are still written in place. An
+existing statistics document named by mistake is still replaced, and none of this
+protects against concurrent path renames.
 
 ## Archived implementation rulings
 

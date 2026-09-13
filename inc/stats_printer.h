@@ -94,6 +94,11 @@ public:
     std::optional<ramulator2_config_record> ramulator2{};
   };
 
+  // The bytes every statistics document begins with. main() replaces an
+  // existing --toml file only when it begins with them (or is empty), which
+  // is what stops a trace or configuration named by mistake from being lost.
+  static constexpr std::string_view document_signature{"# ChampSim statistics."};
+
   // `run_info` cannot appear in a default argument of this class: its default
   // member initializers are not required until the end of the enclosing class,
   // which is after a default argument would need them. Hence overloads.

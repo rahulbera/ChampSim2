@@ -109,7 +109,12 @@ Original supplied path spelling remains in `config_override`. Run lengths and
 trace format are command-line inputs, so repeat them when replaying.
 
 Use a named output followed by `--` before input paths. Output paths equivalent
-to an input trace (including symlinks and hardlinks) are rejected before opening.
+to an input trace (including symlinks and hardlinks) are rejected at startup, and
+so is an existing non-empty file that does not begin like a ChampSim statistics
+document: a trace an optional `--toml` value consumed, a `--config` source or the
+native YAML. A regular output file is replaced only once the run succeeds, so a
+failed in-place replay (for example `--config run.toml --toml run.toml` after a
+`config_hash` mismatch) leaves `run.toml` unchanged.
 An omitted `--toml` filename appends the TOML document after ordinary stdout;
 use a named file when a standalone parseable document is needed. See the
 [validation record](../docs/ramulator2-validation.md) for native statistics and

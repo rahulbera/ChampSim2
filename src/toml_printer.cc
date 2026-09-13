@@ -472,7 +472,7 @@ std::vector<std::string> champsim::toml_printer::format_config(const std::vector
 
 std::vector<std::string> champsim::toml_printer::format(std::vector<phase_stats>& stats, bool include_sim, const run_info& info)
 {
-  std::vector<std::string> lines{"# ChampSim statistics. Ratios are rounded to two decimals; the exact",
+  std::vector<std::string> lines{fmt::format("{} Ratios are rounded to two decimals; the exact", document_signature),
                                  "# operands of every ratio are emitted alongside it. An undefined ratio", "# is `nan` rather than a missing key."};
   const bool native = info.ramulator2.has_value() || std::any_of(stats.begin(), stats.end(), [](const auto& phase) {
                         return phase.roi_ramulator2.has_value() || phase.sim_ramulator2.has_value();

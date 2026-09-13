@@ -357,9 +357,16 @@ handling: `--toml=` consumed the SQLite input pathname as an output and truncate
 it before input-count validation. The original 327,181,771-byte file was recovered,
 verified against its exact catalog SHA-256 and compressed-stream integrity, and
 restored. Subsequent empty-input crashes were excluded from native evidence.
-The CLI now checks input count and ordinary filesystem output/input aliases before
-opening output. Tests use named `--toml FILE -- TRACE` arguments, scratch inputs
-and checksum checks. See the [recovery record](ramulator2-validation.md#validation-input-incident-and-recovery)
+The CLI then checked input count and filesystem output/trace aliases before
+opening output. A later review found two cases that check missed: one trace path
+more than the binary had cores still let `--toml` consume and overwrite a trace,
+and the startup probe truncated a `--config` source, the native YAML or a results
+document before a configuration error. A named output is now never written at
+startup. An existing non-empty regular file that does not begin like a statistics
+document is refused, writability is probed with a temporary sibling file, and a
+regular target is replaced by rename only after a successful run. Tests use named
+`--toml FILE -- TRACE` arguments, scratch inputs and checksum checks. See the
+[recovery record](ramulator2-validation.md#validation-input-incident-and-recovery)
 for the hash and original evidence.
 
 ## 4. Weak points and the stress tests they need
