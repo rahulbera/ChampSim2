@@ -9,6 +9,7 @@
 
 #include "dram_controller.h"
 #include "memory_backend.h"
+#include "ramulator2_driver.h"
 #include "runtime_config.h"
 #include "static_environment.h"
 #include "stats_printer.h"
@@ -32,10 +33,25 @@ TEST_CASE("An invalid memory selector names the supported backends")
 
 TEST_CASE("An unavailable Ramulator backend fails instead of falling back to legacy")
 {
+  if (champsim::ramulator2_available()) {
+    SKIP("native backend is available in this build");
+  }
   champsim::runtime_config cfg;
   cfg.set("dram-model=ramulator2");
-  REQUIRE_THROWS_WITH(champsim::make_memory_backend(cfg, {}),
-                      Catch::Matchers::ContainsSubstring("ramulator2") && Catch::Matchers::ContainsSubstring("not available"));
+  REQUIRE_THROWS_WITH(champsim::make_memory_backend(cfg, {}), Catch::Matchers::ContainsSubstring("ramulator2")
+                                                                  && Catch::Matchers::ContainsSubstring("not available")
+                                                                  && Catch::Matchers::ContainsSubstring("WITH_RAMULATOR2=1"));
+}
+
+TEST_CASE("Inactive legacy memory settings point to native YAML before driver construction")
+{
+  champsim::runtime_config cfg;
+  cfg.set("dram-model=ramulator2");
+  cfg.set("ramulator2.config=does-not-exist.yaml");
+  cfg.set("pmem.frequency=3200");
+  REQUIRE_THROWS_WITH(champsim::make_memory_backend(cfg, {}), Catch::Matchers::ContainsSubstring("pmem.frequency")
+                                                                  && Catch::Matchers::ContainsSubstring("ramulator2.config")
+                                                                  && Catch::Matchers::ContainsSubstring("YAML"));
 }
 
 TEST_CASE("Legacy rejects settings for the inactive Ramulator backend")

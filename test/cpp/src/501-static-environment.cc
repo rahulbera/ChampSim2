@@ -7,6 +7,7 @@
 #include <fmt/ranges.h>
 
 #include "dram_controller.h"
+#include "ramulator2_driver.h"
 #include "runtime_config.h"
 #include "static_environment.h"
 
@@ -58,6 +59,75 @@ TEST_CASE("The time quantum uses the selected memory clock without consulting le
   REQUIRE(champsim::static_environment::time_quantum(cfg, champsim::chrono::picoseconds{173}) == champsim::chrono::picoseconds{173});
   REQUIRE(champsim::static_environment::time_quantum(cfg, champsim::chrono::picoseconds{1000}) == champsim::chrono::picoseconds{250});
   REQUIRE(cfg.unconsulted_keys().size() == 1);
+}
+
+TEST_CASE("The native environment serves its shared LLC feeder with no legacy configuration", "[native-required]")
+{
+  if (!champsim::ramulator2_available()) {
+    SKIP("native build disabled");
+  }
+  struct native_configuration {
+    const char* name;
+    int64_t period_ps, capacity_bytes;
+  };
+  for (const auto fixture : {native_configuration{"ddr4", 833, 8589934592LL}, native_configuration{"lpddr5", 1453, 1073741824}}) {
+    CAPTURE(fixture.name);
+    champsim::runtime_config cfg;
+    cfg.set("dram-model=ramulator2");
+    cfg.set(std::string{"ramulator2.config=configs/ramulator2/"} + fixture.name + ".yaml");
+    champsim::static_environment env{cfg};
+    auto& backend = env.memory_view();
+    auto& memory = backend.clocked_component();
+    const auto operables = env.operable_view();
+    REQUIRE(backend.name() == "ramulator2");
+    REQUIRE(&operables.back().get() == &memory);
+    REQUIRE(operables.size() == env.cpu_view().size() + env.cache_view().size() + env.ptw_view().size() + 1);
+    REQUIRE(env.channels_built() == champsim::static_environment::channel_count(champsim::defs::num_cpus));
+    REQUIRE(backend.config_record().has_value());
+    REQUIRE(backend.size().count() == fixture.capacity_bytes);
+    REQUIRE(memory.clock_period.count() == fixture.period_ps);
+    REQUIRE(cfg.unconsulted_keys().empty());
+    for (const auto& [key, value] : cfg.consulted()) {
+      REQUIRE(key.compare(0, 5, "pmem.") != 0);
+    }
+    const auto fastest = std::min_element(operables.begin(), operables.end(), [](const champsim::operable& left, const champsim::operable& right) {
+      return left.clock_period < right.clock_period;
+    });
+    REQUIRE(champsim::static_environment::time_quantum(cfg, memory.clock_period) == fastest->get().clock_period);
+    auto caches = env.cache_view();
+    auto llc = std::find_if(caches.begin(), caches.end(), [](const CACHE& cache) { return cache.NAME == "LLC"; });
+    REQUIRE(llc != caches.end());
+    auto* feeder = llc->get().lower_level;
+    memory.warmup = false;
+    memory.begin_phase();
+    for (std::size_t cpu = 0; cpu < champsim::defs::num_cpus; ++cpu) {
+      champsim::channel::request_type request;
+      request.address = champsim::address{0x100000 + cpu * 4096};
+      request.v_address = champsim::address{0x200000 + cpu * 4096};
+      request.pf_metadata = static_cast<uint32_t>(cpu + 1);
+      request.cpu = static_cast<uint32_t>(cpu);
+      REQUIRE(feeder->add_rq(request));
+    }
+    for (int cycle = 0; cycle < 10000 && feeder->returned.size() < champsim::defs::num_cpus; ++cycle) {
+      memory._operate();
+    }
+    REQUIRE(feeder->RQ.empty());
+    REQUIRE(feeder->returned.size() == champsim::defs::num_cpus);
+    for (const auto& response : feeder->returned) {
+      const auto cpu = response.pf_metadata - 1;
+      REQUIRE(response.address == champsim::address{0x100000 + cpu * 4096});
+      REQUIRE(response.v_address == champsim::address{0x200000 + cpu * 4096});
+    }
+    memory.end_phase(0);
+    const auto stats = backend.statistics();
+    REQUIRE(stats.sim_dram.empty());
+    REQUIRE(stats.roi_dram.empty());
+    REQUIRE(stats.sim_ramulator2.has_value());
+    REQUIRE(stats.roi_ramulator2.has_value());
+    REQUIRE(stats.sim_ramulator2->completed_reads == champsim::defs::num_cpus);
+    REQUIRE(stats.roi_ramulator2->completed_reads == champsim::defs::num_cpus);
+    backend.finalize();
+  }
 }
 
 TEST_CASE("Cache order is the per-cycle operate order, LLC first then per-core alphabetical")

@@ -63,7 +63,15 @@ public:
   {
     return {{{{"memory_system", "native.with.dots", "ticks"}, state->ticks}}, "native_ticks: " + std::to_string(state->ticks)};
   }
-  champsim::ramulator2_config_record config_record() const override { return {"fixture.yaml", "1234", "fixture-revision", "frontend: External\n"}; }
+  champsim::ramulator2_config_record config_record() const override
+  {
+    champsim::ramulator2_config_record result;
+    result.path = "fixture.yaml";
+    result.hash = "1234";
+    result.revision = "fixture-revision";
+    result.yaml = "frontend: External\n";
+    return result;
+  }
   void finalize() override { ++state->finalizations; }
 };
 } // namespace ramulator2_test
