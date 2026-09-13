@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <array>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <numeric>
@@ -155,10 +156,28 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     return 1;
   }
 
+  // An optional --toml argument can consume the next trace pathname. Check
+  // positional arguments before opening any output, so that mistake is harmless.
+  if (!list_knobs && std::size(trace_names) != NUM_CPUS) {
+    fmt::print(stderr, "ERROR: expected {} trace(s), got {}. Use -- before trace paths when omitting the --toml filename.\n", NUM_CPUS, std::size(trace_names));
+    return 1;
+  }
+
   // Same reasoning as the guard above: a statistics path that cannot be written
   // should cost nothing, but finding that out after the run costs the run. The
   // probe truncates the file, which the run would do anyway.
-  if (toml_option->count() > 0 && !std::empty(toml_file_name)) {
+  if (!list_knobs && toml_option->count() > 0 && !std::empty(toml_file_name)) {
+    std::error_code output_error;
+    const auto output_path = std::filesystem::weakly_canonical(toml_file_name, output_error);
+    for (const auto& trace : trace_names) {
+      std::error_code input_error, equivalent_error;
+      const auto input_path = std::filesystem::weakly_canonical(trace, input_error);
+      const bool same_file = std::filesystem::equivalent(toml_file_name, trace, equivalent_error);
+      if (same_file || (!input_error && !output_error && input_path == output_path)) {
+        fmt::print(stderr, "ERROR: TOML output '{}' aliases an input trace '{}'.\n", toml_file_name, trace);
+        return 1;
+      }
+    }
     if (const std::ofstream probe{toml_file_name}; !probe) {
       fmt::print(stderr, "ERROR: cannot open '{}' to receive the TOML statistics.\n", toml_file_name);
       return 1;
@@ -256,12 +275,6 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     print_names("prefetcher", registry::prefetcher);
     print_names("replacement", registry::replacement);
     return 0;
-  }
-
-  // --knobs is the only invocation that may omit the traces.
-  if (std::size(trace_names) != NUM_CPUS) {
-    fmt::print(stderr, "ERROR: expected {} trace(s), got {}.\n", NUM_CPUS, std::size(trace_names));
-    return 1;
   }
 
   if (hide_heartbeat) {
