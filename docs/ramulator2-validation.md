@@ -3,9 +3,12 @@
 This record covers the optional backend added on `feat/ramulator`. The default
 remains legacy; the same enabled executable can select either backend at runtime.
 The completed task reviews approved the driver/build boundary, request adapter,
-native default guard, reporting/replay, and CLI input protection. Portable Task 5 oracle and one-/two-core integration checks also passed. Remaining
-hosted-CI and whole-branch checks are listed separately below; they are not claimed
-complete merely because local task suites passed.
+native default guard, reporting/replay, and CLI input protection. Portable Task 5
+oracle and one-/two-core integration checks and the final branch review also
+passed. Hosted CI execution remains pending.
+
+For the architecture, interpretation of this evidence, and proposed stress tests
+before mainline, read the [integration writeup](ramulator2-integration.md).
 
 ## Reproduce locally
 

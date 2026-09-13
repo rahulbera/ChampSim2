@@ -148,6 +148,9 @@ explicit `sim.deadlock_cycle` values remain authoritative. See
 [validation record](docs/ramulator2-validation.md) for counter units, transaction
 sizes, reproducibility limits, and the completed evidence.
 
+The [integration writeup](docs/ramulator2-integration.md) explains the design,
+test coverage, known limits, and recommended stress tests before a mainline merge.
+
 # Test
 
 ```

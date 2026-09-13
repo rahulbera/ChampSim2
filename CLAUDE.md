@@ -191,6 +191,10 @@ the corrected default guard, and the recovered validation input incident. Portab
 regressions live in `test/ramulator2`; the enabled CI job uses generated local
 traces and the pinned native root, preserving the legacy compiler matrix.
 
+The [integration writeup](docs/ramulator2-integration.md) documents the architecture,
+the limits of the completed evidence, and the proposed stress campaign before
+mainline integration.
+
 ### Tests
 
 ```bash
