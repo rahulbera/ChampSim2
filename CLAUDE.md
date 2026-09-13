@@ -2,7 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-ChampSim is a trace-based, cycle-level microarchitecture simulator (C++17). On this
+ChampSim is a trace-based, cycle-level microarchitecture simulator (C++17, with an
+optional private C++20 Ramulator2 driver). On this
 branch it is **configured at run time from a TOML file**: the simulated machine is
 hand-written C++ linked against the simulator core and every compiled module (branch
 predictors, BTBs, prefetchers, replacement policies), and a run selects modules and
@@ -23,7 +24,7 @@ vcpkg/bootstrap-vcpkg.sh && vcpkg/vcpkg install   # first-time only: build deps
 make                                 # builds bin/champsim
 
 bin/champsim --config configs/lnc.toml --set ooo_cpu.cpu0.btb=ittage_64kb \
-    -w 20000000 -i 50000000 --toml stats.toml trace.champsimtrace.xz
+    -w 20000000 -i 50000000 --toml stats.toml -- trace.champsimtrace.xz
 ```
 
 Re-run `config.sh` after **adding, renaming, or removing a module** — including when
@@ -44,7 +45,7 @@ version is asserted on the command line:
 
 ```bash
 bin/champsim --trace-version 2 --heartbeat-frequency 1000000 \
-    -w 50000000 -i 200000000 --toml stats.toml trace.champsim2.zst
+    -w 50000000 -i 200000000 --toml stats.toml -- trace.champsim2.zst
 ```
 
 `--toml` writes the machine-readable statistics document (see below). Without it, only
@@ -130,6 +131,66 @@ vector-valued and the store is scalar-only. ITTAGE/CBP6 internals are unreachabl
 construction (constexpr policy classes, vendored macros); CBP6's env toggles stay
 `getenv` so that results already recorded with them stay comparable.
 
+### Optional native DRAM backend
+
+The runtime root key `dram-model` defaults to `legacy`; `ramulator2` requires a
+build with `WITH_RAMULATOR2=1 RAMULATOR2_ROOT=/absolute/native/root`. Use the exact
+Ramulator 2.1 revision `72427a1bba3771564c4fb0e494ba02242fd1eaa7`, Linux/GCC 13,
+CMake, Python 3.11+ and PyYAML for the currently verified setup. The helper builds
+a pure C++ shared library with `RAMULATOR_PYTHON_BINDINGS=OFF`. Python imports
+source-only DRAM metadata during build/export; simulation has no Python runtime.
+Native headers remain private to the C++20 driver translation unit. The public
+interface, adapter, legacy mode and standalone harnesses remain C++17.
+
+`config/ramulator2_build.py` verifies the clean pinned source, fmt/yaml-cpp
+revisions, compiler/options and library fingerprint. Its host/native ABI probe
+includes public base/spec/request/config layouts and type identities; response
+files and forced includes participate. Incompatible ABI flags fail clearly.
+Mode/compiler/root changes invalidate relevant stamps and dependencies; existing
+`.d` edges still apply to `make -n/-q/-t` without executing remakes. Runtime checks
+the loaded shared library against recorded provenance. Never run two builds or
+simulations against a root while another build may replace its `libramulator.so`;
+out-of-tree CMake still writes that file in the source root. Separate roots are
+required for concurrent native build work.
+
+`configs/ramulator2.toml` is an example. `ramulator2.config` names a fully expanded
+YAML export, relative to the process working directory. Native input supports
+External + GenericDRAM + CacheLineInterleave with homogeneous controller
+capacity, period and transaction size. Native mode rejects all `pmem.*` settings;
+legacy rejects `ramulator2.*`. The factory resolves one backend, with one operable
+and the existing shared unbounded LLC feeder; capacity and clock discovery do not
+create a second native instance. A private External shim reports the actual core
+count and retains CPU IDs.
+
+The adapter owns parent packets and weak-mailbox callback contexts. Submit in
+RQ/PQ/WQ FIFO prefixes, retaining partially submitted heads; retry only rejected
+fragments. Parent admission and read latency begin at the first accepted native
+fragment. Completion waits for all fragments and preserves every response field;
+no-response reads still count, and write callbacks never produce upstream replies.
+Fast warmup bypasses new demand submissions while native clocks/refresh tick.
+Phase resets clear counters, not native queues/clocks or live contexts. Outstanding
+gauges and full latency spans survive resets; carry-over completions can exceed
+new acceptances. Each finishing CPU updates an owned shared-memory ROI snapshot.
+Finalize once after all phases, without a measured drain or additional ticks.
+
+Native TOML uses schema 2 and `phase.<name>.<roi|sim>.ramulator2.adapter`/`.native`,
+plus owned raw `native_yaml`. Counters are separate 64-bit fields; read latency is
+summed picoseconds with a sample count. Write completions mean native command
+issue/coalescing, not bus drain. Native paths are escaped by component, controller
+indices become `channel0`, etc.; native doubles retain precision and values above
+TOML's INT64_MAX use exact decimal strings. Legacy schema 1 and formatter bytes
+stay unchanged. `meta.ramulator2` records original YAML, canonical path, hash,
+revision and library/build provenance. Replay loads `[config]`, checks current
+YAML hash/revision in the driver, and preserves original overrides separately.
+
+Use `--toml result.toml -- trace...`; trace count and filesystem output aliases are
+checked before output probing. `--knobs` never probes output paths. Full stdout
+with unnamed `--toml` still contains progress/plain output before the TOML tail.
+See [the validation record](docs/ramulator2-validation.md) for evidence, limitations,
+the corrected default guard, and the recovered validation input incident. Portable
+regressions live in `test/ramulator2`; the enabled CI job uses generated local
+traces and the pinned native root, preserving the legacy compiler matrix.
+
 ### Tests
 
 ```bash
@@ -166,8 +227,8 @@ one `operate()`-ordered component list built in a loop over `defs::num_cpus`, an
 **named channel graph** — one channel per edge, its queue geometry taken from the
 *lower* component, which is why three separate channels feed the STLB. There are
 `num_cpus * 12 + 1` channels: twelve per-core edges plus **one shared LLC→DRAM edge**
-(shared because there is one LLC and one memory controller however many cores there
-are — getting this wrong is invisible at one core and wrong at two).
+(shared because there is one LLC and one selected memory backend however many cores
+there are — getting this wrong is invisible at one core and wrong at two).
 
 Construction order is load-bearing and fixed by member declaration order: channels →
 DRAM → vmem → PTWs → caches → cores, with every vector fully `reserve`d and filled
@@ -222,11 +283,14 @@ drives simulation: `main()` runs each `phase_info` (warmup / simulation), and `d
 ticks a shared `champsim::chrono::clock` by the min clock period across all operables,
 calling `operate_on(clock)` on each. Components communicate through `channel`s
 (`inc/channel.h`) — bounded request/response queues — rather than direct calls, so the
-memory hierarchy is a graph of operables wired by the generated instantiation.
+memory hierarchy is a graph of operables wired by the static environment.
 
-Progress is monitored: `DEADLOCK_CYCLE` consecutive no-progress cycles trigger
-`print_deadlock()` on every operable then `abort()`; a periodic livelock check warns/dies
-on low IPC. When adding a component that can stall, implement `print_deadlock()`.
+Progress is monitored through `sim.deadlock_cycle` consecutive global simulation
+ticks without progress, followed by per-operable diagnostics and `abort()`. Legacy
+defaults to 500 ticks. Native mode, only when the key is omitted, defaults to
+`max(500, ceil(10 us / minimum actual operable period))` after constructing the
+selected environment once. Explicit values retain their meaning; nonpositive native
+operable periods are errors. A periodic livelock check warns/dies on low IPC.
 
 ### Memory hierarchy & core
 
@@ -236,7 +300,8 @@ buffer, and register renaming via `register_allocator`). Instructions come from
 `tracereader` (`src/tracereader.cc`) filling `cpu.input_queue`. `CACHE` (`inc/cache.h`,
 `src/cache.cc`) is the generic cache used for every level (L1I/L1D/L2C/LLC and TLBs);
 `PageTableWalker` (`ptw.cc`) + `VirtualMemory` (`vmem.cc`) handle address translation;
-`DRAM_CONTROLLER`/`DRAM_CHANNEL` (`dram_controller.cc`) model main memory. Stats are split
+`memory_backend` owns the selected legacy controller or native adapter;
+`DRAM_CONTROLLER`/`DRAM_CHANNEL` (`dram_controller.cc`) implement legacy memory. Stats are split
 into `sim_stats` (whole run) and `roi_stats` (region of interest / sim phase) per component.
 
 ### The module system (`inc/modules.h`)
@@ -374,7 +439,7 @@ overwrite that one.
   Thirteen keys used to kill the process at zero (SIGFPE in the DRAM divisors, SIGABRT in
   the cache asserts) and the two DIB knobs silently built a structure that can never hit.
   `pq_size = 0` is the shipped TLB configuration, which is why queues are exempt.
-- **DRAM timings are memory-controller CYCLES, so `pmem.frequency` scales them.**
+- **Legacy DRAM timings are memory-controller CYCLES, so `pmem.frequency` scales them.**
   `tCAS`/`tRCD`/`tRP`/`tRAS` are multiplied by `mc_period` in the `DRAM_CHANNEL`
   constructor, and `mc_period = 1e6 / pmem.frequency`. Raising the frequency without
   rescaling the cycle counts shortens absolute core latency by the same factor —
@@ -482,12 +547,12 @@ Four things about the numbers are easy to get wrong:
 
 `src/toml_printer.cc` emits the statistics document; `--json` is **rejected at
 startup** with an error pointing at `--toml`. `src/json_printer.cc` is still
-compiled and linked so it cannot rot silently, but it is unreachable at run time
-and therefore reports zero coverage. An unwritable `--toml` path is also
+compiled and linked so it cannot rot silently; the CLI rejects it, while focused
+stream tests exercise native JSON compatibility. An unwritable `--toml` path is also
 rejected at startup, and a failed write exits non-zero rather than reporting
 success. The format differs from the old JSON in ways that matter to a parser:
 
-- **`lower_snake_case` keys throughout**, including lower-cased component names
+- **`lower_snake_case` core/cache/legacy memory keys**, including lower-cased component names
   (`cpu0_l1d`, `llc`). A configured name that is not a bare TOML key is quoted,
   never rewritten, so two distinct names can never collide onto one table.
 - **No arrays.** Every key holds a single scalar; what were per-CPU arrays are
@@ -498,8 +563,8 @@ success. The format differs from the old JSON in ways that matter to a parser:
   `--toml-sim-stats`; `[meta].sim_stats` records which, so its absence is never
   ambiguous. (This is *not* `plain_printer`'s rule, which keys the same
   decision on `NUM_CPUS > 1`.)
-- **Every ratio is rounded to two decimals with its exact integer operands beside
-  it** (`total_miss_latency_cycles` next to `miss_latency`, `total_branches` and
+- **Core/cache/legacy ratios are rounded to two decimals with their exact integer operands beside
+  them** (`total_miss_latency_cycles` next to `miss_latency`, `total_branches` and
   `total_mispredicts` next to `mpki`), so rounding never loses information —
   recompute rather than trusting the rounded value.
 - **An undefined ratio is `nan`**, a real TOML float, never a dropped key. The
@@ -547,13 +612,13 @@ Three things about `[config]` are not obvious:
   appear there, correctly: the user did supply them.
 
 Tests are `test/cpp/src/099-toml-printer.cc`, which pin exact output via the
-static `format()` seam — the seam `json_printer` lacks, which is why it never
-had tests. `test/cpp/src/098-runtime-config.cc` covers the store, including the
-statistics-document round trip.
+static `format()` seam; native JSON compatibility is also tested through its
+stream output in `798-dram-plain-printer.cc`. `test/cpp/src/098-runtime-config.cc`
+covers the store, including the statistics-document round trip.
 
 ## Conventions
 
-- C++17, warnings-heavy (`global.options`: `-Wall -Wextra -Wshadow -Wpedantic -Wconversion -O3`).
+- C++17 (only `ramulator2_driver.cc` uses C++20 in enabled builds), warnings-heavy (`global.options`: `-Wall -Wextra -Wshadow -Wpedantic -Wconversion -O3`).
   Modules additionally get `-Wno-unused-parameter -DCHAMPSIM_MODULE` (`module.options`).
 - Formatting is enforced by `.clang-format` (LLVM base, 160 col); the `lint` job in
   `.github/workflows/main.yml` reformats `vcpkg.json src inc prefetcher branch

@@ -1,8 +1,9 @@
 # configs
 
 Runtime configuration files, applied at startup with `--config <file>`. These
-are the only configuration ChampSim has: there is no JSON, and `config.sh`
-does nothing but discover modules.
+select simulator parameters and modules. There is no JSON configuration layer,
+and `config.sh` only discovers modules. The optional native DRAM backend reads its
+device configuration from an exported YAML file selected by TOML.
 
 - One `--config` may be followed by more, and by `--set key=value`; sources
   apply strictly in command-line order, and the last definition of a key wins.
@@ -37,3 +38,68 @@ The loader recognises the document by `[meta].schema_version` and reads its
 `[config]` table, ignoring the results. It reproduces only what is
 configurable -- `[meta].build_id` must match too, or the binaries are
 different machines.
+
+
+## Native memory example
+
+`ramulator2.toml` selects native memory in a build made with
+`WITH_RAMULATOR2=1 RAMULATOR2_ROOT=/absolute/path/to/ramulator2`:
+
+```toml
+dram-model = "ramulator2"
+
+[ramulator2]
+config = "configs/ramulator2/ddr4.yaml"
+```
+
+Use `bin/champsim --config configs/ramulator2.toml --trace-version 2 -w 100000
+-i 500000 --toml run.toml -- trace.champsim2.zst` from the repository root. YAML
+paths resolve relative to the process working directory, not the TOML file.
+`ramulator2/ddr4.py` and `ramulator2/lpddr5.py` are readable configuration sources;
+the adjacent YAML files are their fully expanded exports for the pinned native
+revision. Re-export from source without installing the native Python extension:
+
+```bash
+PYTHONPATH=/absolute/path/to/ramulator2/python python3 -m ramulator export \
+  configs/ramulator2/ddr4.py -o configs/ramulator2/ddr4.yaml
+```
+
+Export requires Python 3.10+ and PyYAML; the regression tools need Python 3.11+
+for `tomllib`. Both fixtures use External, GenericDRAM and CacheLineInterleave:
+
+| Fixture | Native controller | Native transaction | Clock period | Capacity |
+| --- | --- | ---: | ---: | ---: |
+| DDR4 | GenericDDR | 64 B | 833 ps | 8 GiB |
+| LPDDR5 | LPDDR5 | 32 B | 1,453 ps | 1 GiB |
+
+A 64-byte cache block becomes two LPDDR5 transactions; it returns only after both
+complete. A native transaction larger than a block can serve separate block
+requests within that transaction. Homogeneous multi-channel configurations are
+supported. Mixed capacities, periods, or transaction sizes are rejected.
+
+`dram-model` defaults to `legacy`. Do not combine native selection with `pmem.*`
+keys from `sample.toml`/`lnc.toml` or a full legacy `--knobs` dump: inactive keys
+are errors. Native `--knobs` reports only the selected backend's keys. For example:
+
+```bash
+bin/champsim --config configs/ramulator2.toml --knobs > native-knobs.toml
+bin/champsim --config native-knobs.toml --trace-version 2 -w 100000 -i 500000 \
+  --toml run.toml -- trace.champsim2.zst
+bin/champsim --config run.toml --trace-version 2 -w 100000 -i 500000 \
+  --toml replay.toml -- trace.champsim2.zst
+```
+
+Schema 2 archives the exact input YAML in `meta.ramulator2.yaml`, with canonical
+absolute path, `config_hash`, pinned `revision`, and build provenance. Effective
+`ramulator2.config_hash` participates in `meta.build_id`. A replay still reads the
+file at its effective path; a missing or changed file fails before simulation.
+To relocate an unchanged YAML, override `ramulator2.config` after `--config`.
+Original supplied path spelling remains in `config_override`. Run lengths and
+trace format are command-line inputs, so repeat them when replaying.
+
+Use a named output followed by `--` before input paths. Output paths equivalent
+to an input trace (including symlinks and hardlinks) are rejected before opening.
+An omitted `--toml` filename appends the TOML document after ordinary stdout;
+use a named file when a standalone parseable document is needed. See the
+[validation record](../docs/ramulator2-validation.md) for native statistics and
+phase semantics.

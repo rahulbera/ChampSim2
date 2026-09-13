@@ -31,6 +31,7 @@ jobs:
     runs-on: ${{ matrix.config.os }}
     env:
       CXX: ${{ matrix.config.cxx }}
+      WITH_RAMULATOR2: "0"
 
     strategy:
       fail-fast: false
@@ -311,10 +312,11 @@ jobs:
         assert re.fullmatch(r"0x[0-9a-f]{16}", meta["build_id"]), meta
 
         cfg = doc["config"]
-        # Only components exist at the root now: there is no configuration file
+        # Components and the backend selector exist at the root: no configuration file
         # for the document to echo, so an "executable_name" or "block_size" key
         # here would mean the printer had invented one.
-        assert set(cfg) == {"cache", "ooo_cpu", "pmem", "ptw", "sim", "vmem"}, sorted(cfg)
+        assert set(cfg) == {"cache", "dram-model", "ooo_cpu", "pmem", "ptw", "sim", "vmem"}, sorted(cfg)
+        assert cfg["dram-model"] == "legacy", cfg
         assert cfg["ooo_cpu"]["cpu0"]["branch_predictor"], cfg["ooo_cpu"]["cpu0"]
         assert cfg["ooo_cpu"]["cpu0"]["btb"], cfg["ooo_cpu"]["cpu0"]
         # Module selections are consulted keys like any other, so every cache
@@ -428,7 +430,7 @@ jobs:
         status=$?
         set -e
         test "$status" -ne 0 || { echo "--knobs accepted an unknown key"; exit 1; }
-        python3 -c "import tomllib; d = tomllib.load(open('knobs.toml','rb')); assert sorted(d) == ['cache','ooo_cpu','pmem','ptw','sim','vmem'], sorted(d)"
+        python3 -c "import tomllib; d = tomllib.load(open('knobs.toml','rb')); assert sorted(d) == ['cache','dram-model','ooo_cpu','pmem','ptw','sim','vmem'], sorted(d); assert d['dram-model'] == 'legacy'"
         # And what it emits is accepted straight back as configuration.
         ./bin/champsim -w5000 -i5000 --config knobs.toml \
           -- <(curl -s https://dpc3.compas.cs.stonybrook.edu/champsim-traces/speccpu/400.perlbench-41B.champsimtrace.xz | xz -dc)
@@ -482,6 +484,70 @@ jobs:
       with:
         name: lcov-stats
         path: lcov_stats.info
+
+  native:
+    name: Ubuntu 24.04 GCC 13 with Ramulator 2.1
+    runs-on: ubuntu-24.04
+    env:
+      CXX: /usr/bin/g++-13
+      WITH_RAMULATOR2: "1"
+      RAMULATOR2_ROOT: ${{ github.workspace }}/native-source
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: 'true'
+
+    - uses: actions/checkout@v6
+      with:
+        repository: CMU-SAFARI/ramulator2
+        ref: 72427a1bba3771564c4fb0e494ba02242fd1eaa7
+        path: native-source
+
+    - name: Set up native build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y g++-13 cmake curl zip unzip tar python3-venv
+        python3 -m venv "$RUNNER_TEMP/native-python"
+        "$RUNNER_TEMP/native-python/bin/python" -m pip install PyYAML
+        echo "$RUNNER_TEMP/native-python/bin" >> "$GITHUB_PATH"
+        vcpkg/bootstrap-vcpkg.sh
+        vcpkg/vcpkg install
+
+    # Keep this job separate from legacy coverage flags and compiler versions.
+    # The helper checks native/source/dependency revisions and the effective ABI.
+    - name: Build simulator and run enabled C++ tests
+      run: |
+        ./config.sh
+        env -u CXXFLAGS -u CPPFLAGS -u LDFLAGS -u CFLAGS make -j6 all test
+
+    - name: Run Python and CLI regression tests
+      run: |
+        make pytest
+        python3 -m unittest discover -s test/ramulator2 -p test_tools.py -v
+
+    # These generate bounded local inputs; no private or downloaded benchmark
+    # traces are required. One source root is built and executed serially.
+    - name: Compare driver with direct native replay
+      run: |
+        python3 test/ramulator2/run_oracle.py \
+          --native-root "$RAMULATOR2_ROOT" --build-dir .csconfig \
+          --dependency-dir vcpkg_installed/x64-linux \
+          --output-dir "$RUNNER_TEMP/native-oracle" --cxx "$CXX"
+
+    - name: Exercise native simulations and result replay
+      run: |
+        python3 test/ramulator2/run_integration.py --binary bin/champsim \
+          --output-dir "$RUNNER_TEMP/native-integration"
+
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: native-validation
+        path: |
+          ${{ runner.temp }}/native-oracle
+          ${{ runner.temp }}/native-integration
+          .csconfig/ramulator2-native/build.log
 
   upload_coveralls:
     runs-on: ubuntu-latest

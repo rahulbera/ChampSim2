@@ -49,9 +49,8 @@ Example tracing utilities are provided in the `tracer/` directory.
 
 # Run
 
-Every simulation parameter -- cache geometry, core widths, latencies, DRAM
-timings, and which branch predictor, BTB, prefetcher and replacement policy to
-use -- is set at **run time** from a TOML file:
+Cache geometry, core widths, latencies, the DRAM backend, and branch predictor,
+BTB, prefetcher and replacement choices are set at **run time** from a TOML file:
 
 ```
 $ bin/champsim --config configs/sample.toml -w 20000000 -i 50000000 trace.champsimtrace.xz
@@ -101,9 +100,53 @@ command line, the trace version and a content hash of the machine, and
 consulted, with the value it used. That makes a result file replayable:
 
 ```
-$ bin/champsim --toml run.toml trace.champsimtrace.xz
-$ bin/champsim --config run.toml trace.champsimtrace.xz   # same machine, same numbers
+$ bin/champsim --toml run.toml -- trace.champsimtrace.xz
+$ bin/champsim --config run.toml -- trace.champsimtrace.xz   # same machine, same numbers
 ```
+
+# Optional Ramulator2 memory
+
+The default is `dram-model = "legacy"`, including in a native-enabled binary.
+Legacy-only builds need no Ramulator dependency. The optional backend is verified
+on Linux with GCC 13 and the pinned Ramulator 2.1 source revision below:
+
+```bash
+git clone https://github.com/CMU-SAFARI/ramulator2.git ../ramulator2
+git -C ../ramulator2 checkout 72427a1bba3771564c4fb0e494ba02242fd1eaa7
+# Install CMake, GCC 13, Python 3.11+ and PyYAML in your development environment.
+python3 -m pip install PyYAML
+./config.sh
+env -u CXXFLAGS -u CPPFLAGS -u LDFLAGS -u CFLAGS make -j6 CXX=/usr/bin/g++-13 \
+  WITH_RAMULATOR2=1 RAMULATOR2_ROOT="$(realpath ../ramulator2)"
+bin/champsim --config configs/ramulator2.toml --trace-version 2 \
+  -w 100000 -i 500000 --toml run.toml -- trace.champsim2.zst
+```
+
+The build helper prepares a pure C++ shared library with Python bindings off,
+checks the pinned source/dependencies and host ABI, and records library provenance.
+Only the private native driver translation unit uses C++20; the simulator's public
+interfaces and other sources stay C++17. Python reads source metadata during build
+and exports configuration; it is not embedded in simulation. Keep the native
+checkout/library available at runtime. Serialize builds and runs sharing a native
+root: Ramulator writes `libramulator.so` into its source root even with an
+out-of-tree build. `make WITH_RAMULATOR2=0` returns to a legacy-only build.
+
+`configs/ramulator2.toml` selects the exported DDR4 YAML; change
+`ramulator2.config` to `configs/ramulator2/lpddr5.yaml` for LPDDR5. Paths are relative
+to the process working directory. Native geometry/timing/policies come from the
+fully expanded YAML. Native mode rejects every explicit `pmem.*` key, and legacy
+mode rejects every `ramulator2.*` key. Start native configuration from this example
+or native `--knobs`, rather than overlaying a complete legacy configuration.
+
+Native results use schema 2, with separate adapter/native counters and exact YAML,
+hash, revision and build metadata. Replay checks the current YAML contents against
+the recorded hash. Fast warmup bypasses demand requests while native clocks tick;
+phase changes preserve pending requests, and finalization adds no drain cycles.
+The default native no-progress allowance is 10 µs in actual simulator ticks;
+explicit `sim.deadlock_cycle` values remain authoritative. See
+[configuration examples](configs/README.md) and the
+[validation record](docs/ramulator2-validation.md) for counter units, transaction
+sizes, reproducibility limits, and the completed evidence.
 
 # Test
 
