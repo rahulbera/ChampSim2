@@ -228,6 +228,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     // Commented, so that the whole listing is a valid TOML document:
     //     bin/champsim --knobs > my.toml
     // gives a complete, editable starting configuration.
+    fmt::print("\n# DRAM backends (dram-model): legacy, ramulator2 (when built with native support)\n");
     using registry = champsim::configured::module_registry;
     fmt::print("\n# Selectable modules (per component, via the keys above):\n");
     const auto print_names = [](std::string_view kind, const auto& names) {

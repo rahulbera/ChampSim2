@@ -171,11 +171,9 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
   std::transform(std::begin(caches), std::end(caches), std::back_inserter(stats.sim_cache_stats), [](const CACHE& cache) { return cache.sim_stats; });
   std::transform(std::begin(caches), std::end(caches), std::back_inserter(stats.roi_cache_stats), [](const CACHE& cache) { return cache.roi_stats; });
 
-  auto dram = env.dram_view();
-  std::transform(std::begin(dram.channels), std::end(dram.channels), std::back_inserter(stats.sim_dram_stats),
-                 [](const DRAM_CHANNEL& chan) { return chan.sim_stats; });
-  std::transform(std::begin(dram.channels), std::end(dram.channels), std::back_inserter(stats.roi_dram_stats),
-                 [](const DRAM_CHANNEL& chan) { return chan.roi_stats; });
+  auto memory_stats = env.memory_view().statistics();
+  stats.sim_dram_stats = std::move(memory_stats.sim_dram);
+  stats.roi_dram_stats = std::move(memory_stats.roi_dram);
 
   return stats;
 }
@@ -200,6 +198,7 @@ std::vector<phase_stats> main(environment& env, std::vector<phase_info>& phases,
     }
   }
 
+  env.memory_view().finalize();
   return results;
 }
 } // namespace champsim

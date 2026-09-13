@@ -43,7 +43,7 @@ struct phase_stats {
   std::vector<std::string> trace_names;
   std::vector<O3_CPU::stats_type> roi_cpu_stats, sim_cpu_stats;
   std::vector<CACHE::stats_type> roi_cache_stats, sim_cache_stats;
-  std::vector<DRAM_CHANNEL::stats_type> roi_dram_stats, sim_dram_stats;
+  std::vector<dram_stats> roi_dram_stats, sim_dram_stats;
 };
 
 } // namespace champsim

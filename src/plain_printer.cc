@@ -154,7 +154,7 @@ std::vector<std::string> champsim::plain_printer::format(CACHE::stats_type stats
   return lines;
 }
 
-std::vector<std::string> champsim::plain_printer::format(DRAM_CHANNEL::stats_type stats)
+std::vector<std::string> champsim::plain_printer::format(dram_stats stats)
 {
   std::vector<std::string> lines{};
   lines.push_back(fmt::format("{} RQ ROW_BUFFER_HIT: {:10}", stats.name, stats.RQ_ROW_BUFFER_HIT));

@@ -6,6 +6,7 @@
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
+#include "dram_controller.h"
 #include "runtime_config.h"
 #include "static_environment.h"
 
@@ -24,6 +25,39 @@ TEST_CASE("The environment builds the standard hierarchy")
   REQUIRE(std::size(env.ptw_view()) == champsim::defs::num_cpus);
   // LLC plus six per core: L1I, L1D, L2C, ITLB, DTLB, STLB.
   REQUIRE(std::size(env.cache_view()) == 1 + (champsim::defs::num_cpus * 6));
+}
+
+TEST_CASE("Omitted and explicit legacy selectors describe the same effective machine")
+{
+  champsim::runtime_config omitted, explicit_legacy;
+  explicit_legacy.set("dram-model=legacy");
+  champsim::static_environment omitted_env{omitted}, explicit_env{explicit_legacy};
+  REQUIRE(omitted.consulted() == explicit_legacy.consulted());
+  REQUIRE(omitted.unconsulted_keys().empty());
+  REQUIRE(explicit_legacy.unconsulted_keys().empty());
+  REQUIRE(omitted_env.memory_view().size() == champsim::data::bytes{17179869184});
+  REQUIRE(explicit_env.memory_view().size() == omitted_env.memory_view().size());
+  REQUIRE(omitted_env.memory_view().name() == "legacy");
+}
+
+TEST_CASE("The legacy controller itself remains the environment's single memory operable")
+{
+  champsim::runtime_config cfg;
+  champsim::static_environment env{cfg};
+  const auto operables = env.operable_view();
+  auto& memory = env.memory_view().clocked_component();
+  REQUIRE(&operables.back().get() == &memory);
+  REQUIRE(dynamic_cast<MEMORY_CONTROLLER*>(&memory) != nullptr);
+  REQUIRE(memory.clock_period == champsim::chrono::picoseconds{625});
+}
+
+TEST_CASE("The time quantum uses the selected memory clock without consulting legacy frequency")
+{
+  champsim::runtime_config cfg;
+  cfg.set("pmem.frequency=100000");
+  REQUIRE(champsim::static_environment::time_quantum(cfg, champsim::chrono::picoseconds{173}) == champsim::chrono::picoseconds{173});
+  REQUIRE(champsim::static_environment::time_quantum(cfg, champsim::chrono::picoseconds{1000}) == champsim::chrono::picoseconds{250});
+  REQUIRE(cfg.unconsulted_keys().size() == 1);
 }
 
 TEST_CASE("Cache order is the per-cycle operate order, LLC first then per-core alphabetical")

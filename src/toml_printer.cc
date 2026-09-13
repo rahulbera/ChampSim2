@@ -284,7 +284,7 @@ std::vector<std::string> champsim::toml_printer::format(CACHE::stats_type stats,
   return lines;
 }
 
-std::vector<std::string> champsim::toml_printer::format(DRAM_CHANNEL::stats_type stats, std::string_view path)
+std::vector<std::string> champsim::toml_printer::format(dram_stats stats, std::string_view path)
 {
   std::vector<std::string> lines{};
   emit_table(lines, path,

@@ -76,7 +76,7 @@ void to_json(nlohmann::json& j, const CACHE::stats_type& stats)
   j = statsmap;
 }
 
-void to_json(nlohmann::json& j, const DRAM_CHANNEL::stats_type stats)
+void to_json(nlohmann::json& j, const dram_stats stats)
 {
   j = nlohmann::json{{"RQ ROW_BUFFER_HIT", stats.RQ_ROW_BUFFER_HIT},
                      {"RQ ROW_BUFFER_MISS", stats.RQ_ROW_BUFFER_MISS},

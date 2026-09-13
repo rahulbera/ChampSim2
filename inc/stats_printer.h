@@ -21,7 +21,7 @@
 #include <vector>
 
 #include "cache.h"
-#include "dram_controller.h"
+#include "dram_stats.h"
 #include "ooo_cpu.h"
 #include "phase_info.h"
 
@@ -38,7 +38,7 @@ public:
 
   static std::vector<std::string> format(O3_CPU::stats_type stats);
   static std::vector<std::string> format(CACHE::stats_type stats);
-  static std::vector<std::string> format(DRAM_CHANNEL::stats_type stats);
+  static std::vector<std::string> format(dram_stats stats);
   static std::vector<std::string> format(phase_stats& stats);
 };
 
@@ -101,7 +101,7 @@ public:
 
   static std::vector<std::string> format(O3_CPU::stats_type stats, std::string_view path);
   static std::vector<std::string> format(CACHE::stats_type stats, std::string_view path);
-  static std::vector<std::string> format(DRAM_CHANNEL::stats_type stats, std::string_view path);
+  static std::vector<std::string> format(dram_stats stats, std::string_view path);
   static std::vector<std::string> format(phase_stats& stats, bool include_sim = false);
   // The effective configuration -- flat dotted keys with values already in
   // TOML syntax -- rendered as the nested [config] table tree.

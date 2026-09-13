@@ -127,14 +127,13 @@ std::optional<uint64_t> randomization(const champsim::runtime_config& cfg)
 // SMALLEST clock_period among the operables, so a duration expressed in cycles
 // has to be scaled by this and not by any one component's period.
 //
-// The configuration layer computed the equivalent once, at configure time,
-// from the whole parsed config. Reproducing it needs every frequency key --
-// hence the sweep. A literal would be right only while nothing overrides a
+// The selected backend supplies its clock period, and every other component's
+// frequency participates in the sweep. A literal would be right only while nothing overrides a
 // frequency: raise one component to 5000 MHz and a baked 250 ps overstates
 // every cycle-denominated duration by 25%, silently.
-champsim::chrono::picoseconds compute_time_quantum(const champsim::runtime_config& cfg)
+champsim::chrono::picoseconds compute_time_quantum(const champsim::runtime_config& cfg, champsim::chrono::picoseconds memory_period)
 {
-  auto shortest = period(cfg, "pmem.frequency", 1600.0);
+  auto shortest = memory_period;
   const auto consider = [&cfg, &shortest](const std::string& key) {
     shortest = std::min(shortest, period(cfg, key, 4000));
   };
@@ -151,7 +150,15 @@ champsim::chrono::picoseconds compute_time_quantum(const champsim::runtime_confi
 }
 } // namespace
 
-champsim::chrono::picoseconds champsim::static_environment::time_quantum(const runtime_config& cfg) { return compute_time_quantum(cfg); }
+champsim::chrono::picoseconds champsim::static_environment::time_quantum(const runtime_config& cfg)
+{
+  return time_quantum(cfg, period(cfg, "pmem.frequency", 1600.0));
+}
+
+champsim::chrono::picoseconds champsim::static_environment::time_quantum(const runtime_config& cfg, chrono::picoseconds memory_period)
+{
+  return compute_time_quantum(cfg, memory_period);
+}
 
 std::string champsim::static_environment::core_name(std::size_t cpu) { return "cpu" + std::to_string(cpu); }
 std::string champsim::static_environment::cache_name(std::size_t cpu, std::string_view level) { return "cpu" + std::to_string(cpu) + "_" + std::string{level}; }
@@ -190,17 +197,10 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                                champsim::data::bits{champsim::lg2(BLOCK_SIZE)}, false});
         return made;
       }()),
-      DRAM(period(cfg, "pmem.data_rate", 3200), period(cfg, "pmem.frequency", 1600.0), cfg.value<std::size_t>("pmem.trp", 24),
-           cfg.value<std::size_t>("pmem.trcd", 24), cfg.value<std::size_t>("pmem.tcas", 24), cfg.value<std::size_t>("pmem.tras", 52),
-           champsim::chrono::microseconds{static_cast<champsim::chrono::microseconds::rep>(1000.0 * cfg.positive_value<double>("pmem.refresh_period", 32))},
-           std::vector<channel*>{&channels.at(llc_to_dram_chan(defs::num_cpus))}, cfg.value<std::size_t>("pmem.rq_size", 64),
-           cfg.value<std::size_t>("pmem.wq_size", 64), cfg.positive_value<std::size_t>("pmem.channels", 1),
-           champsim::data::bytes{cfg.positive_value<champsim::data::bytes::rep>("pmem.channel_width", 8)},
-           cfg.positive_value<std::size_t>("pmem.bank_rows", 65536), cfg.positive_value<std::size_t>("pmem.bank_columns", 1024),
-           cfg.positive_value<std::size_t>("pmem.ranks", 1), cfg.positive_value<std::size_t>("pmem.bankgroups", 8),
-           cfg.positive_value<std::size_t>("pmem.banks", 4), cfg.positive_value<std::size_t>("pmem.refreshes_per_period", 8192)),
+      memory(make_memory_backend(cfg, {&channels.at(llc_to_dram_chan(defs::num_cpus))})),
       vmem(champsim::data::bytes{cfg.positive_value<champsim::data::bytes::rep>("vmem.pte_page_size", 4096)}, cfg.value<std::size_t>("vmem.num_levels", 5),
-           compute_time_quantum(cfg) * cfg.value<champsim::chrono::picoseconds::rep>("vmem.minor_fault_penalty", 200), DRAM, randomization(cfg))
+           time_quantum(cfg, memory->clocked_component().clock_period) * cfg.value<champsim::chrono::picoseconds::rep>("vmem.minor_fault_penalty", 200),
+           memory->size(), randomization(cfg))
 {
   ptws.reserve(defs::num_cpus);
   for (std::size_t cpu = 0; cpu < defs::num_cpus; ++cpu) {
@@ -466,7 +466,7 @@ void champsim::static_environment::select_modules(const runtime_config& cfg)
 std::vector<std::reference_wrapper<O3_CPU>> champsim::static_environment::cpu_view() { return {std::begin(cores), std::end(cores)}; }
 std::vector<std::reference_wrapper<CACHE>> champsim::static_environment::cache_view() { return {std::begin(caches), std::end(caches)}; }
 std::vector<std::reference_wrapper<PageTableWalker>> champsim::static_environment::ptw_view() { return {std::begin(ptws), std::end(ptws)}; }
-MEMORY_CONTROLLER& champsim::static_environment::dram_view() { return DRAM; }
+champsim::memory_backend& champsim::static_environment::memory_view() { return *memory; }
 
 std::vector<std::reference_wrapper<champsim::operable>> champsim::static_environment::operable_view()
 {
@@ -478,6 +478,6 @@ std::vector<std::reference_wrapper<champsim::operable>> champsim::static_environ
   std::transform(std::begin(cores), std::end(cores), std::back_inserter(retval), make_ref);
   std::transform(std::begin(caches), std::end(caches), std::back_inserter(retval), make_ref);
   std::transform(std::begin(ptws), std::end(ptws), std::back_inserter(retval), make_ref);
-  retval.push_back(std::ref<operable>(DRAM));
+  retval.push_back(std::ref(memory->clocked_component()));
   return retval;
 }
