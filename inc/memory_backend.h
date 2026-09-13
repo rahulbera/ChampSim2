@@ -2,11 +2,13 @@
 #define MEMORY_BACKEND_H
 
 #include <memory>
+#include <optional>
 #include <string_view>
 #include <vector>
 
 #include "champsim.h"
 #include "memory_stats.h"
+#include "ramulator2_driver.h"
 #include "util/units.h"
 
 namespace champsim
@@ -25,6 +27,7 @@ public:
   virtual data::bytes size() const = 0;
   virtual memory_statistics statistics() const = 0;
   virtual std::string_view name() const = 0;
+  virtual std::optional<ramulator2_config_record> config_record() const { return std::nullopt; }
   virtual void finalize() {}
 };
 
