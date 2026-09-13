@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 from generate_trace import generate
-from run_integration import check_cpu_traffic
+from run_integration import check_cpu_traffic, equal_leaves
 from run_oracle import check_leaves, check_events, compare_events
 
 
@@ -106,3 +106,22 @@ class NativeSourceTests(unittest.TestCase):
         channels["channel0"]["read_row_hits_core_1"] = 0
         with self.assertRaises(AssertionError):
             check_cpu_traffic(channels, 2)
+
+
+class ReplayScalarTests(unittest.TestCase):
+    def test_integer_counter_cannot_replay_as_float(self):
+        original = {"adapter": {"accepted_reads": 2}}
+        replay = {"adapter": {"accepted_reads": 2.0}}
+        with self.assertRaises(AssertionError):
+            equal_leaves(original, replay)
+
+    def test_integer_counter_cannot_replay_as_boolean(self):
+        original = {"adapter": {"outstanding_parents": 1}}
+        replay = {"adapter": {"outstanding_parents": True}}
+        with self.assertRaises(AssertionError):
+            equal_leaves(original, replay)
+
+    def test_equal_scalar_types_and_nan_preserve_leaf_count(self):
+        original = {"count": 2, "ratio": 2.0, "enabled": True, "name": "native", "undefined": float("nan")}
+        replay = {"count": 2, "ratio": 2.0, "enabled": True, "name": "native", "undefined": float("nan")}
+        self.assertEqual(equal_leaves(original, replay), 5)

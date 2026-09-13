@@ -20,6 +20,7 @@ def equal_leaves(left, right, path=""):
     if isinstance(left, dict):
         assert isinstance(right, dict) and left.keys() == right.keys(), f"table shape changed at {path}"
         return sum(equal_leaves(value, right[key], path + "/" + key) for key, value in left.items())
+    assert type(left) is type(right), (path, "scalar type changed", type(left).__name__, type(right).__name__)
     assert left == right or isinstance(left, float) and isinstance(right, float) and math.isnan(left) and math.isnan(right), (path, left, right)
     return 1
 
