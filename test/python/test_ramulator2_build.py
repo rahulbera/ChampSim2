@@ -12,6 +12,12 @@ import unittest
 HELPER = Path(__file__).resolve().parents[2] / 'config' / 'ramulator2_build.py'
 
 
+def tree(path):
+    """Every path below `path`, without descending into symbolic links."""
+    return sorted(str(Path(parent, name).relative_to(path))
+                  for parent, dirs, files in os.walk(path) for name in dirs + files)
+
+
 class RamulatorBuildTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -46,13 +52,30 @@ class RamulatorBuildTests(unittest.TestCase):
         self.assertFalse(objects.exists(), 'dry-run must not create compiler/native stamps')
 
     def test_fresh_enabled_dry_run_prints_missing_dependencies_without_building(self):
+        # Goal `all` hard-includes _configuration.mk, which only config.sh writes, so
+        # a fresh checkout (the hosted python job) cannot dry-run the repository root.
+        # Dry-run the real Makefile and helper beside a stub fragment and source instead.
+        workspace = self.root / 'fresh-checkout'
+        (workspace / 'src').mkdir(parents=True)
+        shutil.copyfile(HELPER.parent.parent / 'Makefile', workspace / 'Makefile')
+        (workspace / 'config').symlink_to(HELPER.parent, target_is_directory=True)
+        for name, content in {'_configuration.mk': 'executable_name := bin/champsim\n',
+                              'global.options': '', 'src/ramulator2_driver.cc': ''}.items():
+            (workspace / name).write_text(content)
+        before = tree(workspace)
+        native = self.root / 'missing-native'
         objects = self.root / 'enabled-dry-run'
-        result = subprocess.run(['make', '-n', 'all', 'WITH_RAMULATOR2=1',
-                                 f'RAMULATOR2_ROOT={self.root / "missing-native"}',
+        result = subprocess.run(['make', '-n', 'all', 'WITH_RAMULATOR2=1', f'RAMULATOR2_ROOT={native}',
                                  f'OBJ_ROOT={objects}', f'CXX={self.compiler}'],
-                                cwd=HELPER.parent.parent, text=True, capture_output=True)
+                                cwd=workspace, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"{HELPER.name} --mode='1' --root='{native}'", result.stdout)
+        self.assertIn('--check-abi', result.stdout)
+        self.assertIn(f'-std=c++20 -c -o {objects / "ramulator2_driver.o"}', result.stdout)
+        self.assertIn(str(native / 'libramulator.so'), result.stdout)
         self.assertFalse(objects.exists())
+        self.assertFalse(native.exists())
+        self.assertEqual(tree(workspace), before, 'dry-run must not create files')
 
     def test_long_make_options_do_not_disable_normal_preparation(self):
         objects = self.root / 'normal-objects'
