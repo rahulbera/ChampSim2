@@ -169,7 +169,14 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   // opened, and nothing here writes to it: a statistics path that cannot be
   // written should cost nothing, and a startup error must not cost an earlier
   // document. champsim::output::plan decides from the file the kernel reaches
-  // through the name, never from its spelling.
+  // through the name, never from its spelling. A trace or a directory is
+  // refused. The file behind stdout or stderr gets the document appended to
+  // that stream. A FIFO is written in place and not opened until then; a
+  // device or socket is written in place but must open now. An existing
+  // regular file must be empty or begin like a statistics document, and be
+  // writable. It, or a name with nothing there yet, is replaced by renaming a
+  // finished sibling over it -- except that a hard-linked file, or one whose
+  // directory refuses a new file, is written in place after the run.
   std::optional<champsim::output::target> toml_target{};
   if (!list_knobs && toml_option->count() > 0 && !std::empty(toml_file_name)) {
     auto planned = champsim::output::plan(toml_file_name, trace_names);
@@ -402,9 +409,13 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     if (toml_file_name.empty()) {
       champsim::toml_printer{std::cout, toml_sim_stats, run}.print(phase_stats);
     } else {
-      // The whole document exists before the target is touched, so how it is
-      // delivered -- and what a failure leaves behind -- is up to the target
-      // plan made at startup.
+      // The whole document exists before the target is touched. When the plan
+      // replaces by rename, a '.champsim-toml-<16 hex>.tmp' sibling carries it,
+      // so a failed write leaves the earlier document as it was; a failed
+      // rename falls back to writing in place, and if that fails too the
+      // sibling is kept, and named. Other modes write the stream or the
+      // target itself now. Any failure exits 1: a full disk must not report
+      // success.
       std::ostringstream document;
       champsim::toml_printer{document, toml_sim_stats, run}.print(phase_stats);
       const auto delivered = champsim::output::write(*toml_target, document.str());

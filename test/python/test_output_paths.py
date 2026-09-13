@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import shutil
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -370,6 +371,29 @@ class OutputPathTests(unittest.TestCase):
             result = self.simulate(tmp, "/dev/stdout")
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assert_report_then_document(result.stdout)
+
+    def test_unopenable_device_or_socket_fails_before_the_run(self):
+        # Only a FIFO skips the startup open, which would consume its reader.
+        cases = {}
+        if os.path.exists("/dev/tty"):
+            # A new session has no controlling terminal, so /dev/tty cannot be opened.
+            cases["/dev/tty without a controlling terminal"] = (lambda tmp: "/dev/tty", {"start_new_session": True})
+        if hasattr(socket, "AF_UNIX"):
+            cases["a Unix socket"] = (lambda tmp: self.bound_socket(tmp), {})
+        for case, (output, options) in cases.items():
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                self.trace(tmp)
+                result = self.simulate(tmp, output(tmp), stdin=subprocess.DEVNULL, **options)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("cannot open", result.stderr)
+                self.assertNotIn("ChampSim completed", result.stdout)
+
+    def bound_socket(self, directory):
+        path = Path(directory) / "stats.sock"
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.addCleanup(listener.close)
+        listener.bind(str(path))
+        return path
 
     def test_special_files_are_written_in_place(self):
         with tempfile.TemporaryDirectory() as tmp:

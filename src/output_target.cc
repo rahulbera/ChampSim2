@@ -209,10 +209,21 @@ plan_result plan(const std::string& name, const std::vector<std::string>& traces
       return plan_result{target{name, reachable, write_mode::standard_stream, stream}, {}};
     }
   }
+  if (exists && S_ISFIFO(reached.st_mode)) {
+    // A named FIFO or a process substitution's pipe: written in place, and
+    // not opened now, because that would consume the reader waiting for the
+    // document.
+    return plan_result{target{name, reachable, write_mode::in_place}, {}};
+  }
   if (exists && !S_ISREG(reached.st_mode)) {
-    // /dev/null, a FIFO, a process substitution's /dev/fd entry: written in
-    // place, unprobed, because opening a FIFO here would consume the reader
-    // waiting for the document.
+    // A device (/dev/null, a terminal) or a socket: written in place, but
+    // opened and closed now -- without truncating, blocking or acquiring a
+    // controlling terminal -- so one that cannot be opened costs no run.
+    const int descriptor = ::open(reachable.c_str(), O_WRONLY | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
+    if (descriptor < 0) {
+      return cannot_open();
+    }
+    ::close(descriptor);
     return plan_result{target{name, reachable, write_mode::in_place}, {}};
   }
 
