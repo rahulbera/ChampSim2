@@ -415,6 +415,51 @@ TEST_CASE("An out-of-range prefetch waits behind a rejected head in its own feed
   REQUIRE(stats.outstanding_parents == 1);
 }
 
+TEST_CASE("An out-of-range prefetch waits behind a partially submitted head, across a warmup phase")
+{
+  using submission = ramulator2_test::driver_state::submission;
+  fixture uut{32};
+  const auto head = prefetch_request(0x2000);
+  const auto beyond = prefetch_request(fixture_capacity);
+  REQUIRE(uut.feeder.add_pq(head));
+  REQUIRE(uut.feeder.add_pq(beyond));
+  uut.state->decisions = {true, false};
+  uut.step();
+  REQUIRE(uut.state->accepted == std::vector<submission>{{false, 0x2000, 0, 32}});
+  REQUIRE(uut.feeder.PQ.size() == 2);
+  REQUIRE(uut.feeder.returned.empty());
+  REQUIRE(uut.stats().out_of_range_prefetches == 0);
+
+  // Warmup neither bypasses nor continues the partial head, and so does not
+  // reach the packet behind it either, however many steps it takes.
+  uut.memory().warmup = true;
+  uut.memory().begin_phase();
+  for (int i = 0; i < 4; ++i) {
+    uut.step();
+  }
+  REQUIRE(uut.state->accepted.size() == 1);
+  REQUIRE(uut.feeder.PQ.size() == 2);
+  REQUIRE(uut.feeder.returned.empty());
+  REQUIRE(uut.stats().out_of_range_prefetches == 0);
+
+  // Back in a measured phase, the head's second fragment is accepted and the
+  // packet behind it is answered in the same step, once.
+  uut.memory().warmup = false;
+  uut.memory().begin_phase();
+  uut.step();
+  REQUIRE(uut.state->accepted == std::vector<submission>{{false, 0x2000, 0, 32}, {false, 0x2020, 0, 32}});
+  REQUIRE(uut.feeder.PQ.empty());
+  require_original_response(uut.feeder, beyond);
+  auto stats = uut.stats();
+  REQUIRE(stats.out_of_range_prefetches == 1);
+  REQUIRE(stats.accepted_reads == 0); // the head was accepted in the first phase
+  REQUIRE(stats.outstanding_parents == 1);
+  uut.step();
+  REQUIRE(uut.feeder.returned.size() == 1);
+  uut.memory().end_phase(0);
+  REQUIRE(uut.backend->statistics().roi_ramulator2.value().out_of_range_prefetches == 1);
+}
+
 TEST_CASE("A prefetch in the last native cache block is still submitted and answered natively")
 {
   fixture uut;
