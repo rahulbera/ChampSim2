@@ -158,6 +158,8 @@ results are not committed. Historical comparison baseline:
 | Native two-core reporting replay | DDR4 745 phase / 301 config leaves; LPDDR5 749 / 301, all equal including NaNs | Final `b5addb74`, default guard 40,000 |
 | Legacy reporting replay | 472 phase / 178 config leaves equal; 235 ROI leaves match cold reference | Task 4 enabled binary, schema 1 |
 | CLI input preservation | Two tests / six meaningful subcases pass | Ambiguous output arguments and filesystem trace aliases |
+| Standalone harness builds | Forced C++17 rebuilds of blbp_tune, cbp6_replay and ittage_equiv all exit 0 | Project includes only; no native or vcpkg dependency |
+| Published native TOML example | Actual `--knobs` construction/parsing passes; guard 40,000 and no `pmem` table | `configs/ramulator2.toml` |
 
 Supplied v2 SQLite/omnetpp trace results at `c6e7997b`, with 100,000 warmup
 instructions and effective native guard 40,000:
@@ -218,10 +220,19 @@ Generated trace SHA256 is
 `bd30cd675aec8aa50a343481ecff24c8c9c20784861bcb3d7376a7f139c67516` and stays unchanged.
 Evidence: `task5-validation/twocore-deterministic-integration/{summary,commands,independent-cpu1-checks}.json`.
 
-Still pending when this record was written: standalone harness checks, CI execution
-on hosted runners, and whole-branch review. Earlier passing checks above do not
-substitute for these. The responsible validators will update this section when
-their evidence is available.
+Standalone compatibility was checked with forced builds, not up-to-date no-ops:
+`env -u CXXFLAGS -u CPPFLAGS -u LDFLAGS -u CFLAGS make -B CXX=/usr/bin/g++ -j2`
+was run independently in `tools/blbp_tune`, `tools/cbp6_replay` and
+`tools/ittage_equiv`. All exited 0; logs contain actual `-std=c++17` compiler
+commands using project includes only, without native/vcpkg headers or libraries.
+Evidence: `task5-standalone-{blbp_tune,cbp6_replay,ittage_equiv}.log`. The published
+`bin/champsim --config configs/ramulator2.toml --knobs` example also constructed
+the native backend and parsed successfully, reporting `dram-model=ramulator2`,
+`sim.deadlock_cycle=40000` and no `pmem` table (`task5-example-knobs.toml`/`.stderr`).
+
+Still pending when this record was written: CI execution on hosted runners and
+whole-branch review. Earlier passing checks above do not substitute for these.
+The responsible validators will update this section when their evidence is available.
 
 ## Validation input incident and recovery
 
