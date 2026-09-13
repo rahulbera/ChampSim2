@@ -14,6 +14,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 
 REVISION = '72427a1bba3771564c4fb0e494ba02242fd1eaa7'
 DEPENDENCIES = {'fmt': 'e69e5f977d458f2650bb346dadf2ad30c5320281',
@@ -40,6 +41,77 @@ def fingerprint(data):
     return f'{value:016x}'
 
 
+def check_abi(command, flags, root=None):
+    """Compare the default native ABI to the actual driver compile options.
+
+    Let the compiler expand response files and forced includes, including nested
+    files. Comparing type identities as well as sizes catches libstdc++'s dual
+    ABI even where its containing native class happens to retain the same size.
+    """
+    source = r'''
+#include <iostream>
+#include <map>
+#include <string>
+#include <vector>
+#include <variant>
+#include <functional>
+#include <typeinfo>
+#ifdef CHAMPSIM_PROBE_NATIVE
+#include "ramulator/base/base.h"
+#include "ramulator/dram/dram_spec.h"
+#include "ramulator/frontend/i_frontend.h"
+#include "ramulator/memory_system/i_memory_system.h"
+#include "ramulator/controller/i_controller.h"
+// Header-only layout inspection must also work before libramulator is built.
+// Registration is irrelevant to sizeof/typeid and has no live native graph.
+namespace Ramulator { bool Factory::register_interface(std::string) { return true; } }
+#endif
+struct packing_probe { char prefix; void* pointer; long double number; };
+enum enum_probe { first, second };
+template<class T> void emit() {
+  std::cout << sizeof(T) << ':' << alignof(T) << ':' << typeid(T).name() << '\n';
+}
+int main() {
+#ifdef __GXX_ABI_VERSION
+  std::cout << __GXX_ABI_VERSION << '\n';
+#endif
+  emit<packing_probe>(); emit<enum_probe>();
+  emit<std::string>(); emit<std::vector<int>>();
+  emit<std::map<std::string, int>>(); emit<std::function<void()>>();
+  emit<std::variant<std::string, std::vector<int>>>();
+#ifdef CHAMPSIM_PROBE_NATIVE
+  emit<Ramulator::ConfigNode>(); emit<Ramulator::Request>();
+  emit<Ramulator::Implementation>(); emit<Ramulator::Stats>();
+  emit<Ramulator::Logger>(); emit<Ramulator::DRAMSpec>();
+  emit<Ramulator::IFrontEnd>(); emit<Ramulator::IMemorySystem>();
+  emit<Ramulator::IController>();
+#endif
+}
+'''
+    common = ['-std=c++20']
+    if root:
+        common += ['-DCHAMPSIM_PROBE_NATIVE=1', '-isystem', str(root / 'src')]
+    with tempfile.TemporaryDirectory(prefix='champsim-native-abi-') as directory:
+        path = Path(directory)
+        probe = path / 'probe.cc'
+        probe.write_text(source)
+        signatures = []
+        for name, options in (('native', []), ('driver', shlex.split(flags))):
+            executable = path / name
+            result = subprocess.run(command + options + common + [str(probe), '-o', str(executable)],
+                                    text=True, capture_output=True)
+            if result.returncode != 0:
+                raise RuntimeError('incompatible C++ ABI: cannot compile the '
+                                   f'{name} compatibility probe with effective options:\n{result.stderr}')
+            result = subprocess.run([str(executable)], text=True, capture_output=True)
+            if result.returncode != 0:
+                raise RuntimeError(f'incompatible C++ ABI: {name} compatibility probe failed')
+            signatures.append(result.stdout)
+        if signatures[0] != signatures[1]:
+            raise RuntimeError('incompatible C++ ABI: effective driver options change native '
+                               'type sizes, alignment or identities; remove ABI-changing flags/includes')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode', choices=('0', '1'), required=True)
@@ -47,7 +119,12 @@ def main():
     parser.add_argument('--obj', required=True)
     parser.add_argument('--cxx', required=True)
     parser.add_argument('--flags', default='')
+    parser.add_argument('--abi-flags', default='')
+    parser.add_argument('--check-abi', action='store_true')
     args = parser.parse_args()
+    if args.check_abi:
+        check_abi(shlex.split(args.cxx), args.flags, Path(args.root).resolve() if args.root else None)
+        return
     obj = Path(args.obj).resolve()
     obj.mkdir(parents=True, exist_ok=True)
     command = shlex.split(args.cxx)
@@ -70,6 +147,7 @@ def main():
         raise RuntimeError(f'unsupported native revision {revision}; expected {REVISION}')
     if output(['git', '-C', str(root), 'status', '--porcelain', '--untracked-files=no']):
         raise RuntimeError('native tracked source is modified; use the pinned clean checkout')
+    check_abi(command, args.abi_flags, root)
     native = obj / 'ramulator2-native'
     native.mkdir(exist_ok=True)
     manifest_path = native / 'manifest.json'

@@ -15,16 +15,8 @@ shellquote = '$(subst ','"'"',$1)'
 # GNU Make stores bundled short flags first; ignore long options and assignments.
 make_short_flags := $(if $(findstring =,$(firstword $(MAKEFLAGS))),,$(filter-out --%,$(firstword $(MAKEFLAGS))))
 make_no_execute := $(strip $(foreach flag,n q t,$(findstring $(flag),$(make_short_flags))))
-native_helper = python3 $(ROOT_DIR)/config/ramulator2_build.py --mode=$(call shellquote,$(WITH_RAMULATOR2)) --root=$(call shellquote,$(RAMULATOR2_ROOT)) --obj=$(call shellquote,$(OBJ_ROOT)) --cxx=$(call shellquote,$(CXX)) --flags=$(call shellquote,$(user_build_flags))
+native_helper = python3 $(ROOT_DIR)/config/ramulator2_build.py --mode=$(call shellquote,$(WITH_RAMULATOR2)) --root=$(call shellquote,$(RAMULATOR2_ROOT)) --obj=$(call shellquote,$(OBJ_ROOT)) --cxx=$(call shellquote,$(CXX)) --flags=$(call shellquote,$(user_build_flags)) --abi-flags=$(call shellquote,$(call reverse,$(addprefix @,$(filter %.options,$(wildcard $(base_options))))) $(CPPFLAGS) $(CXXFLAGS))
 user_build_flags := $(CPPFLAGS) $(CXXFLAGS) $(LDFLAGS)
-ifeq (,$(make_no_execute))
-ifneq (,$(filter-out clean compile_commands_clean configclean pytest maketest,$(MAKECMDGOALS))$(if $(MAKECMDGOALS),,all))
-native_prepare := $(shell $(native_helper) >&2; echo $$?)
-ifneq ($(native_prepare),0)
-$(error Native/compiler build preparation failed; see diagnostic and $(OBJ_ROOT)/ramulator2-native/build.log)
-endif
-endif
-endif
 # These recipes also make a fresh dry-run printable without creating any files.
 $(OBJ_ROOT)/compiler.stamp $(OBJ_ROOT)/ramulator2_build.h:
 	$(native_helper)
@@ -152,6 +144,7 @@ attach_options = $(call reverse, $(addprefix @,$(filter %.options, $^)))
 
 # All .o files should be made like .cc files
 define obj_recipe
+	$(if $(native_options),python3 $(ROOT_DIR)/config/ramulator2_build.py --mode=1 --check-abi --root=$(call shellquote,$(RAMULATOR2_ROOT)) --obj=$(call shellquote,$(OBJ_ROOT)) --cxx=$(call shellquote,$(CXX)) --flags=$(call shellquote,$(attach_options) $(CPPFLAGS) $(CXXFLAGS) $(native_options)))
 	$(CXX) $(attach_options) $(CPPFLAGS) $(CXXFLAGS) $(native_options) -c -o $@ $(filter %.cc, $^)
 endef
 
@@ -204,6 +197,17 @@ else
 # work when it has already been removed -- hence the soft include here and the
 # hard one above.
 -include _configuration.mk
+endif
+
+# Evaluate after the effective option/include files and configuration are known.
+# The compile recipe repeats ABI verification with target-specific flags too.
+ifeq (,$(make_no_execute))
+ifneq (,$(filter-out clean compile_commands_clean configclean pytest maketest,$(MAKECMDGOALS))$(if $(MAKECMDGOALS),,all))
+native_prepare := $(shell $(native_helper) >&2; echo $$?)
+ifneq ($(native_prepare),0)
+$(error Native/compiler build preparation failed; see diagnostic and $(OBJ_ROOT)/ramulator2-native/build.log)
+endif
+endif
 endif
 
 all: $(executable_name)
@@ -323,11 +327,15 @@ test: $(test_main_name)
 pytest:
 	PYTHONPATH=$(PYTHONPATH):$(ROOT_DIR) python3 -m unittest discover -v --start-directory='test/python'
 
-ifeq (,$(make_no_execute))
 ifeq (,$(filter clean compile_commands compile_commands_clean configclean pytest maketest ramulator2, $(MAKECMDGOALS)))
--include $(patsubst $(OBJ_ROOT)/%.o,$(DEP_ROOT)/%.d,$(foreach key,TEST $(sim_key),$(call get_base_objs,$(key))) $(test_base_objs) $(base_module_objs))
+dependency_files := $(patsubst $(OBJ_ROOT)/%.o,$(DEP_ROOT)/%.d,$(foreach key,TEST $(sim_key),$(call get_base_objs,$(key))) $(test_base_objs) $(base_module_objs))
+ifneq (,$(make_no_execute))
+# Keep known header edges. Phony included makefiles are not remade by Make,
+# and marking these targets phony also suppresses their implicit recipes.
+dependency_files := $(wildcard $(dependency_files))
+.PHONY: $(dependency_files)
 endif
-
+-include $(dependency_files)
 endif
 
 ifeq (maketest,$(findstring maketest,$(MAKECMDGOALS)))
