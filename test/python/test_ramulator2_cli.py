@@ -135,17 +135,37 @@ class RamulatorCliTests(unittest.TestCase):
                 self.assertNotIn(GUARD_WARNING, result.stderr)
 
     def test_no_progress_abort_delivers_every_diagnostic_through_a_pipe(self):
+        self.assert_no_progress_abort_delivers_every_diagnostic(lambda record: record, ticks=1)
+
+    def test_no_progress_abort_diagnostics_survive_unrenamed_register_ids(self):
+        # Real traces name architectural registers past the 128-entry physical
+        # register file (706.stockfish_r uses 155). The deadlock printer counts
+        # dependencies of IFETCH/DECODE/DISPATCH entries, which are not renamed
+        # yet: an unchecked lookup threw std::out_of_range, std::terminate cut
+        # off every later operable, and the buffered stdout was lost.
+        def unrenamed_register_ids(record):
+            record[12] = 155  # source_registers[0]
+            record[13] = 255  # source_registers[1]
+            return record
+        # Two ticks: a one-tick stall comes before any instruction is fetched,
+        # and the queues it prints are empty.
+        self.assert_no_progress_abort_delivers_every_diagnostic(unrenamed_register_ids, ticks=2, queue_entries=True)
+
+    def assert_no_progress_abort_delivers_every_diagnostic(self, rewrite, ticks, queue_entries=False):
         backends = {'legacy': ((), re.compile(r'^(\[WQ\] entry: +[0-9]+ .*|WQ empty)$'))}
         if '# DRAM backends (dram-model): legacy, ramulator2' in self.knobs().stdout:
             backends['ramulator2'] = (self.native_settings(), re.compile(r'^  (Last completion [0-9]+ ps ago|No native completion yet)$'))
         cores = self.cores()
         with tempfile.TemporaryDirectory() as tmp:
+            generated = Path(tmp) / 'generated.champsim2'
+            generate(generated, 4096)
+            records = generated.read_bytes()
             trace = Path(tmp) / 'stall.champsim2'
-            generate(trace, 4096)
+            trace.write_bytes(b''.join(bytes(rewrite(bytearray(records[offset:offset + 512]))) for offset in range(0, len(records), 512)))
             for backend, (settings, final_line) in backends.items():
                 with self.subTest(backend=backend):
                     command = [str(BINARY), '--trace-version', '2', '-w', '0', '-i', '1000', '--hide-heartbeat']
-                    for setting in (*settings, 'sim.deadlock_cycle=1'):
+                    for setting in (*settings, f'sim.deadlock_cycle={ticks}'):
                         command.extend(['--set', setting])
                     command.extend(['--', *([str(trace)] * cores)])
                     # stdout is a pipe, as in a batch job: fully buffered.
@@ -153,6 +173,8 @@ class RamulatorCliTests(unittest.TestCase):
                     self.assertEqual(result.returncode, -signal.SIGABRT, result.stderr.decode(errors='replace'))
                     stdout = result.stdout.decode(errors='replace')
                     self.assertIn('DEADLOCK!', stdout)
+                    if queue_entries:
+                        self.assertIn('num_reg_dependent', stdout)
                     # The memory backend is the last operable, so its diagnostic is
                     # the last thing printed -- and the first thing a lost buffer loses.
                     lines = [line for line in stdout.splitlines() if line.strip()]
