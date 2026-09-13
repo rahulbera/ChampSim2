@@ -230,9 +230,14 @@ Evidence: `task5-standalone-{blbp_tune,cbp6_replay,ittage_equiv}.log`. The publi
 the native backend and parsed successfully, reporting `dram-model=ramulator2`,
 `sim.deadlock_cycle=40000` and no `pmem` table (`task5-example-knobs.toml`/`.stderr`).
 
-Still pending when this record was written: CI execution on hosted runners and
-whole-branch review. Earlier passing checks above do not substitute for these.
-The responsible validators will update this section when their evidence is available.
+The complete branch review approved the implementation with no Critical or
+Important findings. Its one replay-comparator test improvement was committed as
+`db25b8cf` and independently approved: all 11 tooling tests and all eight saved
+one-/two-core replay pairs pass with exact scalar types and unchanged leaf counts.
+See the [final review and correction](superpowers/reviews/2026-09-13-ramulator2.md).
+
+Hosted GitHub Actions execution remains pending. Local validation does not claim
+that the hosted compiler matrix has run.
 
 ## Validation input incident and recovery
 
