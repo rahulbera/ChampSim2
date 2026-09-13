@@ -136,8 +136,9 @@ refresh stalled demand for 421 × 833 ps = 350,693 ps, exceeding the old 500 × 
 when native mode omits `sim.deadlock_cycle`. The default is 40,000 at 250 ps and
 60,241 at 166 ps. Explicit positive overrides remain unchanged. Custom devices
 with stalls longer than 10 µs may require an explicit larger threshold. Because
-legacy `--knobs` dumps and statistics documents record `sim.deadlock_cycle = 500`,
-a native run with an explicit value below the 10 µs allowance now warns on stderr.
+legacy `--knobs` dumps and statistics documents record the `sim.deadlock_cycle`
+their run used (500 unless set), a native run with an explicit value below the
+10 µs allowance now warns on stderr.
 
 ## Verified evidence
 
@@ -275,13 +276,27 @@ the startup probe truncated the trace before the run overwrote it with statistic
 and exited 0. The probe also truncated a `--config` source or an earlier results
 document before a startup error such as a replay `config_hash` mismatch.
 
-The CLI no longer writes to a named output at startup. It refuses an existing
-non-empty regular file that does not begin with `# ChampSim statistics.`, probes
-writability by creating and removing a temporary sibling file, and replaces a
-regular file only by renaming a finished document over it after a successful run.
-Existing targets that are not regular files, such as `/dev/null`, FIFOs and the
-pipes behind `/dev/stdout` or process substitution, are still written in place. An
-existing statistics document named by mistake is still replaced, and none of this
+The CLI no longer writes to a named output at startup, and every output check
+applies to the file the kernel reaches through the name. The first version of
+this protection read the name as typed but renamed over a textual fold of it:
+`missing/../machine.toml`, `machine.toml/../notes.txt` and a dangling link to
+`missing/../notes.txt` skipped the signature check and replaced the file the fold
+produced. Links are now followed one at a time and directories canonicalized by
+the kernel, so those names are "cannot open", as they were at `74159f1e`.
+
+It refuses an input trace, a directory, and an existing non-empty regular file
+that does not begin with `# ChampSim statistics.`; an existing regular file must
+also open for writing. The file behind stdout or stderr (`/dev/stdout` redirected
+to a log, or the log's own name) receives the document on that stream after the
+plain report, keeping the log. A FIFO or process substitution is written in
+place without a startup open; a device or socket is written in place but must
+open at startup. A regular file or a new name is replaced by renaming a finished
+`.champsim-toml-<16 hex>.tmp` sibling over it after a successful run. A
+hard-linked file, or one whose directory refuses that sibling at startup, is
+written in place after the run. If the final rename fails, the target is written
+in place with a warning; if that fails too, the sibling is kept and named in the
+error. A run killed during the final write can leave the sibling. An existing
+statistics document named by mistake is still replaced, and none of this
 protects against concurrent path renames.
 
 ## Archived implementation rulings

@@ -83,6 +83,14 @@ The error comes before any native component is constructed. Examples are
 `PassThroughAddrMapper`, which expects a frontend to fill the address vector.
 An admitted component can still fail the geometry and timing checks.
 
+The controller and the DRAM model are not checked against each other. A
+mismatched pair can be rejected by native code, stall until the no-progress
+guard aborts the run (an `HBM12` controller over DDR4 DRAM does), or run with
+the generic controller's semantics (`GenericDDR` over LPDDR5 or HBM3 DRAM does).
+The stock LPDDR6 exports have a 12-bit `channel_width`, which the byte-aligned
+channel-width check rejects; LPDDR6 runs only with that width edited to a
+multiple of 8, which changes the modeled device.
+
 A 64-byte cache block becomes two LPDDR5 transactions; it returns only after both
 complete. A native transaction larger than a block can serve separate block
 requests within that transaction. Homogeneous multi-channel configurations are
@@ -91,8 +99,9 @@ supported. Mixed capacities, periods, or transaction sizes are rejected.
 `dram-model` defaults to `legacy`. Do not combine native selection with `pmem.*`
 keys from `sample.toml`/`lnc.toml` or a full legacy `--knobs` dump: inactive keys
 are errors. Remove `sim.deadlock_cycle` from such a file too, or start from native
-`--knobs`. A legacy dump or statistics document records 500 and `sample.toml` sets
-1,000, and an explicit value replaces the native 10 µs no-progress default (40,000
+`--knobs`. A legacy dump or statistics document records the value its run used
+(500 unless set; `sample.toml` sets 1,000), and an explicit value replaces the
+native 10 µs no-progress default (40,000
 ticks at 250 ps); one observed DDR4 refresh stalled demand for 350,693 ps. A
 native run keeps the explicit value but warns on stderr when it allows less than
 10 µs. Native `--knobs` reports only the selected backend's keys. For example:
@@ -113,13 +122,23 @@ To relocate an unchanged YAML, override `ramulator2.config` after `--config`.
 Original supplied path spelling remains in `config_override`. Run lengths and
 trace format are command-line inputs, so repeat them when replaying.
 
-Use a named output followed by `--` before input paths. Output paths equivalent
-to an input trace (including symlinks and hardlinks) are rejected at startup, and
-so is an existing non-empty file that does not begin like a ChampSim statistics
-document: a trace an optional `--toml` value consumed, a `--config` source or the
-native YAML. A regular output file is replaced only once the run succeeds, so a
-failed in-place replay (for example `--config run.toml --toml run.toml` after a
-`config_hash` mismatch) leaves `run.toml` unchanged.
+Use a named output followed by `--` before input paths. The output checks apply
+to the file the name reaches as `open()` resolves it, so a name such as
+`missing/../machine.toml` cannot be opened, whatever it would fold to as text.
+An output that is an input trace (including through symlinks and hardlinks) is
+rejected at startup, and so is an existing non-empty regular file that does not
+begin like a ChampSim statistics document: a trace an optional `--toml` value
+consumed, a `--config` source or the native YAML. Nothing is written to a named
+output until the run succeeds, so a failed replay (for example `--config
+run.toml --toml run.toml` after a `config_hash` mismatch) leaves `run.toml`
+unchanged. A regular output is then replaced by renaming a finished
+`.champsim-toml-<16 hex>.tmp` sibling over it; a hard-linked output, one in a
+directory where that sibling cannot be created, and one whose rename fails are
+written in place instead. A run killed during that final write can leave the
+sibling behind. A name that reaches standard output or standard error
+(`/dev/stdout`, or the log stdout is redirected to) receives the document on
+that stream, after the plain report. FIFOs and devices are written in place; a
+device that cannot be opened is refused at startup.
 An omitted `--toml` filename appends the TOML document after ordinary stdout;
 use a named file when a standalone parseable document is needed. See the
 [validation record](../docs/ramulator2-validation.md) for native statistics and

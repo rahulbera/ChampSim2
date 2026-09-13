@@ -54,10 +54,10 @@ the user to the YAML. Legacy mode similarly rejects `ramulator2.*` settings.
 This preserves strict unused-key validation and avoids silently ignoring an old
 configuration. A complete legacy TOML cannot simply be overlaid with a native
 selector: remove its `pmem` table and its `sim.deadlock_cycle` key first, or start
-from native `--knobs`. Every legacy `--knobs` dump and statistics document records
-`sim.deadlock_cycle = 500` (`configs/sample.toml` sets 1,000), and an explicit value
-replaces the native no-progress default described below, so a converted DDR4
-configuration can abort inside its first refresh stall.
+from native `--knobs`. A legacy `--knobs` dump or statistics document records the
+`sim.deadlock_cycle` its run used, 500 unless set (`configs/sample.toml` sets
+1,000), and an explicit value replaces the native no-progress default described
+below, so a converted DDR4 configuration can abort inside its first refresh stall.
 
 The initial supported native shape is `External` + `GenericDRAM` +
 `CacheLineInterleave`. There must be a nonempty power-of-two number of controllers,
@@ -82,6 +82,22 @@ also rejected. Configurations that reserve rows as the AQUA and Hydra plugin
 sources instruct are therefore rejected too. Plugins themselves are not checked.
 Admission does not certify a component's policies, only that the driver can
 connect it; geometry and timing checks still apply.
+
+Nor does admission check that a controller suits the DRAM model it drives. A
+mismatched pair can be rejected by native code (an `LPDDR5` controller over DDR4
+fails on an unknown command), stall until ChampSim's no-progress guard aborts
+the run (an `HBM12` controller over DDR4 never completes its first request), or
+run with the generic controller's semantics (`GenericDDR` over LPDDR5 or HBM3
+DRAM completes). The pinned exporter's LPDDR6 organization preset has a 12-bit
+`channel_width`, so every stock LPDDR6 export fails the existing byte-aligned
+channel-width check; it runs only with that width edited to a multiple of 8,
+which changes the modeled device.
+
+Rejections name what was wrong. An `impl` that is not admitted, including a
+misspelled or unregistered one, "is not one of the components supported behind
+ChampSim's External frontend", followed by the supported list; a negative
+`reserved_rows_per_bank` "is invalid; it must be absent or 0"; and a component
+that is present but not a table "must be a table with an impl key".
 
 Two reproducible fixtures are included:
 
@@ -371,9 +387,19 @@ more than the binary had cores still let `--toml` consume and overwrite a trace,
 and the startup probe truncated a `--config` source, the native YAML or a results
 document before a configuration error. A named output is now never written at
 startup. An existing non-empty regular file that does not begin like a statistics
-document is refused, writability is probed with a temporary sibling file, and a
-regular target is replaced by rename only after a successful run. Tests use named
-`--toml FILE -- TRACE` arguments, scratch inputs and checksum checks. See the
+document is refused, and a regular target is replaced by renaming a finished
+sibling over it only after a successful run. A second review found three gaps in
+that first version. The checks read the name as typed while the rename used a
+textual `..` fold, so `missing/../machine.toml` replaced the configuration;
+every check now uses the file the kernel reaches. A rename that failed at the end
+deleted the finished document, and a hard-linked output (split), a writable file
+in a read-only directory and a name of 234 to 255 bytes (refused) no longer
+behaved as before. Hard-linked outputs and files in such directories are now
+written in place, as is a target whose rename fails, and the sibling's name has a
+fixed length that fits beside any valid name. And
+`--toml /dev/stdout` with stdout redirected to a log renamed over the log; the
+file behind stdout or stderr now receives the document on that stream. Tests use
+named `--toml FILE -- TRACE` arguments, scratch inputs and checksum checks. See the
 [recovery record](ramulator2-validation.md#validation-input-incident-and-recovery)
 for the hash and original evidence.
 

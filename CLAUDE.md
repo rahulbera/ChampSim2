@@ -167,7 +167,12 @@ ChRaBaRoCo or MOP4CLXOR, or RITAddrMapper over one of those with
 frontend to a type the External shim is not; PassThroughAddrMapper faults at
 the first tick; reserved RIT rows make the top of the capacity unreachable) is
 rejected before native construction. The DRAM checks still apply to admitted
-components. Native mode rejects all `pmem.*` settings;
+components. Controller/DRAM family pairing is not validated: a mismatched pair
+can be rejected by native code, stall until the no-progress guard aborts (HBM12
+over DDR4), or run with the generic controller's semantics (GenericDDR over
+LPDDR5). LPDDR6's stock exports have a 12-bit `channel_width`, which the
+byte-aligned channel-width check rejects unless the width is edited, which
+changes the modeled device. Native mode rejects all `pmem.*` settings;
 legacy rejects `ramulator2.*`. The factory resolves one backend, with one operable
 and the existing shared unbounded LLC feeder; capacity and clock discovery do not
 create a second native instance. A private External shim reports the actual core
@@ -202,17 +207,37 @@ revision and library/build provenance. Replay loads `[config]`, checks current
 YAML hash/revision in the driver, and preserves original overrides separately.
 
 Use `--toml result.toml -- trace...`. Nothing is written to a named output at
-startup. The CLI checks the trace count and output/trace aliases, then refuses an
-existing non-empty regular file that does not begin with `# ChampSim statistics.`
-(`toml_printer::document_signature`). That protects a trace the optional value
-swallowed when one path too many is given, a `--config` source, and the YAML.
-Writability is probed by creating and removing a temporary sibling. A regular
-output is replaced by renaming a finished sibling over it only after a successful
-run, so a startup error or failed write leaves an earlier document intact.
-Existing targets that are not regular files (`/dev/null`, a pipe or terminal
-behind `/dev/stdout`, a FIFO, a process substitution) are written in place; a
-directory is refused. `--knobs` never probes output paths. Full stdout with
-unnamed `--toml` still contains progress/plain output before the TOML tail.
+startup. After the trace count, `champsim::output::plan` (`src/output_target.cc`)
+checks the file the kernel reaches through the name, resolving links one at a
+time and never folding `..` by text, so `missing/../x` is "cannot open" as in
+`open()`. It refuses an input trace (by inode or canonical path), a directory,
+and an existing non-empty regular file that does not begin with
+`# ChampSim statistics.` (`toml_printer::document_signature`). That protects a
+trace the optional value swallowed when one path too many is given, a `--config`
+source, and the YAML. An existing regular file must also open for writing. Then
+the write mode, applied after the run:
+- the inode behind stdout or stderr (`/dev/stdout`, `/proc/self/fd/1`, the log
+  the shell redirected to): the document is appended to that stream after the
+  plain report, and nothing is probed, renamed or truncated;
+- a FIFO (or process substitution): written in place, not opened at startup,
+  since that would consume the reader; a device or socket: written in place, but
+  opened non-blocking and closed at startup, so an unopenable one costs no run;
+- a hard-linked regular file, or one whose directory refuses the startup probe
+  (a `.champsim-toml-<16 hex>.tmp` sibling created and removed): written in
+  place;
+- otherwise, a regular file or a new name: a finished sibling of that form is
+  renamed over it (with the old permission bits), so a startup error or a
+  failed write of the sibling leaves an earlier document intact. If the rename
+  fails (as for a file bind-mounted into a container), the target is written in
+  place with a warning, and if that fails too the sibling is kept and named in
+  the error. If the sibling cannot be created by then, the target
+  is written in place with a warning. A new name in a directory that refuses
+  the probe is "cannot open".
+
+Every failure exits 1. A run killed during the final write can leave a
+`.champsim-toml-*.tmp` sibling. `--knobs` never probes output paths. Full
+stdout with unnamed `--toml` still contains progress/plain output before the
+TOML tail.
 See [the validation record](docs/ramulator2-validation.md) for evidence, limitations,
 the corrected default guard, and the recovered validation input incident. Portable
 regressions live in `test/ramulator2`; the enabled CI job uses generated local
@@ -321,12 +346,16 @@ ticks without progress, followed by per-operable diagnostics and `abort()`. Lega
 defaults to 500 ticks. Native mode, only when the key is omitted, defaults to
 `max(500, ceil(10 us / minimum actual operable period))` after constructing the
 selected environment once. Explicit values retain their meaning, but in native
-mode one allowing less than 10 us prints a stderr warning: every legacy `--knobs`
-dump and statistics document records 500, so a converted configuration must drop
-`sim.deadlock_cycle` along with `pmem.*`. Nonpositive native operable periods are
-errors. The diagnostics are flushed before `abort()`, so a redirected stdout keeps
-the memory backend's, which print last. A periodic livelock check warns/dies on
-low IPC.
+mode one allowing less than 10 us prints a stderr warning: legacy `--knobs` dumps
+and statistics documents record the value they used (500 by default), so a
+converted configuration should drop `sim.deadlock_cycle` along with `pmem.*`.
+Nonpositive native operable periods are errors. The diagnostics are flushed before
+`abort()`, so a redirected stdout keeps the memory backend's, which print last.
+Each operable prints inside `try`/`catch` (`print_deadlock_diagnostics`): one that
+throws gets a one-line note and the rest still print. The core's printer used to
+throw on real v2 traces, counting dependencies of unrenamed entries whose register
+IDs lie past the 128-entry physical register file. A periodic livelock check
+warns/dies on low IPC.
 
 ### Memory hierarchy & core
 
@@ -585,9 +614,11 @@ Four things about the numbers are easy to get wrong:
 startup** with an error pointing at `--toml`. `src/json_printer.cc` is still
 compiled and linked so it cannot rot silently; the CLI rejects it, while focused
 stream tests exercise native JSON compatibility. An unwritable `--toml` path is also
-rejected at startup, as is an existing file that is not a statistics document, and a
-failed write exits non-zero, leaving any earlier document in place, rather than
-reporting success. The format differs from the old JSON in ways that matter to a parser:
+rejected at startup, as is an existing non-empty regular file that is not a statistics
+document, and a failed write exits non-zero rather than reporting success; how each
+kind of target is written, and what a failure leaves, is described with `--toml`
+under *Optional native DRAM backend*. The format differs from the old JSON in ways
+that matter to a parser:
 
 - **`lower_snake_case` core/cache/legacy memory keys**, including lower-cased component names
   (`cpu0_l1d`, `llc`). A configured name that is not a bare TOML key is quoted,
