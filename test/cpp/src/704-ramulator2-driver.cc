@@ -133,6 +133,65 @@ TEST_CASE("Native driver rejects malformed exported tables before native indexin
   }
 }
 
+// The native API does not check that a controller or address mapper can work
+// with ChampSim's External shim: PassThroughAddrMapper leaves addr_vec empty
+// and faults at the first tick, reserved RIT rows shift the top of the capacity
+// the driver reports outside the device, and BlockHammer casts the frontend to
+// a type it is not (undefined behaviour, so test_ramulator2_cli.py covers it in
+// a subprocess).
+TEST_CASE("Native driver rejects components that cannot serve the External shim")
+{
+  if (!champsim::ramulator2_available())
+    SKIP("native build disabled");
+  const auto original = fixture();
+  const auto controller = original.substr(original.find("    - impl: GenericDDR"));
+  const std::string flat_mapper = "      addr_mapper:\n        impl: RoBaRaCoCh\n";
+  const auto rit = [&](const std::string& body) {
+    return changed(original, flat_mapper, "      addr_mapper:\n        impl: RITAddrMapper\n" + body);
+  };
+  for (const auto& [yaml, diagnostic] : std::vector<std::pair<std::string, std::string>>{
+           {changed(original, "impl: GenericDDR", "impl: DDR4Controller"), "controller impl 'DDR4Controller' is not supported with ChampSim's External "
+                                                                           "frontend; supported: GenericDDR, LPDDR5, LPDDR6, GDDR7, HBM12, HBM34, PRAC"},
+           {changed(original, "    - impl: GenericDDR\n", "    - id: no_impl\n"), "controller impl is missing; supported: GenericDDR, LPDDR5"},
+           {changed(original, "impl: RoBaRaCoCh", "impl: PassThroughAddrMapper"),
+            "addr_mapper impl 'PassThroughAddrMapper' is not supported with ChampSim's External frontend; supported: RoBaRaCoCh, ChRaBaRoCo, MOP4CLXOR"},
+           {changed(original, flat_mapper, ""), "addr_mapper impl is missing; supported: RoBaRaCoCh, ChRaBaRoCo, MOP4CLXOR, or RITAddrMapper"},
+           {original + changed(controller, "impl: RoBaRaCoCh", "impl: PassThroughAddrMapper"), "addr_mapper impl 'PassThroughAddrMapper' is not supported"},
+           {rit("        reserved_rows_per_bank: 64\n        addr_mapper:\n          impl: RoBaRaCoCh\n"), "reserved_rows_per_bank 64 is not supported"},
+           {rit("        reserved_rows_per_bank: 1024\n        addr_mapper:\n          impl: ChRaBaRoCo\n"), "reserved_rows_per_bank 1024 is not supported"},
+           {rit("        addr_mapper:\n          impl: PassThroughAddrMapper\n"),
+            "RITAddrMapper nested addr_mapper impl 'PassThroughAddrMapper' is not supported with ChampSim's External frontend"},
+           {rit("        addr_mapper:\n          impl: RITAddrMapper\n"), "RITAddrMapper nested addr_mapper impl 'RITAddrMapper' is not supported"},
+           {rit("        reserved_rows_per_bank: 0\n"), "RITAddrMapper nested addr_mapper impl is missing; supported: RoBaRaCoCh"}}) {
+    CAPTURE(diagnostic);
+    temporary_yaml file(yaml);
+    CHECK_THROWS_WITH(champsim::make_ramulator2_driver(file.config()), Catch::Matchers::ContainsSubstring(diagnostic));
+  }
+}
+
+TEST_CASE("Native driver serves every admitted flat and row-indirection address mapper")
+{
+  if (!champsim::ramulator2_available())
+    SKIP("native build disabled");
+  const auto original = fixture();
+  const std::string flat_mapper = "      addr_mapper:\n        impl: RoBaRaCoCh\n";
+  for (const auto& mapper : std::vector<std::string>{
+           "      addr_mapper:\n        impl: ChRaBaRoCo\n", "      addr_mapper:\n        impl: MOP4CLXOR\n",
+           "      addr_mapper:\n        impl: RITAddrMapper\n        addr_mapper:\n          impl: RoBaRaCoCh\n",
+           "      addr_mapper:\n        impl: RITAddrMapper\n        reserved_rows_per_bank: 0\n        addr_mapper:\n          impl: MOP4CLXOR\n"}) {
+    CAPTURE(mapper);
+    temporary_yaml file(changed(original, flat_mapper, mapper));
+    auto driver = champsim::make_ramulator2_driver(file.config());
+    REQUIRE(driver->size().count() == 8589934592LL);
+    unsigned completed = 0;
+    REQUIRE(driver->send(false, 0x100000, 0, 64, [&] { ++completed; }));
+    REQUIRE(driver->send(false, 8589934592ULL - 64, 0, 64, [&] { ++completed; }));
+    for (int i = 0; i < 10000 && completed != 2; ++i)
+      driver->tick();
+    REQUIRE(completed == 2);
+  }
+}
+
 TEST_CASE("Native input identity is effective and detects replay drift")
 {
   if (!champsim::ramulator2_available())

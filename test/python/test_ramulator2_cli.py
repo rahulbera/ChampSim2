@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 import tomllib
 import unittest
 
@@ -48,6 +49,23 @@ class RamulatorCliTests(unittest.TestCase):
         result = self.knobs(*settings, 'sim.deadlock_cycle=0')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('sim.deadlock_cycle', result.stderr)
+
+    def test_native_rejects_blockhammer_before_it_casts_the_external_frontend(self):
+        # BlockHammer's setup() static_casts the frontend to its BHO3 CPU. With
+        # ChampSim's External shim that is undefined behaviour: a SIGSEGV during
+        # construction or a silently inert controller, depending on memory
+        # layout. Only a subprocess survives the crash.
+        self.native_settings()
+        source = (ROOT / 'configs' / 'ramulator2' / 'ddr4.yaml').read_text()
+        self.assertEqual(source.count('impl: GenericDDR'), 1)
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'blockhammer.yaml'
+            path.write_text(source.replace('impl: GenericDDR', 'impl: BlockHammer'))
+            result = self.knobs('dram-model=ramulator2', f'ramulator2.config={path}')
+        self.assertEqual(result.returncode, 1, f'signal/rc {result.returncode}: {result.stderr}')
+        self.assertIn("controller impl 'BlockHammer' is not supported with ChampSim's External frontend", result.stderr)
+        self.assertIn('supported: GenericDDR, LPDDR5, LPDDR6, GDDR7, HBM12, HBM34, PRAC', result.stderr)
+        self.assertEqual(result.stdout, '')
 
     def test_native_rejects_an_operable_clock_that_rounds_to_zero(self):
         result = self.knobs(*self.native_settings(), 'cache.llc.frequency=2000000')

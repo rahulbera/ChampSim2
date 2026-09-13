@@ -72,6 +72,17 @@ for `tomllib`. Both fixtures use External, GenericDRAM and CacheLineInterleave:
 | DDR4 | GenericDDR | 64 B | 833 ps | 8 GiB |
 | LPDDR5 | LPDDR5 | 32 B | 1,453 ps | 1 GiB |
 
+Other exports must keep that frontend, memory system and channel mapper. Each
+controller `impl` must be `GenericDDR`, `LPDDR5`, `LPDDR6`, `GDDR7`, `HBM12`,
+`HBM34` or `PRAC`. Each controller `addr_mapper` must be `RoBaRaCoCh`,
+`ChRaBaRoCo` or `MOP4CLXOR`. `RITAddrMapper` is accepted only when its nested
+`addr_mapper` is one of those three and `reserved_rows_per_bank` is absent or 0.
+Other components fail with a configuration error naming the rejected `impl`.
+The error comes before any native component is constructed. Examples are
+`BlockHammer`, which needs Ramulator's own BHO3 CPU frontend, and
+`PassThroughAddrMapper`, which expects a frontend to fill the address vector.
+An admitted component can still fail the geometry and timing checks.
+
 A 64-byte cache block becomes two LPDDR5 transactions; it returns only after both
 complete. A native transaction larger than a block can serve separate block
 requests within that transaction. Homogeneous multi-channel configurations are

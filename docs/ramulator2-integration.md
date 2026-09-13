@@ -62,6 +62,23 @@ checked power-of-two geometry/address constraints. The adapter does not translat
 every possible native frontend, memory-system architecture or heterogeneous
 channel arrangement.
 
+Within that shape, the driver admits only components that can operate behind
+ChampSim's External frontend shim. It checks every controller before
+constructing any native component:
+
+| Component | Admitted `impl` | Rejected examples, and why |
+| --- | --- | --- |
+| Controller | `GenericDDR`, `LPDDR5`, `LPDDR6`, `GDDR7`, `HBM12`, `HBM34`, `PRAC` | `BlockHammer` casts the frontend to Ramulator's BHO3 CPU during setup. With the shim that is undefined behavior: a crash or silently inert throttling, depending on memory layout. |
+| Address mapper | `RoBaRaCoCh`, `ChRaBaRoCo`, `MOP4CLXOR` | `PassThroughAddrMapper` expects the frontend to fill the address vector and faults at the first tick. |
+| Row indirection | `RITAddrMapper` whose nested `addr_mapper` is one of the three above, with `reserved_rows_per_bank` absent or 0 | A nonzero reservation shifts every row up. The top of the capacity ChampSim addresses then lies outside the device, and native throws when a run reaches it. |
+
+The controller names are all of the pinned revision's registered controllers
+except `BlockHammer`. Native has no default address mapper, so omitting one is
+also rejected. Configurations that reserve rows as the AQUA and Hydra plugin
+sources instruct are therefore rejected too. Plugins themselves are not checked.
+Admission does not certify a component's policies, only that the driver can
+connect it; geometry and timing checks still apply.
+
 Two reproducible fixtures are included:
 
 | Fixture | Native transaction | tCK | Exposed capacity |

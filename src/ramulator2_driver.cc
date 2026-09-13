@@ -7,6 +7,7 @@
 
 #if CHAMPSIM_WITH_RAMULATOR2
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cmath>
 #include <dlfcn.h>
@@ -15,6 +16,7 @@
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <string_view>
 
 #include "defs.h"
 #include "ramulator/base/config.h"
@@ -106,6 +108,46 @@ int bit_count(uint64_t power)
     ++result;
   }
   return result;
+}
+// Native construction does not check that a component can work behind
+// ChampSim's External shim, so admit only those that can. BlockHammer's setup()
+// static_casts the frontend to its own BHO3 CPU (undefined behaviour with the
+// shim); PassThroughAddrMapper expects the frontend to fill addr_vec and faults
+// at the first tick; RITAddrMapper's reserved rows shift every row up, so the
+// top of the capacity computed below becomes unreachable. The names are the
+// pinned revision's registrations; native has no default address mapper.
+constexpr std::array<std::string_view, 7> supported_controllers{"GenericDDR", "LPDDR5", "LPDDR6", "GDDR7", "HBM12", "HBM34", "PRAC"};
+constexpr std::array<std::string_view, 3> flat_addr_mappers{"RoBaRaCoCh", "ChRaBaRoCo", "MOP4CLXOR"};
+std::string implementation(const ConfigNode& node) { return node.is_map() && node["impl"].is_scalar() ? node["impl"].scalar() : std::string{}; }
+std::string joined(const auto& names)
+{
+  std::string text;
+  for (const auto name : names)
+    text += (text.empty() ? "" : ", ") + std::string{name};
+  return text;
+}
+void require_supported(const std::string& component, const std::string& impl, const auto& names, const std::string& extra = "")
+{
+  const auto supported = "; supported: " + joined(names) + extra;
+  require(std::find(names.begin(), names.end(), impl) != names.end(),
+          impl.empty() ? component + " impl is missing" + supported
+                       : component + " impl '" + impl + "' is not supported with ChampSim's External frontend" + supported);
+}
+void validate_components(const ConfigNode& controller)
+{
+  require_supported("controller", implementation(controller), supported_controllers);
+  const auto mapper = controller["addr_mapper"];
+  const auto mapper_impl = implementation(mapper);
+  if (mapper_impl != "RITAddrMapper") {
+    require_supported("addr_mapper", mapper_impl, flat_addr_mappers, ", or RITAddrMapper over one of them without reserved rows");
+    return;
+  }
+  require_supported("RITAddrMapper nested addr_mapper", implementation(mapper["addr_mapper"]), flat_addr_mappers);
+  if (const auto reserved = mapper["reserved_rows_per_bank"]) {
+    const int rows = integer(reserved, "reserved_rows_per_bank");
+    require(rows == 0, "RITAddrMapper reserved_rows_per_bank " + std::to_string(rows)
+                           + " is not supported: ChampSim addresses every row, and shifted top rows fall outside the device; omit it or use 0");
+  }
 }
 const champsim::native_build::model& validate_tables(const ConfigNode& controller)
 {
@@ -268,6 +310,8 @@ public:
     const auto controllers = system["controllers"];
     require(controllers.is_sequence() && power_of_two(controllers.seq().size()), "controllers must be a nonempty power-of-two sequence");
     uint64_t channel_capacity = 0;
+    for (const auto& controller : controllers.seq())
+      validate_components(controller); // Before any native component is constructed.
     for (const auto& controller : controllers.seq()) {
       const auto& model = validate_tables(controller);
       auto spec = Ramulator::DRAMSpec::create(model.name, controller);
