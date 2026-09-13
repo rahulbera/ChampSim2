@@ -148,7 +148,11 @@ includes public base/spec/request/config layouts and type identities; response
 files and forced includes participate. Incompatible ABI flags fail clearly.
 Mode/compiler/root changes invalidate relevant stamps and dependencies; existing
 `.d` edges still apply to `make -n/-q/-t` without executing remakes. Runtime checks
-the loaded shared library against recorded provenance. Never run two builds or
+the loaded shared library against recorded provenance, asking the dynamic loader
+for the file it loaded as `libramulator.so` (dlopen `RTLD_NOLOAD` + dlinfo). Do not
+use dladdr on a native function: in a non-PIE executable its address is a PLT
+stub in the program, so the program was fingerprinted and every native run
+failed. CI builds a non-PIE binary to keep that fixed. Never run two builds or
 simulations against a root while another build may replace its `libramulator.so`;
 out-of-tree CMake still writes that file in the source root. Separate roots are
 required for concurrent native build work.
@@ -156,7 +160,14 @@ required for concurrent native build work.
 `configs/ramulator2.toml` is an example. `ramulator2.config` names a fully expanded
 YAML export, relative to the process working directory. Native input supports
 External + GenericDRAM + CacheLineInterleave with homogeneous controller
-capacity, period and transaction size. Native mode rejects all `pmem.*` settings;
+capacity, period and transaction size. Each controller impl must be GenericDDR,
+LPDDR5, LPDDR6, GDDR7, HBM12, HBM34 or PRAC, and each addr_mapper RoBaRaCoCh,
+ChRaBaRoCo or MOP4CLXOR, or RITAddrMapper over one of those with
+`reserved_rows_per_bank` absent or 0. Everything else (BlockHammer casts the
+frontend to a type the External shim is not; PassThroughAddrMapper faults at
+the first tick; reserved RIT rows make the top of the capacity unreachable) is
+rejected before native construction. The DRAM checks still apply to admitted
+components. Native mode rejects all `pmem.*` settings;
 legacy rejects `ramulator2.*`. The factory resolves one backend, with one operable
 and the existing shared unbounded LLC feeder; capacity and clock discovery do not
 create a second native instance. A private External shim reports the actual core
@@ -164,8 +175,14 @@ count and retains CPU IDs.
 
 The adapter owns parent packets and weak-mailbox callback contexts. Submit in
 RQ/PQ/WQ FIFO prefixes, retaining partially submitted heads; retry only rejected
-fragments. Parent admission and read latency begin at the first accepted native
-fragment. Completion waits for all fragments and preserves every response field;
+fragments. A `PREFETCH` head whose cache block is past native capacity is never
+submitted: it is popped, a response-requested read is answered at once (as in fast
+warmup), and it is counted in `out_of_range_prefetches` in warmup and measured
+phases alike. Stock physical prefetchers (`next_line`, `va_ampm_lite`) can cross
+the top physical frame, which legacy aliases instead. Out-of-range
+demand/RFO/write/translation requests and invalid CPU IDs still throw. Parent
+admission and read latency begin at the first accepted native fragment.
+Completion waits for all fragments and preserves every response field;
 no-response reads still count, and write callbacks never produce upstream replies.
 Fast warmup bypasses new demand submissions while native clocks/refresh tick.
 Phase resets clear counters, not native queues/clocks or live contexts. Outstanding
@@ -174,8 +191,9 @@ new acceptances. Each finishing CPU updates an owned shared-memory ROI snapshot.
 Finalize once after all phases, without a measured drain or additional ticks.
 
 Native TOML uses schema 2 and `phase.<name>.<roi|sim>.ramulator2.adapter`/`.native`,
-plus owned raw `native_yaml`. Counters are separate 64-bit fields; read latency is
-summed picoseconds with a sample count. Write completions mean native command
+plus owned raw `native_yaml`. Counters are separate 64-bit fields, including
+`out_of_range_prefetches` beside `rejected_submissions`; read latency is summed
+picoseconds with a sample count. Write completions mean native command
 issue/coalescing, not bus drain. Native paths are escaped by component, controller
 indices become `channel0`, etc.; native doubles retain precision and values above
 TOML's INT64_MAX use exact decimal strings. Legacy schema 1 and formatter bytes
@@ -183,9 +201,18 @@ stay unchanged. `meta.ramulator2` records original YAML, canonical path, hash,
 revision and library/build provenance. Replay loads `[config]`, checks current
 YAML hash/revision in the driver, and preserves original overrides separately.
 
-Use `--toml result.toml -- trace...`; trace count and filesystem output aliases are
-checked before output probing. `--knobs` never probes output paths. Full stdout
-with unnamed `--toml` still contains progress/plain output before the TOML tail.
+Use `--toml result.toml -- trace...`. Nothing is written to a named output at
+startup. The CLI checks the trace count and output/trace aliases, then refuses an
+existing non-empty regular file that does not begin with `# ChampSim statistics.`
+(`toml_printer::document_signature`). That protects a trace the optional value
+swallowed when one path too many is given, a `--config` source, and the YAML.
+Writability is probed by creating and removing a temporary sibling. A regular
+output is replaced by renaming a finished sibling over it only after a successful
+run, so a startup error or failed write leaves an earlier document intact.
+Existing targets that are not regular files (`/dev/null`, a pipe or terminal
+behind `/dev/stdout`, a FIFO, a process substitution) are written in place; a
+directory is refused. `--knobs` never probes output paths. Full stdout with
+unnamed `--toml` still contains progress/plain output before the TOML tail.
 See [the validation record](docs/ramulator2-validation.md) for evidence, limitations,
 the corrected default guard, and the recovered validation input incident. Portable
 regressions live in `test/ramulator2`; the enabled CI job uses generated local
@@ -293,8 +320,13 @@ Progress is monitored through `sim.deadlock_cycle` consecutive global simulation
 ticks without progress, followed by per-operable diagnostics and `abort()`. Legacy
 defaults to 500 ticks. Native mode, only when the key is omitted, defaults to
 `max(500, ceil(10 us / minimum actual operable period))` after constructing the
-selected environment once. Explicit values retain their meaning; nonpositive native
-operable periods are errors. A periodic livelock check warns/dies on low IPC.
+selected environment once. Explicit values retain their meaning, but in native
+mode one allowing less than 10 us prints a stderr warning: every legacy `--knobs`
+dump and statistics document records 500, so a converted configuration must drop
+`sim.deadlock_cycle` along with `pmem.*`. Nonpositive native operable periods are
+errors. The diagnostics are flushed before `abort()`, so a redirected stdout keeps
+the memory backend's, which print last. A periodic livelock check warns/dies on
+low IPC.
 
 ### Memory hierarchy & core
 
@@ -553,8 +585,9 @@ Four things about the numbers are easy to get wrong:
 startup** with an error pointing at `--toml`. `src/json_printer.cc` is still
 compiled and linked so it cannot rot silently; the CLI rejects it, while focused
 stream tests exercise native JSON compatibility. An unwritable `--toml` path is also
-rejected at startup, and a failed write exits non-zero rather than reporting
-success. The format differs from the old JSON in ways that matter to a parser:
+rejected at startup, as is an existing file that is not a statistics document, and a
+failed write exits non-zero, leaving any earlier document in place, rather than
+reporting success. The format differs from the old JSON in ways that matter to a parser:
 
 - **`lower_snake_case` core/cache/legacy memory keys**, including lower-cased component names
   (`cpu0_l1d`, `llc`). A configured name that is not a bare TOML key is quoted,
