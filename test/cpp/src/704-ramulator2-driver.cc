@@ -149,24 +149,35 @@ TEST_CASE("Native driver rejects components that cannot serve the External shim"
   const auto rit = [&](const std::string& body) {
     return changed(original, flat_mapper, "      addr_mapper:\n        impl: RITAddrMapper\n" + body);
   };
+  const std::string unsupported = " is not one of the components supported behind ChampSim's External frontend; supported: ";
+  const std::string table = " must be a table with an impl key; supported: ";
   for (const auto& [yaml, diagnostic] : std::vector<std::pair<std::string, std::string>>{
-           {changed(original, "impl: GenericDDR", "impl: DDR4Controller"), "controller impl 'DDR4Controller' is not supported with ChampSim's External "
-                                                                           "frontend; supported: GenericDDR, LPDDR5, LPDDR6, GDDR7, HBM12, HBM34, PRAC"},
+           // A misspelled or unregistered name is not described as a registered component that does not fit.
+           {changed(original, "impl: GenericDDR", "impl: DDR4Controller"),
+            "controller impl 'DDR4Controller'" + unsupported + "GenericDDR, LPDDR5, LPDDR6, GDDR7, HBM12, HBM34, PRAC"},
            {changed(original, "    - impl: GenericDDR\n", "    - id: no_impl\n"), "controller impl is missing; supported: GenericDDR, LPDDR5"},
            {changed(original, "impl: RoBaRaCoCh", "impl: PassThroughAddrMapper"),
-            "addr_mapper impl 'PassThroughAddrMapper' is not supported with ChampSim's External frontend; supported: RoBaRaCoCh, ChRaBaRoCo, MOP4CLXOR"},
+            "addr_mapper impl 'PassThroughAddrMapper'" + unsupported + "RoBaRaCoCh, ChRaBaRoCo, MOP4CLXOR"},
+           {changed(original, "impl: RoBaRaCoCh", "impl: roBaRaCoCh"), "addr_mapper impl 'roBaRaCoCh'" + unsupported + "RoBaRaCoCh"},
            {changed(original, flat_mapper, ""), "addr_mapper impl is missing; supported: RoBaRaCoCh, ChRaBaRoCo, MOP4CLXOR, or RITAddrMapper"},
-           {original + changed(controller, "impl: RoBaRaCoCh", "impl: PassThroughAddrMapper"), "addr_mapper impl 'PassThroughAddrMapper' is not supported"},
+           {changed(original, flat_mapper, "      addr_mapper: RoBaRaCoCh\n"), "addr_mapper" + table + "RoBaRaCoCh, ChRaBaRoCo, MOP4CLXOR, or RITAddrMapper"},
+           {original + changed(controller, "impl: RoBaRaCoCh", "impl: PassThroughAddrMapper"), "addr_mapper impl 'PassThroughAddrMapper'" + unsupported},
            {rit("        reserved_rows_per_bank: 64\n        addr_mapper:\n          impl: RoBaRaCoCh\n"), "reserved_rows_per_bank 64 is not supported"},
            {rit("        reserved_rows_per_bank: 1024\n        addr_mapper:\n          impl: ChRaBaRoCo\n"), "reserved_rows_per_bank 1024 is not supported"},
+           {rit("        reserved_rows_per_bank: -1\n        addr_mapper:\n          impl: RoBaRaCoCh\n"),
+            "RITAddrMapper reserved_rows_per_bank -1 is invalid; it must be absent or 0"},
            {rit("        addr_mapper:\n          impl: PassThroughAddrMapper\n"),
-            "RITAddrMapper nested addr_mapper impl 'PassThroughAddrMapper' is not supported with ChampSim's External frontend"},
-           {rit("        addr_mapper:\n          impl: RITAddrMapper\n"), "RITAddrMapper nested addr_mapper impl 'RITAddrMapper' is not supported"},
+            "RITAddrMapper nested addr_mapper impl 'PassThroughAddrMapper'" + unsupported},
+           {rit("        addr_mapper:\n          impl: RITAddrMapper\n"), "RITAddrMapper nested addr_mapper impl 'RITAddrMapper'" + unsupported},
+           {rit("        addr_mapper: MOP4CLXOR\n"), "RITAddrMapper nested addr_mapper" + table + "RoBaRaCoCh"},
            {rit("        reserved_rows_per_bank: 0\n"), "RITAddrMapper nested addr_mapper impl is missing; supported: RoBaRaCoCh"}}) {
     CAPTURE(diagnostic);
     temporary_yaml file(yaml);
     CHECK_THROWS_WITH(champsim::make_ramulator2_driver(file.config()), Catch::Matchers::ContainsSubstring(diagnostic));
   }
+  // A negative reservation is not a row shift.
+  temporary_yaml negative(rit("        reserved_rows_per_bank: -1\n        addr_mapper:\n          impl: RoBaRaCoCh\n"));
+  CHECK_THROWS_WITH(champsim::make_ramulator2_driver(negative.config()), !Catch::Matchers::ContainsSubstring("shifted"));
 }
 
 TEST_CASE("Native driver serves every admitted flat and row-indirection address mapper")

@@ -150,25 +150,29 @@ std::string joined(const auto& names)
     text += (text.empty() ? "" : ", ") + std::string{name};
   return text;
 }
-void require_supported(const std::string& component, const std::string& impl, const auto& names, const std::string& extra = "")
+// A component is a table naming its impl. The wording avoids calling a
+// misspelled or unregistered impl a registered component that does not fit.
+void require_supported(const std::string& component, const ConfigNode& node, const auto& names, const std::string& extra = "")
 {
   const auto supported = "; supported: " + joined(names) + extra;
+  require(!node || node.is_map(), component + " must be a table with an impl key" + supported);
+  const auto impl = implementation(node);
   require(std::find(names.begin(), names.end(), impl) != names.end(),
           impl.empty() ? component + " impl is missing" + supported
-                       : component + " impl '" + impl + "' is not supported with ChampSim's External frontend" + supported);
+                       : component + " impl '" + impl + "' is not one of the components supported behind ChampSim's External frontend" + supported);
 }
 void validate_components(const ConfigNode& controller)
 {
-  require_supported("controller", implementation(controller), supported_controllers);
+  require_supported("controller", controller, supported_controllers);
   const auto mapper = controller["addr_mapper"];
-  const auto mapper_impl = implementation(mapper);
-  if (mapper_impl != "RITAddrMapper") {
-    require_supported("addr_mapper", mapper_impl, flat_addr_mappers, ", or RITAddrMapper over one of them without reserved rows");
+  if (implementation(mapper) != "RITAddrMapper") {
+    require_supported("addr_mapper", mapper, flat_addr_mappers, ", or RITAddrMapper over one of them without reserved rows");
     return;
   }
-  require_supported("RITAddrMapper nested addr_mapper", implementation(mapper["addr_mapper"]), flat_addr_mappers);
+  require_supported("RITAddrMapper nested addr_mapper", mapper["addr_mapper"], flat_addr_mappers);
   if (const auto reserved = mapper["reserved_rows_per_bank"]) {
     const int rows = integer(reserved, "reserved_rows_per_bank");
+    require(rows >= 0, "RITAddrMapper reserved_rows_per_bank " + std::to_string(rows) + " is invalid; it must be absent or 0");
     require(rows == 0, "RITAddrMapper reserved_rows_per_bank " + std::to_string(rows)
                            + " is not supported: ChampSim addresses every row, and shifted top rows fall outside the device; omit it or use 0");
   }

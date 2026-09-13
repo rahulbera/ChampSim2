@@ -85,7 +85,7 @@ class RamulatorCliTests(unittest.TestCase):
             path.write_text(source.replace('impl: GenericDDR', 'impl: BlockHammer'))
             result = self.knobs('dram-model=ramulator2', f'ramulator2.config={path}')
         self.assertEqual(result.returncode, 1, f'signal/rc {result.returncode}: {result.stderr}')
-        self.assertIn("controller impl 'BlockHammer' is not supported with ChampSim's External frontend", result.stderr)
+        self.assertIn("controller impl 'BlockHammer' is not one of the components supported behind ChampSim's External frontend", result.stderr)
         self.assertIn('supported: GenericDDR, LPDDR5, LPDDR6, GDDR7, HBM12, HBM34, PRAC', result.stderr)
         self.assertEqual(result.stdout, '')
 
