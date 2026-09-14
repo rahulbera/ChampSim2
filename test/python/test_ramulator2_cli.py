@@ -23,6 +23,13 @@ from generate_trace import generate  # noqa: E402
 GUARD_WARNING = 'WARNING: sim.deadlock_cycle'
 
 
+def native_quantum(effective, tck):
+    """The smallest operable period: each is 1e6 / MHz truncated to picoseconds."""
+    periods = [int(1e6 / entry['frequency']) for table in ('cache', 'ooo_cpu', 'ptw') for entry in effective[table].values()
+               if isinstance(entry, dict) and 'frequency' in entry]
+    return min([tck, *periods])
+
+
 def no_core_dump():
     if resource is not None:
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
@@ -180,6 +187,49 @@ class RamulatorCliTests(unittest.TestCase):
                     # the last thing printed -- and the first thing a lost buffer loses.
                     lines = [line for line in stdout.splitlines() if line.strip()]
                     self.assertRegex(lines[-1], final_line)
+
+    def test_native_default_guard_follows_the_actual_fastest_clock_and_explicit_guards_stay(self):
+        # Recomputed here from the documented rule: every operable period is
+        # 1e6 / MHz truncated to picoseconds, the quantum is the smallest of
+        # those and the native tCK, and the default allows ceil(10 us / quantum)
+        # ticks, never fewer than 500.
+        self.native_settings()
+        source = (ROOT / 'configs' / 'ramulator2' / 'ddr4.yaml').read_text()
+        self.assertEqual(source.count('9363, 2, 833]'), 1)
+        keys = [f'{table}.{name}.frequency' for table, entries in self.effective().items() if table in ('cache', 'ooo_cpu', 'ptw')
+                for name, entry in entries.items() if isinstance(entry, dict) and 'frequency' in entry]
+        cores = [key for key in keys if key.startswith('ooo_cpu.')]
+
+        def everything(mhz):
+            return tuple(f'{key}={mhz}' for key in keys)
+        with tempfile.TemporaryDirectory() as tmp:
+            slow = Path(tmp) / 'tck30000.yaml'
+            slow.write_text(source.replace('9363, 2, 833]', '9363, 2, 30000]'))
+            cases = {
+                'stock DDR4': ('ddr4', 833, ()),
+                'stock LPDDR5': ('lpddr5', 1453, ()),
+                'DDR4, every operable slower than native': ('ddr4', 833, everything(500)),
+                'LPDDR5, every operable slower than native': ('lpddr5', 1453, everything(500)),
+                'DDR4, every operable at tCK': ('ddr4', 833, everything(1200)),
+                'core 257 ps, the rest 997 ps': ('ddr4', 833, (*everything(1003.009), *(f'{key}=3891.05' for key in cores))),
+                'PTW fastest at 142 ps': ('ddr4', 833, tuple(f'{key}=7000' for key in keys if key.startswith('ptw.'))),
+                'one 1 ps cache': ('lpddr5', 1453, ('cache.llc.frequency=1000000',)),
+                'quantum above 20 us': (slow, 30000, everything(25)),
+            }
+            for name, (fixture, tck, settings) in cases.items():
+                with self.subTest(case=name):
+                    config = fixture if isinstance(fixture, Path) else f'configs/ramulator2/{fixture}.yaml'
+                    native = ('dram-model=ramulator2', f'ramulator2.config={config}', *settings)
+                    effective = self.effective(*native)
+                    quantum = native_quantum(effective, tck)
+                    expected = max(500, -(-10_000_000 // quantum))
+                    self.assertEqual(effective['sim']['deadlock_cycle'], expected)
+                    for ticks in (1, 12345, 10_000_001):
+                        result = self.knobs(*native, f'sim.deadlock_cycle={ticks}')
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(tomllib.loads(result.stdout)['sim']['deadlock_cycle'], ticks)
+                        # Warned exactly when the explicit ticks cover less than 10 us.
+                        self.assertEqual(GUARD_WARNING in result.stderr, ticks * quantum < 10_000_000, result.stderr)
 
     def test_native_rejects_an_operable_clock_that_rounds_to_zero(self):
         result = self.knobs(*self.native_settings(), 'cache.llc.frequency=2000000')
