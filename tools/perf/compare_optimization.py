@@ -33,10 +33,11 @@ def main():
     parser.add_argument('--warmup', type=int, default=1_000_000)
     parser.add_argument('--instructions', type=int, default=3_000_000)
     parser.add_argument('--repetitions', type=int, default=3)
+    parser.add_argument('--timeout', type=int, default=900, help='wall-clock seconds allowed per simulation')
     parser.add_argument('--regression', action='store_true', help='short paired controls, both PTW modes and stress configurations; not timing evidence')
     args = parser.parse_args()
-    if min(args.warmup, args.instructions, args.repetitions) <= 0:
-        parser.error('instruction counts and repetitions must be positive')
+    if min(args.warmup, args.instructions, args.repetitions, args.timeout) <= 0:
+        parser.error('instruction counts, repetitions and timeout must be positive')
     args.output = args.output.resolve()
     args.config = [p.resolve(strict=True) for p in args.config]
     binaries = {label: p.resolve(strict=True) for label, p in (('before', args.before), ('after', args.after))}
@@ -71,7 +72,7 @@ def main():
                 parent.mkdir(exist_ok=True)
                 run_args = SimpleNamespace(champsim=binaries[label], baseline=None, config=args.config,
                                            settings=settings, warmup=args.warmup, instructions=args.instructions,
-                                           fixed_latency=200, output=parent, timeout=900)
+                                           fixed_latency=200, output=parent, timeout=args.timeout)
                 result = measure(run_args, mode, trace, repetition)
                 result.update(label=label, case=case)
                 pair.append(result)

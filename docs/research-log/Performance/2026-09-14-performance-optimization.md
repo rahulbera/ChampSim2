@@ -498,3 +498,37 @@ followed by cache empty-work/iterator changes, with the same per-fix regression,
 fresh KIPS and commit-recording gates used above. The report and its portable JSON
 summary contain methods, ranges, source locations, proposed fixes and required
 regressions; raw evidence is in `champsim-perf-results/2026-09-15-perf/`.
+
+## Second optimization pass — 2026-09-15
+
+The user approved proceeding from low to high risk after the Linux perf study.
+Each candidate still needs a separate source patch, exact reported-result
+regressions, fresh paired KIPS, review and this log before the next candidate.
+All runs use `dram-model=legacy`; native Ramulator2 remains disabled in the build.
+The new raw-evidence root is:
+
+```
+/home/rbera/work/alakazam/champsim-perf-results/2026-09-15-optimizations/
+```
+
+`00-baseline` archives the unchanged `d1c80c4a` release (same binary as the
+first pass's `06-trace/champsim`). Short checks retain the existing four-trace,
+16-case configuration matrix. Throughput comparisons remain three alternating
+paired 1M/3M runs per trace on CPU 14, with no concurrent builds or test campaigns.
+
+**Expanded high-risk gate.** Before retaining DRAM mapping or ROB traversal
+changes, compare before and after with **5,000,000 warmup + 50,000,000 simulation
+instructions on one trace from each of the 14 workloads** in the supplied SPEC26
+directory. Select the lowest available simpoint per workload, record the complete
+inventory and hash each selected input in `spec26-traces.json`. The selected
+workloads are stockfish, ntest, sqlite, omnetpp, cpython, gcc, llvm, cppcheck, abc,
+vpr, gem5, sealcrypto, ns3 and zstd. GCC, LLVM, cppcheck and gem5 begin at sp1;
+the other selected workloads use sp0.
+
+These long checks compare complete exported phase statistics, effective
+configuration, and actual warmup/ROI retirement and cycles. They are additional
+regression coverage, not proof of equality of unexported transient state. Long
+regression pairs may run on separate physical cores to finish the wider suite;
+any such runs are excluded from reported KIPS. The paired runner now accepts
+`--timeout` (seconds per simulation, default still 900) so the larger window need
+not be constrained by the old short-run watchdog.
