@@ -297,6 +297,36 @@ the review and pre-merge close-out evidence with its limits, the status of every
 known weak point, and what remains before mainline integration (among it hosted CI
 and a clean-host reproduction).
 
+### Optional fixed-latency translation
+
+For performance experiments, `[ptw.cpu0_ptw] model = "fixed"` replaces detailed
+page walks with `fixed_latency = 200` **CPU cycles** per admitted STLB miss.
+`model = "detailed"` is the default. Use `configs/fixed-ptw.toml` as an overlay;
+repeat the table for each core in a multicore binary. This experiment uses
+`dram-model = "legacy"` exclusively.
+
+ITLB/DTLB/STLB remain active. Fixed mode performs no PSCL lookup, CR3/PTE
+allocation, or page-table cache/DRAM request. `VirtualMemory::va_to_pa` still
+allocates deterministic per-CPU data pages, but its minor-fault delay is replaced
+by the fixed delay. Removing PTE allocations can change data-page placement.
+The existing PTW operable services a FIFO: `mshr_size` bounds pending requests,
+`max_read` bounds admissions, and `max_write` bounds completions per PTW tick.
+The detailed implementation does not currently enforce its `MSHR_SIZE` member;
+that difference is another modeling variable when interpreting speed results.
+
+Latency starts on admission, excluding upstream queueing, and is rounded up to
+a PTW service tick. Completion precedes admission, so even zero-latency requests
+return on the next tick. Warmup admissions bypass latency; pending requests keep
+their deadlines across phase resets. Existing PSCL configuration keys stay
+accepted for easy configuration overlays but have no effect in fixed mode.
+`fixed_latency` is an unused-key error in detailed mode. Negative/overflowing
+delays, unknown models and zero fixed-mode queue/bandwidth limits are rejected.
+For delays longer than the no-progress allowance, configure
+`sim.deadlock_cycle` appropriately; pending timers do not invent progress.
+
+The fixed-mode tests are `test/cpp/src/601-fixed-ptw.cc`. See
+[the benchmark tooling](tools/perf/README.md) for reproducible KIPS measurements.
+
 ### Tests
 
 ```bash

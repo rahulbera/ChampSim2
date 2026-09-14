@@ -73,6 +73,9 @@ class PageTableWalker : public champsim::operable
 
   std::vector<channel_type*> upper_levels;
   channel_type* lower_level;
+  const std::optional<champsim::chrono::picoseconds> fixed_latency;
+
+  long operate_fixed();
 
   std::optional<mshr_type> handle_read(const request_type& pkt, channel_type* ul);
   std::optional<mshr_type> handle_fill(const mshr_type& fill_mshr);

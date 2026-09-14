@@ -43,6 +43,7 @@ class ptw_builder
   std::optional<champsim::bandwidth::maximum_type> m_max_fill{};
   double m_bandwidth_factor{1};
   unsigned m_latency{};
+  std::optional<chrono::picoseconds> m_fixed_latency{};
   std::vector<champsim::channel*> m_uls{};
   champsim::channel* m_ll{};
   VirtualMemory* m_vmem{};
@@ -62,6 +63,7 @@ public:
   ptw_builder& fill_bandwidth(champsim::bandwidth::maximum_type max_fill_);
   ptw_builder& bandwidth_factor(double bandwidth_factor_);
   ptw_builder& latency(unsigned latency_);
+  ptw_builder& fixed_latency(std::optional<chrono::picoseconds> latency_);
   ptw_builder& upper_levels(std::vector<champsim::channel*>&& uls_);
   ptw_builder& lower_level(champsim::channel* ll_);
   ptw_builder& virtual_memory(VirtualMemory* vmem_);

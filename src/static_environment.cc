@@ -75,6 +75,26 @@ champsim::chrono::picoseconds period(const champsim::runtime_config& cfg, const 
   return champsim::chrono::picoseconds{static_cast<champsim::chrono::picoseconds::rep>(1000000.0 / cfg.positive_value<double>(key, mhz))};
 }
 
+std::optional<champsim::chrono::picoseconds> fixed_ptw_latency(const champsim::runtime_config& cfg, std::size_t cpu)
+{
+  const auto key = ptw_key(cpu);
+  const auto model = cfg.value<std::string>(key + ".model", "detailed");
+  if (model == "detailed") {
+    return std::nullopt;
+  }
+  if (model != "fixed") {
+    throw std::runtime_error{"runtime config: " + key + ".model must be 'detailed' or 'fixed'"};
+  }
+
+  using duration = champsim::chrono::picoseconds;
+  const auto cycles = cfg.value<duration::rep>(key + ".fixed_latency", 200);
+  const auto cpu_period = period(cfg, core_key(cpu) + ".frequency", 4000);
+  if (cycles < 0 || cpu_period.count() <= 0 || cycles > duration::max().count() / cpu_period.count()) {
+    throw std::runtime_error{"runtime config: " + key + ".fixed_latency must be nonnegative and representable in picoseconds at the CPU frequency"};
+  }
+  return cpu_period * cycles;
+}
+
 // The access types that activate a cache's prefetcher, as a comma-separated
 // list of access_type names -- the JSON's own format ("LOAD,PREFETCH"), kept
 // because the store holds scalars and this parameter is a set.
@@ -215,6 +235,7 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                           .tag_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(key + ".max_read", 2)})
                           .fill_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(key + ".max_write", 2)})
                           .clock_period(period(cfg, key + ".frequency", 4000))
+                          .fixed_latency(fixed_ptw_latency(cfg, cpu))
                           .add_pscl(5, cfg.value<uint32_t>(key + ".pscl5_set", 1), cfg.value<uint32_t>(key + ".pscl5_way", 2))
                           .add_pscl(4, cfg.value<uint32_t>(key + ".pscl4_set", 1), cfg.value<uint32_t>(key + ".pscl4_way", 4))
                           .add_pscl(3, cfg.value<uint32_t>(key + ".pscl3_set", 2), cfg.value<uint32_t>(key + ".pscl3_way", 4))
