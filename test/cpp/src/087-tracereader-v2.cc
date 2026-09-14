@@ -78,6 +78,28 @@ TEST_CASE("A v2 record resolves its branch target from the following instruction
   REQUIRE(branch.branch_target == champsim::address{0x2000});
 }
 
+TEST_CASE("A v2 branch at a refill boundary resolves its target from the next refill")
+{
+  std::vector<input_instr_v2> prog(128);
+  for (std::size_t i = 0; i < std::size(prog); ++i)
+    prog[i].ip = 0x1000 + 4 * i;
+
+  prog[126].is_branch = 1;
+  prog[126].branch_taken = 1;
+  prog[126].destination_registers[0] = champsim::REG_INSTRUCTION_POINTER;
+  prog[126].source_registers[0] = champsim::REG_INSTRUCTION_POINTER;
+  prog[126].source_registers[1] = champsim::REG_FLAGS;
+  prog[127].ip = 0x2000;
+
+  champsim::bulk_tracereader<input_instr_v2, std::istringstream> uut{0, std::istringstream{serialize(prog)}};
+  for (int i = 0; i < 126; ++i)
+    uut();
+
+  auto branch = uut();
+  REQUIRE(branch.ip == champsim::address{0x11f8});
+  REQUIRE(branch.branch_target == champsim::address{0x2000});
+}
+
 TEST_CASE("A v1 and a v2 record describing the same instruction yield the same instruction")
 {
   // The first 64 bytes are layout-identical, so the two readers must agree on
