@@ -222,6 +222,46 @@ core count; upstream `External` reports one core. Native controllers, schedulers
 refresh policies, address mapping within controllers and plugins remain native
 components. Their behavior is not reimplemented in ChampSim.
 
+### Request coalition differs from legacy
+
+Native mode has no legacy DRAM request queue. `MEMORY_CONTROLLER` is not
+constructed, so `DRAM_CHANNEL::RQ`/`WQ` (`pmem.rq_size`/`wq_size`) and their
+collision checks (`check_write_collision`, `check_read_collision` in
+`src/dram_controller.cc`) do not run. Both backends share only the unbounded
+LLC-to-DRAM feeder channel, which merges nothing; the adapter submits its heads
+directly, and the native controller's read, write and priority buffers take the
+bounded-queue role. Coalition therefore follows native `ControllerBase::send`:
+
+| Case | Legacy | Native backend |
+| --- | --- | --- |
+| Duplicate reads of one cache block | Merged into the existing `DRAM_CHANNEL::RQ` entry, including one already scheduled and in service: dependency lists and response targets are unioned, and the later read completes when the earlier one does. | **Not merged.** Neither the adapter nor native code deduplicates reads. Each becomes its own parent, native read and response, and pays its own queueing and read latency. |
+| Duplicate writes | A duplicate `WQ` entry is dropped; one write remains. | A write whose address is already in the native write buffer is absorbed at `send()` (`num_write_reqs_coalesced`); one write remains. |
+| Read of a block with a pending write | Answered from the `WQ` entry in the same operate, with no DRAM time. | Forwarded only if the write is already in the native write buffer (`num_read_reqs_forwarded`); the adapter observes completion in the same operate. |
+| Read and write of one block reaching memory in the same cycle | Forwarded: `initiate_requests` moves RQ, PQ and WQ into the DRAM queues before the collision checks run. | Not forwarded: the adapter submits RQ and PQ before WQ, so the read is queued before the write exists (one probe measured 168 tCK instead of 0). |
+
+Neither side compares entries still waiting in the feeder. Legacy has no merge
+or forwarding counters, so the two have not been compared on real workloads.
+
+**This matters for speculative off-chip load prediction (Hermes-like
+techniques).** Such a technique issues a speculative request that fetches the
+data straight from DRAM while the original load walks the cache hierarchy. When
+that load misses the LLC, it arrives at the memory controller while the
+speculative read is queued or in service. Legacy merges it into the speculative
+read, so the load completes with the speculative head start, which is the entire
+benefit being modeled. The native backend instead submits a second, independent
+read that waits and pays its own DRAM latency, so the technique's benefit would
+be understated or lost without any error. The LLC's own miss merging
+(`CACHE::handle_miss`, `miss_merge`) does not help, because the speculative
+request never passed through the LLC.
+
+Before running such a study in native mode, add legacy-equivalent read
+coalition to the adapter: when a read parent is created, attach it to an
+outstanding read parent for the same cache block (queued or partially or fully
+submitted), union its dependents, fan the completion out to every attached
+packet's response queue, and count the merges. Then validate it against legacy
+on a Hermes-like request pattern. See the section 4 row for the acceptance
+criteria.
+
 ### Clocking, phases and finalization
 
 The driver's period comes from integer `tCK_ps` and is cross-checked against the
@@ -433,6 +473,7 @@ row represents a demonstrated integration bug.
 | Before merge: hosted/clean-host checks | Local dependencies were reused; the hosted matrix has not executed. C++ ABI probing is useful but not an exhaustive portability guarantee. | Run hosted native/legacy jobs on the intended merge revision and reproduce from a clean supported host. Test mode/root/compiler changes, interrupted builds, missing/substituted libraries and loader paths. Require correct rebuilds, useful rejection of incompatibilities and no native dependency in disabled builds. Keep shared-root concurrent builds unsupported unless locking/publication is implemented. |
 | Before broader device support: native YAML and plugins | Common geometry/table validation is not a complete semantic validator for every native component. Only two presets were exercised, with clock-ratio fields set to one. | Test each intended DRAM/controller/refresh/mapper/plugin combination, actual 128-byte transactions, boundary addresses, capacities and interleave shifts. Fuzz malformed tables and component parameters in subprocesses with time/RSS limits. Valid supported cases must progress and match native references; invalid cases must fail clearly rather than crash or hang. Explicitly settle non-default clock-ratio semantics before advertising them. |
 | Before broader plugin support: epochs and file outputs | Native plugins own their reset/update/finalize behavior. Some open files during construction or finalization; ChampSim's TOML-versus-trace checks do not sandbox those paths. | Exercise counter, trace-recording and stateful plugins through multiple phases, pending finalization and output errors, using dedicated scratch paths. Verify each plugin's epoch/state contract and closed/error-checked outputs; test intended output paths independently of the CLI protection. |
+| Before speculative off-chip load studies (Hermes-like): duplicate-read coalition | Legacy merges a demand read into an outstanding DRAM read for the same block, including one in service. The native backend does not, so a speculative DRAM fetch and its demand load are served as two independent native reads. Same-cycle read-after-write forwarding also differs, because the adapter submits RQ/PQ before WQ. See [Request coalition differs from legacy](#request-coalition-differs-from-legacy). | Implement adapter-level read coalition for outstanding parents of the same cache block, with a merge counter, and optionally legacy-order write forwarding. Unit-test merges into queued, partially submitted and in-service parents, response fan-out, and dependency unions. Then drive a Hermes-like pattern (a speculative DRAM read followed by the same block's LLC miss at a controlled delay) through legacy and native mode. Require the demand load's completion to track the speculative read in both, and report merge counts beside native `forwarded`/`coalesced`. Instrument legacy merges so the counts can be compared on real traces. |
 | Before performance conclusions: model fidelity and host overhead | Native agreement proves that the wrapper uses the same engine consistently; it does not validate that engine/preset against hardware. No systematic simulator overhead study was performed. | Match capacities, mappings and controller settings, validate native command traces against an independent supported reference, and compare latency/bandwidth trends with a declared calibration method. Separately profile adapter allocation, queue walks and snapshot costs. Define tolerances and a practical resource budget before interpreting results. |
 | Before durable sign-off: evidence retention | Most raw baseline outputs, binaries, logs and exact command/provenance records remain under `/tmp`; some baseline helpers are not committed. | Preserve a versioned evidence bundle and verify the public deterministic subset from a clean checkout. Require manifests with revisions, commands, dependency/compiler/Python identities, input hashes, expected results and checksums; keep restricted trace inputs separate. |
 
