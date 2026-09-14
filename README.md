@@ -97,7 +97,10 @@ prints a plain-text report to stdout with many more statistics.
 Besides the measurements it records *what produced them*: `[meta]` carries the
 command line, the trace version and a content hash of the machine, and
 `[config]` is the effective configuration -- every parameter the run actually
-consulted, with the value it used. That makes a result file replayable:
+consulted, with the value it used. The file is checked at startup and written
+in place only after the run succeeds; an existing file that is neither empty
+nor a statistics document is refused rather than overwritten. That makes a result
+file replayable:
 
 ```
 $ bin/champsim --toml run.toml -- trace.champsimtrace.xz

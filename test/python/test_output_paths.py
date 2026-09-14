@@ -1,4 +1,5 @@
 """Run the CLI against disposable inputs: output validation must never erase them."""
+import errno
 import hashlib
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import tomllib
 import unittest
 
@@ -169,6 +171,22 @@ class OutputPathTests(unittest.TestCase):
             self.assertIn("no_such_knob", result.stderr)
             self.assertEqual(document.read_bytes(), before)
 
+    def test_replay_from_a_statistics_document_writes_that_document_in_place(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.trace(tmp)
+            document = Path(tmp) / "run.toml"
+            first = self.simulate(tmp, document)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            recorded = tomllib.loads(document.read_text())
+            inode = document.stat().st_ino
+
+            result = self.simulate(tmp, document, "--config", str(document))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            replayed = tomllib.loads(document.read_text())
+            self.assertEqual(replayed["meta"]["config_files"], str(document))
+            self.assertEqual((replayed["config"], replayed["meta"]["build_id"]), (recorded["config"], recorded["meta"]["build_id"]))
+            self.assertEqual(document.stat().st_ino, inode)
+
     def test_startup_failure_and_knobs_create_no_output(self):
         for case in ("startup failure", "--knobs"):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
@@ -182,7 +200,7 @@ class OutputPathTests(unittest.TestCase):
                     self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(sorted(path.name for path in Path(tmp).iterdir()), [trace.name])
 
-    def test_successful_run_replaces_a_statistics_document(self):
+    def test_successful_run_writes_a_statistics_document_in_place(self):
         umask = os.umask(0)
         os.umask(umask)
         for existing in ("document", "document via symlink", "empty file", "nothing, via a dangling symlink"):
@@ -202,21 +220,24 @@ class OutputPathTests(unittest.TestCase):
                 if "symlink" in existing:
                     output = Path(tmp) / "latest.toml"
                     output.symlink_to(document)
+                inode = document.stat().st_ino if document.exists() else None
 
                 result = self.simulate(tmp, output, instructions=1000)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(tomllib.loads(document.read_text())["meta"]["simulation_instructions"], 1000)
-                # Replaced as the same file would have been: its permissions
-                # (or a new file's usual ones), the link that named it, and no
-                # temporary file left beside it.
+                # The same file, with its permissions (or a new file's usual
+                # ones), still named by the link that named it, and nothing
+                # else beside it.
                 expected_mode = 0o666 & ~umask if existing.startswith("nothing") else 0o640
                 self.assertEqual(stat.S_IMODE(document.stat().st_mode), expected_mode)
+                if inode is not None:
+                    self.assertEqual(document.stat().st_ino, inode)
                 self.assertEqual(output.is_symlink(), "symlink" in existing)
                 self.assertEqual(sorted(path.name for path in results.iterdir()), ["run.toml"])
 
-    def test_long_output_name_is_replaced_by_rename(self):
-        # NAME_MAX is 255 bytes on common filesystems; the temporary sibling's
-        # name must not grow with the target's.
+    def test_long_output_name_is_written(self):
+        # NAME_MAX is 255 bytes on common filesystems: a name near it is
+        # created, then written again in place.
         with tempfile.TemporaryDirectory() as tmp:
             self.trace(tmp)
             name = "r" * 240 + ".toml"
@@ -271,7 +292,7 @@ class OutputPathTests(unittest.TestCase):
 
     @unittest.skipUnless(hasattr(os, "getgroups") and hasattr(os, "chown"), "needs supplementary groups")
     def test_document_in_another_group_keeps_its_group_and_inode(self):
-        # A renamed sibling would carry the group a new file gets, not this one.
+        # Written in place, not replaced by a new file in the group a new file gets.
         with tempfile.TemporaryDirectory() as tmp:
             groups = [group for group in os.getgroups() if group != self.new_file_group(tmp)]
             if not groups:
@@ -293,8 +314,8 @@ class OutputPathTests(unittest.TestCase):
 
     @unittest.skipUnless(hasattr(os, "getxattr") and shutil.which("setfacl"), "needs setfacl and extended attributes")
     def test_document_with_an_access_acl_keeps_it(self):
-        # A renamed sibling would carry a new file's ACL (none, or the
-        # directory's default), dropping this one's named entries.
+        # Written in place, not replaced by a new file with a new file's ACL
+        # (none, or the directory's default) instead of this one's named entries.
         with tempfile.TemporaryDirectory() as tmp:
             self.trace(tmp)
             document = Path(tmp) / "run.toml"
@@ -315,41 +336,191 @@ class OutputPathTests(unittest.TestCase):
             self.assertEqual(os.getxattr(document, "system.posix_acl_access"), acl)
             self.assertEqual(sorted(path.name for path in Path(tmp).iterdir()), ["run.toml", "trace.champsim2"])
 
-    INJECT_RENAME_FAILURE = "inject=rename,renameat,renameat2:error=EBUSY"
+    @staticmethod
+    def access_acl(path):
+        """The POSIX access ACL attribute of `path`, or None when it has none."""
+        try:
+            return os.getxattr(path, "system.posix_acl_access")
+        except OSError as error:
+            if error.errno in (errno.ENODATA, errno.ENOTSUP, errno.EOPNOTSUPP):
+                return None
+            raise
+
+    def directory_with_a_default_acl(self, parent):
+        """A directory whose default ACL denies others and grants nobody rw, or skip."""
+        directory = Path(parent) / "shared"
+        directory.mkdir()
+        granted = subprocess.run([shutil.which("setfacl"), "-d", "-m", "u::rwx,g::rwx,o::---,u:nobody:rw", str(directory)],
+                                 capture_output=True, text=True, timeout=30)
+        if granted.returncode != 0:
+            self.skipTest(f"setfacl -d failed here: {granted.stderr.strip()}")
+        return directory
+
+    @unittest.skipUnless(hasattr(os, "getxattr") and shutil.which("setfacl"), "needs setfacl and extended attributes")
+    def test_new_output_in_a_default_acl_directory_gets_the_directory_policy(self):
+        # The kernel ignores the umask where a default ACL applies; a new
+        # document must get what any other new file there gets.
+        for umask in (0o022, 0o077):
+            with self.subTest(umask=oct(umask)), tempfile.TemporaryDirectory() as tmp:
+                self.trace(tmp)
+                shared = self.directory_with_a_default_acl(tmp)
+                reference = shared / "reference.toml"
+                previous = os.umask(umask)
+                try:
+                    os.close(os.open(reference, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666))
+                finally:
+                    os.umask(previous)
+                document = shared / "run.toml"
+
+                result = self.simulate(tmp, document, preexec_fn=lambda: os.umask(umask))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(tomllib.loads(document.read_text())["meta"]["simulation_instructions"], 1000)
+                self.assertEqual(stat.S_IMODE(document.stat().st_mode), stat.S_IMODE(reference.stat().st_mode))
+                self.assertIsNotNone(self.access_acl(reference))
+                self.assertEqual(self.access_acl(document), self.access_acl(reference))
+                self.assertEqual(sorted(path.name for path in shared.iterdir()), ["reference.toml", "run.toml"])
+
+    @unittest.skipUnless(hasattr(os, "getxattr") and shutil.which("setfacl"), "needs setfacl and extended attributes")
+    def test_document_without_an_acl_in_a_default_acl_directory_gains_none(self):
+        # A new file there would carry the directory's named entries; the
+        # existing document, written in place, keeps having none.
+        with tempfile.TemporaryDirectory() as tmp:
+            self.trace(tmp)
+            shared = self.directory_with_a_default_acl(tmp)
+            document = shared / "run.toml"
+            first = self.simulate(tmp, document, instructions=500)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            stripped = subprocess.run([shutil.which("setfacl"), "-b", str(document)], capture_output=True, text=True, timeout=30)
+            self.assertEqual(stripped.returncode, 0, stripped.stderr)
+            document.chmod(0o640)
+            self.assertIsNone(self.access_acl(document))
+            before = document.stat()
+
+            result = self.simulate(tmp, document, instructions=1000)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            after = document.stat()
+            self.assertEqual(tomllib.loads(document.read_text())["meta"]["simulation_instructions"], 1000)
+            self.assertIsNone(self.access_acl(document))
+            self.assertEqual((after.st_ino, stat.S_IMODE(after.st_mode)), (before.st_ino, 0o640))
+
+    # Long enough that the run is still going well after its output checks.
+    LONG_RUN = 200_000
+
+    def start_simulation(self, directory, output, instructions):
+        trace = Path(directory) / "trace.champsim2"
+        arguments = ["--trace-version", "2", "-w", "0", "-i", str(instructions), "--hide-heartbeat", "--toml", str(output), "--"]
+        return subprocess.Popen([str(BINARY), *arguments, *([str(trace)] * self.cores)], cwd=directory, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True)
+
+    def wait_until_simulating(self, process, directory, timeout=60):
+        """Return once `process` holds its trace open, which it does only after every output check has passed."""
+        trace = os.path.realpath(Path(directory) / "trace.champsim2")
+        descriptors = Path(f"/proc/{process.pid}/fd")
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and process.poll() is None:
+            try:
+                if any(os.readlink(entry) == trace for entry in descriptors.iterdir()):
+                    return
+            except OSError:
+                pass
+            time.sleep(0.02)
+        self.fail(f"the simulator never opened its trace (exit status {process.poll()})")
+
+    def finish(self, process):
+        try:
+            stdout, stderr = process.communicate(timeout=180)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            stdout, stderr = process.communicate()
+        return subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
+
+    @unittest.skipUnless(os.path.isdir("/proc/self/fd"), "needs /proc to see when the run is under way")
+    def test_output_is_untouched_while_the_run_is_in_progress(self):
+        for existing in (True, False):
+            with self.subTest(existing=existing), tempfile.TemporaryDirectory() as tmp:
+                self.trace(tmp)
+                document = Path(tmp) / "run.toml"
+                if existing:
+                    first = self.simulate(tmp, document, instructions=500)
+                    self.assertEqual(first.returncode, 0, first.stderr)
+                before = document.read_bytes() if existing else None
+                inode = document.stat().st_ino if existing else None
+
+                process = self.start_simulation(tmp, document, self.LONG_RUN)
+                try:
+                    self.wait_until_simulating(process, tmp)
+                    time.sleep(0.5)
+                    self.assertIsNone(process.poll(), "the run ended before it could be checked mid-run")
+                    self.assertEqual(document.read_bytes() if document.exists() else None, before)
+                    self.assertEqual(sorted(path.name for path in Path(tmp).iterdir()), ["run.toml", "trace.champsim2"] if existing else ["trace.champsim2"])
+                finally:
+                    result = self.finish(process)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(tomllib.loads(document.read_text())["meta"]["simulation_instructions"], self.LONG_RUN)
+                if existing:
+                    self.assertEqual(document.stat().st_ino, inode)
+
+    @unittest.skipUnless(os.path.isdir("/proc/self/fd"), "needs /proc to see when the run is under way")
+    def test_statistics_document_removed_during_the_run_is_created_again(self):
+        for links in ("one name", "a second hard link"):
+            with self.subTest(links=links), tempfile.TemporaryDirectory() as tmp:
+                self.trace(tmp)
+                document = Path(tmp) / "run.toml"
+                other = Path(tmp) / "latest.toml"
+                first = self.simulate(tmp, document, instructions=500)
+                self.assertEqual(first.returncode, 0, first.stderr)
+                if links == "a second hard link":
+                    other.hardlink_to(document)
+                earlier = document.read_bytes()
+
+                process = self.start_simulation(tmp, document, self.LONG_RUN)
+                try:
+                    self.wait_until_simulating(process, tmp)
+                    time.sleep(0.5)
+                    document.unlink()
+                    self.assertIsNone(process.poll(), "the run ended before the document was removed")
+                finally:
+                    result = self.finish(process)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(tomllib.loads(document.read_text())["meta"]["simulation_instructions"], self.LONG_RUN)
+                if links == "a second hard link":
+                    # The other name still holds the file that was removed from this one.
+                    self.assertEqual(other.read_bytes(), earlier)
 
     def strace_or_skip(self):
         strace = shutil.which("strace")
         if strace is None:
             self.skipTest("strace is not installed")
-        probe = subprocess.run([strace, "-f", "-o", os.devnull, "-e", self.INJECT_RENAME_FAILURE, "true"], capture_output=True, timeout=30)
+        probe = subprocess.run([strace, "-f", "-o", os.devnull, "-e", "trace=openat", "true"], capture_output=True, timeout=30)
         if probe.returncode != 0:
-            self.skipTest(f"strace cannot inject faults here: {probe.stderr.decode(errors='replace')}")
+            self.skipTest(f"strace cannot trace here: {probe.stderr.decode(errors='replace')}")
         return strace
 
-    def traced_simulation(self, strace, directory, output, log, *strace_options, instructions=1000):
-        """simulate() under strace, tracing file, fchmod and write calls into `log`."""
+    def traced_simulation(self, strace, directory, output, log, instructions=1000):
+        """simulate() under strace, tracing opens and unlinks into `log`."""
         arguments = ["--trace-version", "2", "-w", "0", "-i", str(instructions), "--hide-heartbeat", "--toml", str(output), "--"]
-        command = [strace, "-f", "-o", str(log), "-e", "trace=%file,fchmod,write", *strace_options, str(BINARY), *arguments]
+        command = [strace, "-f", "-o", str(log), "-e", "trace=open,openat,unlink,unlinkat", str(BINARY), *arguments]
         command += [str(Path(directory) / "trace.champsim2")] * self.cores
         return subprocess.run(command, cwd=directory, capture_output=True, text=True, timeout=120)
 
-    OPEN_CALL = re.compile(r'^\d+ +open(?:at)?\((?:[^,"]+, )?"([^"]*)", ([A-Z0-9_|]+)(?:, (0[0-7]*))?\) += (-?\d+)')
+    FILE_CALL = re.compile(r'^\d+ +(open|openat|unlink|unlinkat)\((?:[^,"]+, )?"([^"]*)"(?:, ([A-Z0-9_|]+))?(?:, (0[0-7]*))?\) += (-?\d+)')
 
-    def traced_opens(self, log):
-        """(line number, path, flags, mode or None, result) for every open or openat in an strace log."""
-        opens = []
-        for number, line in enumerate(Path(log).read_text().splitlines()):
-            if match := self.OPEN_CALL.match(line):
-                path, flags, mode, returned = match.groups()
-                opens.append((number, path, set(flags.split("|")), mode and int(mode, 8), int(returned)))
-        return opens
+    def traced_calls(self, log, name):
+        """(call, flags, mode or None, result) for every open and unlink of a file called `name` in an strace log."""
+        calls = []
+        for line in Path(log).read_text().splitlines():
+            if (match := self.FILE_CALL.match(line)) and Path(match.group(2)).name == name:
+                call, _, flags, mode, returned = match.groups()
+                calls.append((call.removesuffix("at"), set((flags or "").split("|")) - {""}, mode and int(mode, 8), int(returned)))
+        return calls
 
-    def test_failed_rename_writes_the_statistics_document_in_place(self):
-        # A single file bind-mounted into a container refuses rename (EBUSY)
-        # but can be written; strace injects that failure without privileges.
-        # An existing document is opened without O_CREAT, which
+    def test_output_is_truncated_or_created_only_by_its_final_open(self):
+        # At startup an existing document is opened without O_TRUNC, and a new
+        # name is created exclusively and removed again. After the run an
+        # existing document is opened without O_CREAT, which
         # fs.protected_regular refuses for another user's file in a sticky
-        # directory even when it may be written; only a new name is created.
+        # directory even when it may be written; a new name is created
+        # exclusively, with mode 0666 for the umask or a default ACL to narrow.
         strace = self.strace_or_skip()
         for existing in (True, False):
             with self.subTest(existing=existing), tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as logs:
@@ -360,53 +531,33 @@ class OutputPathTests(unittest.TestCase):
                     self.assertEqual(first.returncode, 0, first.stderr)
                 log = Path(logs) / "strace.log"
 
-                result = self.traced_simulation(strace, tmp, document, log, "-e", self.INJECT_RENAME_FAILURE)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("in place", result.stderr)
-                self.assertEqual(tomllib.loads(document.read_text())["meta"]["simulation_instructions"], 1000)
-                self.assertEqual(sorted(path.name for path in Path(tmp).iterdir()), ["run.toml", "trace.champsim2"])
-                in_place = [flags for _, path, flags, _, _ in self.traced_opens(log) if Path(path).name == "run.toml" and "O_TRUNC" in flags]
-                self.assertEqual(len(in_place), 1, log.read_text()[-2000:])
-                self.assertEqual("O_CREAT" in in_place[0], not existing, in_place[0])
-
-    def test_replacement_is_created_private_and_given_its_final_mode_before_any_content(self):
-        # Permissions are checked only at open: a sibling created with a new
-        # file's usual bits could be opened by others before narrowing to a
-        # private document's, and read once the document is renamed into place.
-        strace = self.strace_or_skip()
-        umask = os.umask(0)
-        os.umask(umask)
-        for existing in ("private document", "nothing"):
-            with self.subTest(existing=existing), tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as logs:
-                self.trace(tmp)
-                document = Path(tmp) / "run.toml"
-                final_mode = 0o666 & ~umask
-                if existing == "private document":
-                    first = self.simulate(tmp, document, instructions=500)
-                    self.assertEqual(first.returncode, 0, first.stderr)
-                    document.chmod(0o600)
-                    final_mode = 0o600
-                log = Path(logs) / "strace.log"
-
                 result = self.traced_simulation(strace, tmp, document, log)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(stat.S_IMODE(document.stat().st_mode), final_mode)
-                temporary = re.compile(r"\.champsim-toml-[0-9a-f]{16}\.tmp")
-                created = [(number, flags, mode, returned) for number, path, flags, mode, returned in self.traced_opens(log) if temporary.fullmatch(Path(path).name)]
-                # The startup probe and the replacement itself.
-                self.assertEqual(len(created), 2, log.read_text()[-2000:])
-                for _, flags, mode, _ in created:
-                    self.assertTrue({"O_CREAT", "O_EXCL"} <= flags, flags)
-                    self.assertEqual(mode, 0o600)
-                number, _, _, descriptor = created[-1]
-                calls = [line.split(None, 1)[1] for line in log.read_text().splitlines()[number + 1:]]
-                narrowed = next(index for index, call in enumerate(calls) if call.startswith(f"fchmod({descriptor}, "))
-                first_write = next(index for index, call in enumerate(calls) if call.startswith(f"write({descriptor}, "))
-                self.assertLess(narrowed, first_write)
-                self.assertTrue(calls[narrowed].startswith(f"fchmod({descriptor}, 0{final_mode:o})"), calls[narrowed])
+                self.assertEqual(tomllib.loads(document.read_text())["meta"]["simulation_instructions"], 1000)
+                self.assertEqual(sorted(path.name for path in Path(tmp).iterdir()), ["run.toml", "trace.champsim2"])
+                calls = self.traced_calls(log, "run.toml")
+                context = log.read_text()[-3000:]
+                *startup, final = calls
+                self.assertEqual(final[0], "open", context)
+                self.assertGreaterEqual(final[3], 0, context)
+                if existing:
+                    self.assertTrue(all(call == "open" and not flags & {"O_TRUNC", "O_CREAT"} for call, flags, _, _ in startup), context)
+                    self.assertIn("O_TRUNC", final[1], context)
+                    self.assertNotIn("O_CREAT", final[1], context)
+                else:
+                    created = [index for index, (call, flags, _, _) in enumerate(startup) if "O_CREAT" in flags]
+                    self.assertEqual(len(created), 1, context)
+                    self.assertTrue({"O_CREAT", "O_EXCL"} <= startup[created[0]][1], context)
+                    self.assertEqual(startup[created[0]][2], 0o666, context)
+                    self.assertIn("unlink", [call for call, _, _, _ in startup[created[0] + 1:]], context)
+                    self.assertTrue({"O_CREAT", "O_EXCL"} <= final[1], context)
+                    self.assertNotIn("O_TRUNC", final[1], context)
+                    self.assertEqual(final[2], 0o666, context)
 
     @unittest.skipUnless(resource is not None and hasattr(signal, "SIGXFSZ"), "needs RLIMIT_FSIZE to make the final write fail")
-    def test_failed_write_leaves_an_existing_statistics_document_intact(self):
+    def test_failed_final_write_exits_1_and_says_the_document_may_be_partial(self):
+        # Written in place, a document is truncated before the new one is
+        # written, so a full disk at that moment loses the earlier one.
         with tempfile.TemporaryDirectory() as tmp:
             self.trace(tmp)
             document = Path(tmp) / "run.toml"
@@ -422,8 +573,8 @@ class OutputPathTests(unittest.TestCase):
 
             result = self.simulate(tmp, document, instructions=500, preexec_fn=limit_written_file_size)
             self.assertEqual(result.returncode, 1, result.stderr)
-            self.assertIn("failed to write", result.stderr)
-            self.assertEqual(document.read_bytes(), before)
+            self.assertIn(f"ERROR: failed to write the TOML statistics to '{document}' (File too large); it may now be empty or partial.", result.stderr)
+            self.assertLessEqual(len(document.read_bytes()), limit)
             self.assertEqual(sorted(path.name for path in Path(tmp).iterdir()), ["run.toml", "trace.champsim2"])
 
     @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "permissions do not bind the superuser")

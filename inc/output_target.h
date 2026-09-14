@@ -18,48 +18,39 @@
 #define OUTPUT_TARGET_H
 
 #include <filesystem>
-#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
-// Where a named --toml statistics document goes, decided before the run and
-// written after it. Nothing here writes to the target until write().
+// A named --toml statistics document: checked before the run, without writing,
+// truncating or leaving anything, and written in place after a successful run.
+// An existing file is truncated and rewritten, so it keeps its inode, links,
+// owner, group, ACLs and permissions; a new file is created with mode 0666,
+// so it gets whatever the umask or a default ACL gives any new file there.
 namespace champsim::output
 {
 enum class write_mode {
-  // A finished document in a new '.champsim-toml-<16 hex>.tmp' sibling is
-  // renamed over the target; if that rename fails, the target is written in
-  // place instead.
-  replace_by_rename,
-  // The target is opened, truncated and written only once the run is over:
-  // anything but a regular file, a hard-linked file (a rename would split its
-  // links), a file whose directory refuses a new sibling, or a file a new
-  // sibling would not match in owner, group or access ACL.
-  in_place,
-  // The target is the file behind standard output or standard error -- a
-  // log the shell redirected to, the pipe or terminal behind /dev/stdout --
-  // so the document is written to that stream after everything already
-  // printed, as an unnamed --toml writes it to stdout.
+  // A regular file, or a name that reaches nothing yet.
+  regular_file,
+  // A FIFO, device or socket, opened for writing only once the run is over.
+  special_file,
+  // The file behind standard output or standard error -- a log the shell
+  // redirected to, the pipe or terminal behind /dev/stdout -- so the document
+  // is written to that stream after everything already printed, as an
+  // unnamed --toml writes it to stdout.
   standard_stream,
 };
 
 struct target {
-  // The name as given on the command line, for messages.
-  std::string name;
-  // The file the kernel reaches through that name: every symbolic link
-  // followed, so a replacement lands where the link points.
+  // The file the kernel reaches through the name: every symbolic link
+  // followed, so the document lands where the link points.
   std::filesystem::path path;
-  write_mode mode{write_mode::replace_by_rename};
+  write_mode mode{write_mode::regular_file};
   // STDOUT_FILENO or STDERR_FILENO for write_mode::standard_stream.
   int stream{-1};
-  // Whether the name reached a file when the target was planned. Writing in
-  // place creates the file only where nothing was.
-  bool existed{false};
-  // The permission bits a new file gets under the process umask, read when
-  // the target was planned: a replacement's where nothing was to copy them from.
-  unsigned int new_file_permissions{0666};
+  // Whether the name reached a file when it was checked.
+  bool exists{false};
 };
 
 struct plan_result {
@@ -68,27 +59,24 @@ struct plan_result {
   std::string error;
 };
 
-// Checks everything about a named output before a trace is opened, and
-// writes, truncates or creates nothing that remains.
+// Checks everything about a named output before a trace is opened. An
+// existing regular file must open for writing and either be empty or be
+// readable and begin like a statistics document; a device or socket must
+// open; a new name must be creatable, and the file created to show it is
+// removed again.
 plan_result plan(const std::string& name, const std::vector<std::string>& traces);
-
-// The filesystem calls whose failure the final write has to survive, as a
-// seam for tests. Each returns 0 or an errno value. write_in_place opens with
-// O_TRUNC, so it is only ever called after the run, and with O_CREAT only when
-// `create` is set.
-struct operations {
-  std::function<int(const std::filesystem::path& from, const std::filesystem::path& to)> rename;
-  std::function<int(const std::filesystem::path& path, std::string_view document, bool create)> write_in_place;
-};
-operations system_operations();
 
 struct write_result {
   bool written{false};
-  // Complete lines for stderr, warnings and errors alike.
+  // Complete lines for stderr.
   std::vector<std::string> messages;
 };
 
-write_result write(const target& destination, std::string_view document, const operations& ops = system_operations());
+// After a successful run: checks the name again as plan() does, since the
+// filesystem may have changed during the run, and refuses without writing if
+// it now fails; otherwise writes the document in place, creating the file
+// only where nothing is.
+write_result write(const std::string& name, const std::vector<std::string>& traces, std::string_view document);
 } // namespace champsim::output
 
 #endif

@@ -128,22 +128,19 @@ to the file the name reaches as `open()` resolves it, so a name such as
 An output that is an input trace (including through symlinks and hardlinks) is
 rejected at startup, and so is an existing non-empty regular file that does not
 begin like a ChampSim statistics document: a trace an optional `--toml` value
-consumed, a `--config` source or the native YAML. Nothing is written to a named
+consumed, a `--config` source or the native YAML. An existing output must be
+writable, and a non-empty one readable, so that its first bytes can be checked;
+a new name must be creatable. Nothing is written to or truncated in a named
 output until the run succeeds, so a failed replay (for example `--config
 run.toml --toml run.toml` after a `config_hash` mismatch) leaves `run.toml`
-unchanged. A regular output is then replaced by renaming a finished
-`.champsim-toml-<16 hex>.tmp` sibling over it; a hard-linked output, one in a
-directory where that sibling cannot be created, one whose owner, group or POSIX
-access ACL a new file there would not carry, and one whose rename fails are
-written in place instead. Writing in place, that fallback included, truncates
-the output first, so a failed in-place write does not preserve an earlier
-document, and its error says the output may now be empty or partial. An
-existing output must be writable, and a non-empty one readable, so that its
-first bytes can be checked. A run killed during that final write can leave the
-sibling behind. A name that reaches standard output or standard error
-(`/dev/stdout`, or the log stdout is redirected to) receives the document on
-that stream, after the plain report. FIFOs and devices are written in place; a
-device that cannot be opened is refused at startup.
+unchanged. After the run the output is checked again and the document is written
+in place: an existing file keeps its inode, hard links, owner, group, ACLs and
+permissions, and a new file gets default permissions. If that final write fails,
+the output may be empty or partial; the error says so and the run exits 1. A
+name that reaches standard output or standard error (`/dev/stdout`, or the log
+stdout is redirected to) receives the document on that stream, after the plain
+report. FIFOs and devices are written in place; a device that cannot be opened
+is refused at startup.
 An omitted `--toml` filename appends the TOML document after ordinary stdout;
 use a named file when a standalone parseable document is needed. See the
 [validation record](../docs/ramulator2-validation.md) for native statistics and

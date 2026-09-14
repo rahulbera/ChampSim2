@@ -20,14 +20,10 @@
 #include <cstdio>
 #include <fcntl.h>
 #include <iostream>
-#include <random>
 #include <system_error>
 #include <unistd.h>
 #include <fmt/core.h>
 #include <sys/stat.h>
-#ifdef __linux__
-#include <sys/xattr.h>
-#endif
 
 #include "stats_printer.h"
 
@@ -98,71 +94,6 @@ std::optional<std::string> read_head(int descriptor, std::size_t size)
   return head;
 }
 
-// A temporary file in `directory`, created exclusively so that it can never be
-// someone else's file, and with mode 0600 so that nobody else can open it
-// before its permissions are set. The name has a fixed length and does not
-// embed the target's, so any target name that fits the directory leaves room
-// for it. The descriptor is open for writing; on failure it is -1 and `error`
-// holds errno.
-struct temporary_file {
-  fs::path path;
-  int descriptor{-1};
-  int error{0};
-};
-
-temporary_file create_temporary(const fs::path& directory)
-{
-  constexpr int max_attempts = 100;
-  std::random_device entropy;
-  temporary_file created;
-  for (int attempt = 0; attempt < max_attempts; ++attempt) {
-    created.path = directory / fmt::format(".champsim-toml-{:08x}{:08x}.tmp", entropy(), entropy());
-    created.descriptor = ::open(created.path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOCTTY | O_CLOEXEC, 0600);
-    if (created.descriptor >= 0) {
-      return created;
-    }
-    created.error = errno;
-    if (created.error != EEXIST) {
-      break;
-    }
-  }
-  return created;
-}
-
-// The status of a new file created in `directory` and removed again, so its
-// owner and group are the ones a replacement would get there; empty when the
-// directory refuses one. Nothing is left behind.
-std::optional<file_status> probe_new_file(const fs::path& directory)
-{
-  const auto probe = create_temporary(directory);
-  if (probe.descriptor < 0) {
-    return std::nullopt;
-  }
-  file_status created{};
-  const bool described = ::fstat(probe.descriptor, &created) == 0;
-  ::close(probe.descriptor);
-  ::unlink(probe.path.c_str());
-  if (!described) {
-    return std::nullopt;
-  }
-  return created;
-}
-
-// Whether `path` may carry a POSIX access ACL, which a rename would replace
-// with a new file's: only a definite absence counts as none.
-bool may_have_access_acl(const fs::path& path)
-{
-#ifdef __linux__
-  if (::getxattr(path.c_str(), "system.posix_acl_access", nullptr, 0) >= 0) {
-    return true;
-  }
-  return errno != ENODATA && errno != ENOTSUP && errno != EOPNOTSUPP;
-#else
-  (void)path;
-  return false;
-#endif
-}
-
 std::string describe(int error) { return std::generic_category().message(error); }
 
 int write_all(int descriptor, std::string_view bytes)
@@ -179,11 +110,16 @@ int write_all(int descriptor, std::string_view bytes)
   }
   return 0;
 }
-} // namespace
 
-namespace champsim::output
-{
-plan_result plan(const std::string& name, const std::vector<std::string>& traces)
+using champsim::output::plan_result;
+using champsim::output::target;
+using champsim::output::write_mode;
+
+// Every check on a named output. At startup (`probe`), whatever is to be
+// opened after the run is also opened now -- a new name by creating it and
+// removing it again -- so that a target that cannot be opened costs no run.
+// After the run the real open does that instead, and reports its own failure.
+plan_result check(const std::string& name, const std::vector<std::string>& traces, bool probe)
 {
   const auto refuse = [](std::string message) {
     return plan_result{std::nullopt, std::move(message)};
@@ -191,9 +127,6 @@ plan_result plan(const std::string& name, const std::vector<std::string>& traces
   const auto cannot_open = [&] {
     return refuse(fmt::format("cannot open '{}' to receive the TOML statistics.", name));
   };
-  // The umask cannot be read without being set, so it is read once, here.
-  const mode_t mask = ::umask(0);
-  ::umask(mask);
 
   // What open() reaches through the name, if anything. Every decision below
   // is about that file, never about the spelling.
@@ -203,14 +136,14 @@ plan_result plan(const std::string& name, const std::vector<std::string>& traces
     return cannot_open();
   }
 
-  // Where it is, so that a replacement can be made in its directory.
+  // Where it is, which a new file is created at.
   auto located = resolve(name);
   file_status at_location{};
   const bool location_exists = located && ::lstat(located->c_str(), &at_location) == 0;
   const int location_errno = errno;
   if (exists) {
     // A name only the kernel can follow -- /proc/self/fd/N naming a pipe --
-    // has no directory to put a replacement in.
+    // is opened as it was given.
     if (!location_exists || !same_file(at_location, reached)) {
       located.reset();
     }
@@ -218,8 +151,8 @@ plan_result plan(const std::string& name, const std::vector<std::string>& traces
     return cannot_open();
   }
   const fs::path reachable = located ? *located : fs::path{name};
-  const auto planned = [&](const fs::path& path, write_mode mode, int stream = -1) {
-    return plan_result{target{name, path, mode, stream, exists, 0666U & ~static_cast<unsigned int>(mask)}, {}};
+  const auto planned = [&](write_mode mode, int stream = -1) {
+    return plan_result{target{reachable, mode, stream, exists}, {}};
   };
 
   for (const auto& trace : traces) {
@@ -231,203 +164,153 @@ plan_result plan(const std::string& name, const std::vector<std::string>& traces
     }
   }
 
-  if (exists && S_ISDIR(reached.st_mode)) {
+  if (!exists) {
+    if (probe) {
+      // O_EXCL: the file removed again is the one created here.
+      const int created = ::open(reachable.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOCTTY | O_CLOEXEC, 0666);
+      if (created < 0) {
+        return cannot_open();
+      }
+      ::close(created);
+      ::unlink(reachable.c_str());
+    }
+    return planned(write_mode::regular_file);
+  }
+  if (S_ISDIR(reached.st_mode)) {
     return cannot_open();
   }
-  // The file the shell redirected stdout or stderr to is not replaced, checked
-  // or truncated: renaming over a log would unlink everything the run printed.
+  // The file the shell redirected stdout or stderr to is not checked or
+  // truncated: that would destroy everything the run printed.
   for (const int stream : {STDOUT_FILENO, STDERR_FILENO}) {
-    if (file_status open_stream{}; exists && ::fstat(stream, &open_stream) == 0 && same_file(open_stream, reached)) {
-      return planned(reachable, write_mode::standard_stream, stream);
+    if (file_status open_stream{}; ::fstat(stream, &open_stream) == 0 && same_file(open_stream, reached)) {
+      return planned(write_mode::standard_stream, stream);
     }
   }
-  if (exists && S_ISFIFO(reached.st_mode)) {
-    // A named FIFO or a process substitution's pipe: written in place, and
-    // not opened now, because that would consume the reader waiting for the
-    // document.
-    return planned(reachable, write_mode::in_place);
+  if (S_ISFIFO(reached.st_mode)) {
+    // A named FIFO or a process substitution's pipe, not opened now: that
+    // would consume the reader waiting for the document.
+    return planned(write_mode::special_file);
   }
-  if (exists && !S_ISREG(reached.st_mode)) {
-    // A device (/dev/null, a terminal) or a socket: written in place, but
-    // opened and closed now -- without truncating, blocking or acquiring a
-    // controlling terminal -- so one that cannot be opened costs no run.
-    const int descriptor = ::open(reachable.c_str(), O_WRONLY | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
-    if (descriptor < 0) {
-      return cannot_open();
+  if (!S_ISREG(reached.st_mode)) {
+    // A device (/dev/null, a terminal) or a socket, opened now without
+    // blocking or acquiring a controlling terminal.
+    if (probe) {
+      const int descriptor = ::open(reachable.c_str(), O_WRONLY | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
+      if (descriptor < 0) {
+        return cannot_open();
+      }
+      ::close(descriptor);
     }
-    ::close(descriptor);
-    return planned(reachable, write_mode::in_place);
+    return planned(write_mode::special_file);
   }
 
-  if (exists) {
+  if (probe) {
     // Opening it for writing, without truncation, is what refuses a read-only
     // document.
     const int writable = ::open(reachable.c_str(), O_WRONLY | O_NOCTTY | O_CLOEXEC);
     if (writable < 0) {
       return cannot_open();
     }
-    file_status opened{};
-    const bool described = ::fstat(writable, &opened) == 0;
     ::close(writable);
-    if (!described) {
-      return cannot_open();
-    }
-    // A trace the optional value consumed, a --config source, the native
-    // YAML: none of them begins like a statistics document, and replacing any
-    // of them would be unrecoverable. So its first bytes are read, through a
-    // separate open; only an empty file, with nothing to check, may refuse it.
-    const auto cannot_read = [&] {
-      return refuse(fmt::format("cannot read '{}' to check that it is a ChampSim statistics document.", name));
-    };
-    const auto& signature = champsim::toml_printer::document_signature;
-    std::optional<std::string> head{std::string{}};
-    if (const int readable = ::open(reachable.c_str(), O_RDONLY | O_NOCTTY | O_CLOEXEC); readable >= 0) {
-      head = read_head(readable, std::size(signature));
-      ::close(readable);
-    } else if (opened.st_size != 0) {
-      return cannot_read();
-    }
-    if (!head) {
-      return cannot_read();
-    }
-    if (!std::empty(*head) && *head != signature) {
-      // /dev/fd/N, /dev/stdin and the like name an open descriptor, not a
-      // trace path the optional value swallowed. (/dev/shm can hold traces.)
-      const bool descriptor_name =
-          name.rfind("/dev/fd/", 0) == 0 || name.rfind("/proc/", 0) == 0 || name == "/dev/stdin" || name == "/dev/stdout" || name == "/dev/stderr";
-      return refuse(fmt::format("TOML output '{}' is not a ChampSim statistics document; refusing to replace it.{}", name,
-                                descriptor_name ? ""
-                                                : " If it is a trace, --toml took it as the output filename: use --toml=FILE, or put -- before the "
-                                                  "trace paths."));
-    }
   }
-
-  if (!located) {
-    // Reachable only through the kernel, so there is no directory to put a
-    // replacement in.
-    return planned(reachable, write_mode::in_place);
+  // A trace the optional value consumed, a --config source, the native YAML:
+  // none of them begins like a statistics document, and overwriting any of
+  // them would be unrecoverable. So its first bytes are read, through a
+  // separate open; only an empty file, with nothing to check, may refuse it.
+  const auto cannot_read = [&] {
+    return refuse(fmt::format("cannot read '{}' to check that it is a ChampSim statistics document.", name));
+  };
+  const auto& signature = champsim::toml_printer::document_signature;
+  std::optional<std::string> head{std::string{}};
+  if (const int readable = ::open(reachable.c_str(), O_RDONLY | O_NOCTTY | O_CLOEXEC); readable >= 0) {
+    head = read_head(readable, std::size(signature));
+    ::close(readable);
+  } else if (reached.st_size != 0) {
+    return cannot_read();
   }
-  // A replacement is created beside the target and renamed over it. An
-  // existing file is written in place instead wherever the rename would not
-  // leave the same file behind: its directory refuses new files, it has a
-  // second hard link (which a rename would split), or a new file there would
-  // not carry its owner, its group or its access ACL.
-  if (!exists || (reached.st_nlink <= 1 && !may_have_access_acl(*located))) {
-    const auto created = probe_new_file(located->parent_path());
-    if (created && (!exists || (created->st_uid == reached.st_uid && created->st_gid == reached.st_gid))) {
-      return planned(*located, write_mode::replace_by_rename);
-    }
+  if (!head) {
+    return cannot_read();
   }
-  if (!exists) {
-    return cannot_open();
+  if (!std::empty(*head) && *head != signature) {
+    // /dev/fd/N, /dev/stdin and the like name an open descriptor, not a
+    // trace path the optional value swallowed. (/dev/shm can hold traces.)
+    const bool descriptor_name =
+        name.rfind("/dev/fd/", 0) == 0 || name.rfind("/proc/", 0) == 0 || name == "/dev/stdin" || name == "/dev/stdout" || name == "/dev/stderr";
+    return refuse(fmt::format("TOML output '{}' is not a ChampSim statistics document; refusing to replace it.{}", name,
+                              descriptor_name ? ""
+                                              : " If it is a trace, --toml took it as the output filename: use --toml=FILE, or put -- before the "
+                                                "trace paths."));
   }
-  return planned(*located, write_mode::in_place);
+  return planned(write_mode::regular_file);
 }
+} // namespace
 
-operations system_operations()
+namespace champsim::output
 {
-  operations ops;
-  ops.rename = [](const fs::path& from, const fs::path& to) {
-    return ::rename(from.c_str(), to.c_str()) == 0 ? 0 : errno;
-  };
-  ops.write_in_place = [](const fs::path& path, std::string_view document, bool create) {
-    // Not O_CREAT on a file that exists: fs.protected_regular refuses that for
-    // another user's file in a sticky directory, even one that may be written.
-    const int descriptor = ::open(path.c_str(), O_WRONLY | O_TRUNC | O_NOCTTY | O_CLOEXEC | (create ? O_CREAT : 0), 0666);
-    if (descriptor < 0) {
-      return errno;
-    }
-    const int write_error = write_all(descriptor, document);
-    const int close_error = ::close(descriptor) == 0 ? 0 : errno;
-    return write_error != 0 ? write_error : close_error;
-  };
-  return ops;
-}
+plan_result plan(const std::string& name, const std::vector<std::string>& traces) { return check(name, traces, true); }
 
-write_result write(const target& destination, std::string_view document, const operations& ops)
+write_result write(const std::string& name, const std::vector<std::string>& traces, std::string_view document)
 {
   write_result result;
-  const auto failed = [&] {
-    result.messages.push_back(fmt::format("ERROR: failed to write the TOML statistics to '{}'.", destination.name));
-    return result;
-  };
-  // Writing in place truncates the target before any of the document is
-  // written, so its earlier contents do not survive a failure.
-  const auto failed_in_place = [&](int error) {
-    result.messages.push_back(
-        fmt::format("ERROR: failed to write the TOML statistics to '{}' in place ({}); it may now be empty or partial.", destination.name, describe(error)));
+  const auto fail = [&](std::string message) {
+    result.messages.push_back(std::move(message));
     return result;
   };
 
-  if (destination.mode == write_mode::standard_stream) {
-    // After the plain report, which is still buffered in stdout.
-    std::cout.flush();
-    std::fflush(stdout);
-    std::FILE* const stream = destination.stream == STDERR_FILENO ? stderr : stdout;
-    const bool complete = std::fwrite(std::data(document), 1, std::size(document), stream) == std::size(document);
-    if (std::fflush(stream) != 0 || !complete) {
-      return failed();
+  // A name created by someone else between the check and the create is
+  // checked like any other existing file, once.
+  for (int attempt = 0;; ++attempt) {
+    const auto checked = check(name, traces, false);
+    if (!checked.planned) {
+      return fail(fmt::format("ERROR: {} The run completed, but the TOML statistics were not written.", checked.error));
+    }
+    const auto& destination = *checked.planned;
+
+    if (destination.mode == write_mode::standard_stream) {
+      // After the plain report, which is still buffered in stdout.
+      std::cout.flush();
+      std::fflush(stdout);
+      std::FILE* const stream = destination.stream == STDERR_FILENO ? stderr : stdout;
+      const bool complete = std::fwrite(std::data(document), 1, std::size(document), stream) == std::size(document);
+      if (std::fflush(stream) != 0 || !complete) {
+        return fail(fmt::format("ERROR: failed to write the TOML statistics to '{}'.", name));
+      }
+      result.written = true;
+      return result;
+    }
+
+    const bool regular = destination.mode == write_mode::regular_file;
+    int descriptor = -1;
+    int open_error = ENOENT;
+    if (destination.exists) {
+      // Not O_CREAT on a file that exists: fs.protected_regular refuses that
+      // for another user's file in a sticky directory, even one that may be
+      // written.
+      descriptor = ::open(destination.path.c_str(), O_WRONLY | O_NOCTTY | O_CLOEXEC | (regular ? O_TRUNC : 0));
+      open_error = descriptor < 0 ? errno : 0;
+    }
+    if (descriptor < 0 && regular && open_error == ENOENT) {
+      // Nothing there, or removed during the run. Mode 0666, so that the umask
+      // or the directory's default ACL decides, as for any new file.
+      descriptor = ::open(destination.path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOCTTY | O_CLOEXEC, 0666);
+      open_error = descriptor < 0 ? errno : 0;
+      if (descriptor < 0 && open_error == EEXIST && attempt == 0) {
+        continue;
+      }
+    }
+    if (descriptor < 0) {
+      return fail(fmt::format("ERROR: cannot open '{}' to write the TOML statistics ({}); its earlier contents, if any, were not touched.", name,
+                              describe(open_error)));
+    }
+
+    const int write_error = write_all(descriptor, document);
+    const int close_error = ::close(descriptor) == 0 ? 0 : errno;
+    if (write_error != 0 || close_error != 0) {
+      return fail(fmt::format("ERROR: failed to write the TOML statistics to '{}' ({}); it may now be empty or partial.", name,
+                              describe(write_error != 0 ? write_error : close_error)));
     }
     result.written = true;
     return result;
   }
-
-  if (destination.mode == write_mode::in_place) {
-    if (const int error = ops.write_in_place(destination.path, document, !destination.existed); error != 0) {
-      return failed_in_place(error);
-    }
-    result.written = true;
-    return result;
-  }
-
-  // The finished document is written to a new sibling and renamed over the
-  // target, so a write that fails here -- a full disk -- or a run killed
-  // before the rename leaves whatever the target held before as it was.
-  auto temporary = create_temporary(destination.path.parent_path());
-  if (temporary.descriptor < 0) {
-    // The directory took a probe at startup but refuses a file now. Every
-    // check writing in place needs has passed, and this is the only copy.
-    if (const int error = ops.write_in_place(destination.path, document, !destination.existed); error != 0) {
-      return failed_in_place(error);
-    }
-    result.messages.push_back(fmt::format("WARNING: could not create a temporary file beside '{}' ({}); wrote the TOML statistics in place instead.",
-                                          destination.name, describe(temporary.error)));
-    result.written = true;
-    return result;
-  }
-
-  // rename substitutes a new file, created private: before it holds any of
-  // the document, give it an existing document's permissions, or a new file's.
-  auto permissions = destination.new_file_permissions;
-  if (file_status previous{}; ::lstat(destination.path.c_str(), &previous) == 0 && S_ISREG(previous.st_mode)) {
-    permissions = static_cast<unsigned int>(previous.st_mode) & 07777U;
-  }
-  ::fchmod(temporary.descriptor, static_cast<mode_t>(permissions));
-  const int write_error = write_all(temporary.descriptor, document);
-  const int close_error = ::close(temporary.descriptor) == 0 ? 0 : errno;
-  if (write_error != 0 || close_error != 0) {
-    ::unlink(temporary.path.c_str());
-    return failed();
-  }
-
-  const int rename_error = ops.rename(temporary.path, destination.path);
-  if (rename_error == 0) {
-    result.written = true;
-    return result;
-  }
-  // rename can fail where writing does not, as EBUSY does for a file
-  // bind-mounted into a container.
-  const int in_place_error = ops.write_in_place(destination.path, document, !destination.existed);
-  if (in_place_error == 0) {
-    ::unlink(temporary.path.c_str());
-    result.messages.push_back(
-        fmt::format("WARNING: could not rename the TOML statistics over '{}' ({}); wrote them in place instead.", destination.name, describe(rename_error)));
-    result.written = true;
-    return result;
-  }
-  result.messages.push_back(fmt::format("ERROR: failed to write the TOML statistics to '{}': renaming failed ({}), and so did writing in place ({}), "
-                                        "so '{}' may now be empty or partial. The complete document is kept in '{}'.",
-                                        destination.name, describe(rename_error), describe(in_place_error), destination.name, temporary.path.string()));
-  return result;
 }
 } // namespace champsim::output

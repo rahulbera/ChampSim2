@@ -206,52 +206,35 @@ stay unchanged. `meta.ramulator2` records original YAML, canonical path, hash,
 revision and library/build provenance. Replay loads `[config]`, checks current
 YAML hash/revision in the driver, and preserves original overrides separately.
 
-Use `--toml result.toml -- trace...`. Nothing is written to a named output at
-startup. After the trace count, `champsim::output::plan` (`src/output_target.cc`)
-checks the file the kernel reaches through the name, resolving links one at a
-time and never folding `..` by text, so `missing/../x` is "cannot open" as in
-`open()`. It refuses an input trace (by inode or canonical path), a directory,
-and an existing non-empty regular file that does not begin with
-`# ChampSim statistics.` (`toml_printer::document_signature`). That protects a
-trace the optional value swallowed when one path too many is given, a `--config`
-source, and the YAML. An existing regular file must also open for writing
-(without truncation), and its first bytes are read through a separate read-only
-open: an empty file that cannot be read is accepted, and a non-empty one is
-refused as "cannot read ... to check that it is a ChampSim statistics
-document". Then the write mode, applied after the run:
-- the inode behind stdout or stderr (`/dev/stdout`, `/proc/self/fd/1`, the log
-  the shell redirected to): the document is appended to that stream after the
-  plain report, and nothing is probed, renamed or truncated;
-- a FIFO (or process substitution): written in place, not opened at startup,
-  since that would consume the reader; a device or socket: written in place, but
-  opened non-blocking and closed at startup, so an unopenable one costs no run;
-- a hard-linked regular file, one whose directory refuses the startup probe
-  (a `.champsim-toml-<16 hex>.tmp` sibling created and removed), and one whose
-  owner or group differs from that probe's or that may carry a POSIX access ACL
-  (on Linux, a `system.posix_acl_access` attribute that is not definitely
-  absent): written in place, so its inode, owner, group and ACL are kept;
-- otherwise, a regular file or a new name: a finished sibling of that form is
-  renamed over it. The sibling is created with mode 0600 and given the old
-  permission bits (or, for a new name, `0666` less the umask read at startup)
-  before it holds any content; other extended attributes are a new file's. So
-  a startup error or a failed write of the sibling leaves an earlier document
-  intact. If the rename fails (as for a file bind-mounted into a container),
-  the target is written in place with a warning, and if that fails too the
-  sibling is kept and named in the error, which says the target may now be
-  empty or partial. If the sibling cannot be created by then, the target is
-  written in place with a warning. A new name in a directory that refuses the
-  probe is "cannot open".
+Use `--toml result.toml -- trace...`. Nothing is written to or truncated in a
+named output before the run has succeeded. After the trace count,
+`champsim::output::plan` (`src/output_target.cc`) checks the file the kernel
+reaches through the name, resolving links one at a time and never folding `..`
+by text, so `missing/../x` is "cannot open" as in `open()`. It refuses an input
+trace (by inode or canonical path), a directory, and an existing non-empty
+regular file that does not begin with `# ChampSim statistics.`
+(`toml_printer::document_signature`) or cannot be read to check that (an empty
+unreadable file is accepted). That protects a trace the optional value swallowed
+when one path too many is given, a `--config` source, and the YAML. What will be
+opened after the run must open at startup: an existing regular file for writing
+without `O_TRUNC`, a device or socket non-blocking, and a new name by an
+`O_CREAT|O_EXCL` create that is unlinked again. A FIFO (or process substitution)
+is not opened at startup, since that would consume the reader. The inode behind
+stdout or stderr (`/dev/stdout`, `/proc/self/fd/1`, the log the shell redirected
+to) receives the document on that stream after the plain report.
 
-Writing in place truncates a regular file before writing, in any mode and in
-both fallbacks, so a failure there does not preserve the earlier document; every
-failed in-place write says the target may now be empty or partial.
-
-Writing in place opens a name that existed at startup without `O_CREAT`, which
-`fs.protected_regular` refuses on another user's file in a sticky directory even
-when the file may be written. Every failure exits 1. A run killed during the
-final write can leave a `.champsim-toml-*.tmp` sibling. `--knobs` never probes
-output paths. Full stdout with unnamed `--toml` still contains progress/plain
-output before the TOML tail.
+After a successful run the document is rendered to memory, and
+`champsim::output::write` repeats the checks, since the filesystem may have
+changed during the run; if they now refuse, nothing is written. It then writes
+in place: an existing file is opened `O_TRUNC` without `O_CREAT` (which
+`fs.protected_regular` refuses on another user's file in a sticky directory), and
+a missing one, including one removed during the run, is created
+`O_CREAT|O_EXCL` with mode 0666. So existing files keep their inode, hard links,
+owner, group, ACLs and permissions, and new files get what the umask or a
+default ACL gives any new file there. A failed open leaves the target untouched;
+a failure after the truncating open can leave it empty or partial, and says so.
+Every failure exits 1. `--knobs` never probes output paths. Full stdout with
+unnamed `--toml` still contains progress/plain output before the TOML tail.
 See [the validation record](docs/ramulator2-validation.md) for evidence, limitations,
 the corrected default guard, and the recovered validation input incident. Portable
 regressions live in `test/ramulator2`; the enabled CI job uses generated local

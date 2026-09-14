@@ -165,28 +165,23 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     return 1;
   }
 
-  // Everything about a named --toml output is checked here, before a trace is
-  // opened, and nothing here writes to it: a statistics path that cannot be
-  // written should cost nothing, and a startup error must not cost an earlier
-  // document. champsim::output::plan decides from the file the kernel reaches
-  // through the name, never from its spelling. A trace or a directory is
-  // refused. The file behind stdout or stderr gets the document appended to
-  // that stream. A FIFO is written in place and not opened until then; a
-  // device or socket is written in place but must open now. An existing
-  // regular file must be writable, and either empty or readable and beginning
-  // like a statistics document. It, or a name with nothing there yet, is
-  // replaced by renaming a finished sibling over it -- except that a
-  // hard-linked file, one whose directory refuses a new file, and one a new
-  // file would not match in owner, group or access ACL are written in place
-  // after the run.
-  std::optional<champsim::output::target> toml_target{};
+  // A named --toml output is checked here, before a trace is opened, and
+  // nothing is written to it or truncated until the run has succeeded: a
+  // statistics path that cannot be written should cost nothing, and a startup
+  // error must not cost an earlier document. champsim::output::plan decides
+  // from the file the kernel reaches through the name, never from its
+  // spelling. A trace or a directory is refused, and so is an existing
+  // non-empty regular file that cannot be read or does not begin like a
+  // statistics document. What will be opened must open now: a regular file
+  // for writing without truncation, a device or socket without blocking, and
+  // a new name by creating it and removing it again. A FIFO is not opened
+  // until the document is written, and the file behind stdout or stderr gets
+  // the document appended to that stream.
   if (!list_knobs && toml_option->count() > 0 && !std::empty(toml_file_name)) {
-    auto planned = champsim::output::plan(toml_file_name, trace_names);
-    if (!planned.planned) {
+    if (const auto planned = champsim::output::plan(toml_file_name, trace_names); !planned.planned) {
       fmt::print(stderr, "ERROR: {}\n", planned.error);
       return 1;
     }
-    toml_target = std::move(planned.planned);
   }
 
   // The simulation-level knobs live outside the generated constructor, so
@@ -412,17 +407,15 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     if (toml_file_name.empty()) {
       champsim::toml_printer{std::cout, toml_sim_stats, run}.print(phase_stats);
     } else {
-      // The whole document exists before the target is touched. When the plan
-      // replaces by rename, a '.champsim-toml-<16 hex>.tmp' sibling carries it,
-      // so a failed write leaves the earlier document as it was; a failed
-      // rename falls back to writing in place, and if that fails too the
-      // sibling is kept, and named. Other modes write the stream or the
-      // target itself now. Writing in place truncates first, so its failure
-      // can leave the target empty or partial, and says so. Any failure exits
-      // 1: a full disk must not report success.
+      // The whole document exists before the target is touched. write()
+      // checks the name again, since the filesystem may have changed during
+      // the run, then writes the document in place. An existing file is
+      // truncated first, so a failure after that can leave it empty or
+      // partial, and says so. Any failure exits 1: a full disk must not
+      // report success.
       std::ostringstream document;
       champsim::toml_printer{document, toml_sim_stats, run}.print(phase_stats);
-      const auto delivered = champsim::output::write(*toml_target, document.str());
+      const auto delivered = champsim::output::write(toml_file_name, trace_names, document.str());
       for (const auto& message : delivered.messages) {
         fmt::print(stderr, "{}\n", message);
       }

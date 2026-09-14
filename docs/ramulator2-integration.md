@@ -391,26 +391,22 @@ opening output. A later review found two cases that check missed: one trace path
 more than the binary had cores still let `--toml` consume and overwrite a trace,
 and the startup probe truncated a `--config` source, the native YAML or a results
 document before a configuration error. A named output is now never written at
-startup. An existing non-empty regular file that does not begin like a statistics
-document is refused, and a regular target is replaced by renaming a finished
-sibling over it only after a successful run. A second review found three gaps in
-that first version. The checks read the name as typed while the rename used a
-textual `..` fold, so `missing/../machine.toml` replaced the configuration;
-every check now uses the file the kernel reaches. A rename that failed at the end
-deleted the finished document, and a hard-linked output (split), a writable file
-in a read-only directory and a name of 234 to 255 bytes (refused) no longer
-behaved as before. Hard-linked outputs and files in such directories are now
-written in place, as is a target whose rename fails, and the sibling's name has a
-fixed length that fits beside any valid name. And
-`--toml /dev/stdout` with stdout redirected to a log renamed over the log; the
-file behind stdout or stderr now receives the document on that stream. A third
-review found that the rename still gave a document a new file's group and
-dropped its access ACL; a file whose owner, group or access ACL a new sibling
-would not carry is now written in place. The sibling is also created with mode
-0600 and given its final permission bits before any content, and writing in
-place no longer asks to create a file that already exists. Writing in place,
-fallbacks included, truncates first and so does not preserve an earlier document
-when it fails; those errors now say the target may be empty or partial. An
+startup, and an existing non-empty regular file that does not begin like a
+statistics document is refused. A second review found that the checks read the
+name as typed while the write used a textual `..` fold, so
+`missing/../machine.toml` replaced the configuration; every check now uses the
+file the kernel reaches. It also found that `--toml /dev/stdout` with stdout
+redirected to a log replaced the log; the file behind stdout or stderr now
+receives the document on that stream. Those versions replaced a regular target
+by renaming a finished sibling over it, and each of three reviews found
+something the rename did that writing the file would not (a split hard link, a
+new file's group, ACL or permissions, a refused long name or read-only
+directory) or a document it lost, so the rename was removed. The target is
+checked at startup without being modified, checked again after a successful
+run, and written in place: existing files keep their inode, links, owner, group,
+ACLs and permissions, and new files get default permissions. The one guarantee
+given up concerns a failure during that final write itself, such as a full
+disk: it can leave the target empty or partial, and the error says so. An
 existing output that may be written but not read is accepted when empty and
 refused as unreadable otherwise. Tests use
 named `--toml FILE -- TRACE` arguments, scratch inputs and checksum checks. See the
