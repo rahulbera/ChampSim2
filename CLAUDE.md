@@ -228,19 +228,22 @@ the write mode, applied after the run:
   (on Linux, a `system.posix_acl_access` attribute that is not definitely
   absent): written in place, so its inode, owner, group and ACL are kept;
 - otherwise, a regular file or a new name: a finished sibling of that form is
-  renamed over it (with the old permission bits; other extended attributes
-  are a new file's), so a startup error or a
-  failed write of the sibling leaves an earlier document intact. If the rename
-  fails (as for a file bind-mounted into a container), the target is written in
-  place with a warning, and if that fails too the sibling is kept and named in
-  the error. If the sibling cannot be created by then, the target
-  is written in place with a warning. A new name in a directory that refuses
-  the probe is "cannot open".
+  renamed over it. The sibling is created with mode 0600 and given the old
+  permission bits (or, for a new name, `0666` less the umask read at startup)
+  before it holds any content; other extended attributes are a new file's. So
+  a startup error or a failed write of the sibling leaves an earlier document
+  intact. If the rename fails (as for a file bind-mounted into a container),
+  the target is written in place with a warning, and if that fails too the
+  sibling is kept and named in the error. If the sibling cannot be created by
+  then, the target is written in place with a warning. A new name in a
+  directory that refuses the probe is "cannot open".
 
-Every failure exits 1. A run killed during the final write can leave a
-`.champsim-toml-*.tmp` sibling. `--knobs` never probes output paths. Full
-stdout with unnamed `--toml` still contains progress/plain output before the
-TOML tail.
+Writing in place opens a name that existed at startup without `O_CREAT`, which
+`fs.protected_regular` refuses on another user's file in a sticky directory even
+when the file may be written. Every failure exits 1. A run killed during the
+final write can leave a `.champsim-toml-*.tmp` sibling. `--knobs` never probes
+output paths. Full stdout with unnamed `--toml` still contains progress/plain
+output before the TOML tail.
 See [the validation record](docs/ramulator2-validation.md) for evidence, limitations,
 the corrected default guard, and the recovered validation input incident. Portable
 regressions live in `test/ramulator2`; the enabled CI job uses generated local

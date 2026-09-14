@@ -99,10 +99,11 @@ std::optional<std::string> read_head(int descriptor, std::size_t size)
 }
 
 // A temporary file in `directory`, created exclusively so that it can never be
-// someone else's file, with the usual permissions of a new file. The name has
-// a fixed length and does not embed the target's, so any target name that
-// fits the directory leaves room for it. The descriptor is open for writing;
-// on failure it is -1 and `error` holds errno.
+// someone else's file, and with mode 0600 so that nobody else can open it
+// before its permissions are set. The name has a fixed length and does not
+// embed the target's, so any target name that fits the directory leaves room
+// for it. The descriptor is open for writing; on failure it is -1 and `error`
+// holds errno.
 struct temporary_file {
   fs::path path;
   int descriptor{-1};
@@ -116,7 +117,7 @@ temporary_file create_temporary(const fs::path& directory)
   temporary_file created;
   for (int attempt = 0; attempt < max_attempts; ++attempt) {
     created.path = directory / fmt::format(".champsim-toml-{:08x}{:08x}.tmp", entropy(), entropy());
-    created.descriptor = ::open(created.path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOCTTY | O_CLOEXEC, 0666);
+    created.descriptor = ::open(created.path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOCTTY | O_CLOEXEC, 0600);
     if (created.descriptor >= 0) {
       return created;
     }
@@ -190,6 +191,9 @@ plan_result plan(const std::string& name, const std::vector<std::string>& traces
   const auto cannot_open = [&] {
     return refuse(fmt::format("cannot open '{}' to receive the TOML statistics.", name));
   };
+  // The umask cannot be read without being set, so it is read once, here.
+  const mode_t mask = ::umask(0);
+  ::umask(mask);
 
   // What open() reaches through the name, if anything. Every decision below
   // is about that file, never about the spelling.
@@ -214,6 +218,9 @@ plan_result plan(const std::string& name, const std::vector<std::string>& traces
     return cannot_open();
   }
   const fs::path reachable = located ? *located : fs::path{name};
+  const auto planned = [&](const fs::path& path, write_mode mode, int stream = -1) {
+    return plan_result{target{name, path, mode, stream, exists, 0666U & ~static_cast<unsigned int>(mask)}, {}};
+  };
 
   for (const auto& trace : traces) {
     std::error_code equivalent_error, canonical_error;
@@ -231,14 +238,14 @@ plan_result plan(const std::string& name, const std::vector<std::string>& traces
   // or truncated: renaming over a log would unlink everything the run printed.
   for (const int stream : {STDOUT_FILENO, STDERR_FILENO}) {
     if (file_status open_stream{}; exists && ::fstat(stream, &open_stream) == 0 && same_file(open_stream, reached)) {
-      return plan_result{target{name, reachable, write_mode::standard_stream, stream}, {}};
+      return planned(reachable, write_mode::standard_stream, stream);
     }
   }
   if (exists && S_ISFIFO(reached.st_mode)) {
     // A named FIFO or a process substitution's pipe: written in place, and
     // not opened now, because that would consume the reader waiting for the
     // document.
-    return plan_result{target{name, reachable, write_mode::in_place}, {}};
+    return planned(reachable, write_mode::in_place);
   }
   if (exists && !S_ISREG(reached.st_mode)) {
     // A device (/dev/null, a terminal) or a socket: written in place, but
@@ -249,7 +256,7 @@ plan_result plan(const std::string& name, const std::vector<std::string>& traces
       return cannot_open();
     }
     ::close(descriptor);
-    return plan_result{target{name, reachable, write_mode::in_place}, {}};
+    return planned(reachable, write_mode::in_place);
   }
 
   if (exists) {
@@ -282,7 +289,7 @@ plan_result plan(const std::string& name, const std::vector<std::string>& traces
   if (!located) {
     // Reachable only through the kernel, so there is no directory to put a
     // replacement in.
-    return plan_result{target{name, reachable, write_mode::in_place}, {}};
+    return planned(reachable, write_mode::in_place);
   }
   // A replacement is created beside the target and renamed over it. An
   // existing file is written in place instead wherever the rename would not
@@ -292,13 +299,13 @@ plan_result plan(const std::string& name, const std::vector<std::string>& traces
   if (!exists || (reached.st_nlink <= 1 && !may_have_access_acl(*located))) {
     const auto created = probe_new_file(located->parent_path());
     if (created && (!exists || (created->st_uid == reached.st_uid && created->st_gid == reached.st_gid))) {
-      return plan_result{target{name, *located, write_mode::replace_by_rename}, {}};
+      return planned(*located, write_mode::replace_by_rename);
     }
   }
   if (!exists) {
     return cannot_open();
   }
-  return plan_result{target{name, *located, write_mode::in_place}, {}};
+  return planned(*located, write_mode::in_place);
 }
 
 operations system_operations()
@@ -307,8 +314,10 @@ operations system_operations()
   ops.rename = [](const fs::path& from, const fs::path& to) {
     return ::rename(from.c_str(), to.c_str()) == 0 ? 0 : errno;
   };
-  ops.write_in_place = [](const fs::path& path, std::string_view document) {
-    const int descriptor = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOCTTY | O_CLOEXEC, 0666);
+  ops.write_in_place = [](const fs::path& path, std::string_view document, bool create) {
+    // Not O_CREAT on a file that exists: fs.protected_regular refuses that for
+    // another user's file in a sticky directory, even one that may be written.
+    const int descriptor = ::open(path.c_str(), O_WRONLY | O_TRUNC | O_NOCTTY | O_CLOEXEC | (create ? O_CREAT : 0), 0666);
     if (descriptor < 0) {
       return errno;
     }
@@ -341,7 +350,7 @@ write_result write(const target& destination, std::string_view document, const o
   }
 
   if (destination.mode == write_mode::in_place) {
-    if (ops.write_in_place(destination.path, document) != 0) {
+    if (ops.write_in_place(destination.path, document, !destination.existed) != 0) {
       return failed();
     }
     result.written = true;
@@ -355,7 +364,7 @@ write_result write(const target& destination, std::string_view document, const o
   if (temporary.descriptor < 0) {
     // The directory took a probe at startup but refuses a file now. Every
     // check writing in place needs has passed, and this is the only copy.
-    if (ops.write_in_place(destination.path, document) != 0) {
+    if (ops.write_in_place(destination.path, document, !destination.existed) != 0) {
       return failed();
     }
     result.messages.push_back(fmt::format("WARNING: could not create a temporary file beside '{}' ({}); wrote the TOML statistics in place instead.",
@@ -364,11 +373,13 @@ write_result write(const target& destination, std::string_view document, const o
     return result;
   }
 
-  // rename substitutes a new file: carry over an existing document's
-  // permissions rather than the defaults it was created with.
+  // rename substitutes a new file, created private: before it holds any of
+  // the document, give it an existing document's permissions, or a new file's.
+  auto permissions = destination.new_file_permissions;
   if (file_status previous{}; ::lstat(destination.path.c_str(), &previous) == 0 && S_ISREG(previous.st_mode)) {
-    ::fchmod(temporary.descriptor, previous.st_mode & 07777);
+    permissions = static_cast<unsigned int>(previous.st_mode) & 07777U;
   }
+  ::fchmod(temporary.descriptor, static_cast<mode_t>(permissions));
   const int write_error = write_all(temporary.descriptor, document);
   const int close_error = ::close(temporary.descriptor) == 0 ? 0 : errno;
   if (write_error != 0 || close_error != 0) {
@@ -381,9 +392,9 @@ write_result write(const target& destination, std::string_view document, const o
     result.written = true;
     return result;
   }
-  // rename can fail where writing does not: EBUSY for a file bind-mounted into
-  // a container, EPERM for another user's file in a sticky directory.
-  const int in_place_error = ops.write_in_place(destination.path, document);
+  // rename can fail where writing does not, as EBUSY does for a file
+  // bind-mounted into a container.
+  const int in_place_error = ops.write_in_place(destination.path, document, !destination.existed);
   if (in_place_error == 0) {
     ::unlink(temporary.path.c_str());
     result.messages.push_back(

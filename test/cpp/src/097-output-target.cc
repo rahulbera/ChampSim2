@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <sys/stat.h>
 
@@ -107,11 +108,17 @@ TEST_CASE("A --toml document is replaced by a renamed sibling that already holds
   REQUIRE(names_in(scratch.path) == std::vector<std::string>{"run.toml"});
 }
 
-TEST_CASE("A --toml document whose rename fails is written in place instead")
+TEST_CASE("A --toml document whose rename fails is written in place instead, created only where nothing was")
 {
   scratch_directory scratch;
   const auto document = scratch.path / "run.toml";
-  put(document, old_document);
+  // fs.protected_regular refuses O_CREAT on another user's existing file in a
+  // sticky directory, even one that may be written.
+  const bool existed = GENERATE(true, false);
+  CAPTURE(existed);
+  if (existed) {
+    put(document, old_document);
+  }
   const auto destination = planned_target(document);
   REQUIRE(destination.mode == write_mode::replace_by_rename);
 
@@ -119,8 +126,14 @@ TEST_CASE("A --toml document whose rename fails is written in place instead")
   ops.rename = [](const fs::path&, const fs::path&) {
     return EBUSY;
   };
+  std::vector<bool> created;
+  ops.write_in_place = [&, write_in_place = ops.write_in_place](const fs::path& path, std::string_view bytes, bool create) {
+    created.push_back(create);
+    return write_in_place(path, bytes, create);
+  };
   const auto result = champsim::output::write(destination, new_document, ops);
   REQUIRE(result.written);
+  REQUIRE(created == std::vector<bool>{!existed});
   REQUIRE(contents(document) == new_document);
   REQUIRE(names_in(scratch.path) == std::vector<std::string>{"run.toml"});
   REQUIRE(std::size(result.messages) == 1);
@@ -138,7 +151,7 @@ TEST_CASE("A --toml document that can be neither renamed nor written in place is
   ops.rename = [](const fs::path&, const fs::path&) {
     return EBUSY;
   };
-  ops.write_in_place = [](const fs::path&, std::string_view) {
+  ops.write_in_place = [](const fs::path&, std::string_view, bool) {
     return EIO;
   };
   const auto result = champsim::output::write(destination, new_document, ops);
@@ -167,9 +180,10 @@ TEST_CASE("A --toml document whose directory stops taking new files during the r
   // temporary fail at the end; writing in place still delivers the document.
   auto ops = champsim::output::system_operations();
   bool fell_back = false;
-  ops.write_in_place = [&, write_in_place = ops.write_in_place](const fs::path& path, std::string_view bytes) {
+  ops.write_in_place = [&, write_in_place = ops.write_in_place](const fs::path& path, std::string_view bytes, bool create) {
     fell_back = true;
-    return write_in_place(path, bytes);
+    CHECK_FALSE(create);
+    return write_in_place(path, bytes, create);
   };
   if (::geteuid() == 0) {
     SKIP("permissions do not bind the superuser");

@@ -54,6 +54,12 @@ struct target {
   write_mode mode{write_mode::replace_by_rename};
   // STDOUT_FILENO or STDERR_FILENO for write_mode::standard_stream.
   int stream{-1};
+  // Whether the name reached a file when the target was planned. Writing in
+  // place creates the file only where nothing was.
+  bool existed{false};
+  // The permission bits a new file gets under the process umask, read when
+  // the target was planned: a replacement's where nothing was to copy them from.
+  unsigned int new_file_permissions{0666};
 };
 
 struct plan_result {
@@ -68,10 +74,11 @@ plan_result plan(const std::string& name, const std::vector<std::string>& traces
 
 // The filesystem calls whose failure the final write has to survive, as a
 // seam for tests. Each returns 0 or an errno value. write_in_place opens with
-// O_TRUNC, so it is only ever called after the run.
+// O_TRUNC, so it is only ever called after the run, and with O_CREAT only when
+// `create` is set.
 struct operations {
   std::function<int(const std::filesystem::path& from, const std::filesystem::path& to)> rename;
-  std::function<int(const std::filesystem::path& path, std::string_view document)> write_in_place;
+  std::function<int(const std::filesystem::path& path, std::string_view document, bool create)> write_in_place;
 };
 operations system_operations();
 

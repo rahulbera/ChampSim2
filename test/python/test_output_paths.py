@@ -315,29 +315,95 @@ class OutputPathTests(unittest.TestCase):
             self.assertEqual(os.getxattr(document, "system.posix_acl_access"), acl)
             self.assertEqual(sorted(path.name for path in Path(tmp).iterdir()), ["run.toml", "trace.champsim2"])
 
-    def test_failed_rename_writes_the_statistics_document_in_place(self):
-        # A single file bind-mounted into a container refuses rename (EBUSY)
-        # but can be written; strace injects that failure without privileges.
+    INJECT_RENAME_FAILURE = "inject=rename,renameat,renameat2:error=EBUSY"
+
+    def strace_or_skip(self):
         strace = shutil.which("strace")
         if strace is None:
             self.skipTest("strace is not installed")
-        with tempfile.TemporaryDirectory() as tmp:
-            self.trace(tmp)
-            probe = subprocess.run([strace, "-f", "-o", os.devnull, "-e", "inject=rename,renameat,renameat2:error=EBUSY", "true"], capture_output=True, timeout=30)
-            if probe.returncode != 0:
-                self.skipTest(f"strace cannot inject faults here: {probe.stderr.decode(errors='replace')}")
-            document = Path(tmp) / "run.toml"
-            first = self.simulate(tmp, document, instructions=500)
-            self.assertEqual(first.returncode, 0, first.stderr)
+        probe = subprocess.run([strace, "-f", "-o", os.devnull, "-e", self.INJECT_RENAME_FAILURE, "true"], capture_output=True, timeout=30)
+        if probe.returncode != 0:
+            self.skipTest(f"strace cannot inject faults here: {probe.stderr.decode(errors='replace')}")
+        return strace
 
-            arguments = ["--trace-version", "2", "-w", "0", "-i", "1000", "--hide-heartbeat", "--toml", str(document), "--"]
-            command = [strace, "-f", "-o", os.devnull, "-e", "inject=rename,renameat,renameat2:error=EBUSY", str(BINARY), *arguments]
-            command += [str(Path(tmp) / "trace.champsim2")] * self.cores
-            result = subprocess.run(command, cwd=tmp, capture_output=True, text=True, timeout=120)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("in place", result.stderr)
-            self.assertEqual(tomllib.loads(document.read_text())["meta"]["simulation_instructions"], 1000)
-            self.assertEqual(sorted(path.name for path in Path(tmp).iterdir()), ["run.toml", "trace.champsim2"])
+    def traced_simulation(self, strace, directory, output, log, *strace_options, instructions=1000):
+        """simulate() under strace, tracing file, fchmod and write calls into `log`."""
+        arguments = ["--trace-version", "2", "-w", "0", "-i", str(instructions), "--hide-heartbeat", "--toml", str(output), "--"]
+        command = [strace, "-f", "-o", str(log), "-e", "trace=%file,fchmod,write", *strace_options, str(BINARY), *arguments]
+        command += [str(Path(directory) / "trace.champsim2")] * self.cores
+        return subprocess.run(command, cwd=directory, capture_output=True, text=True, timeout=120)
+
+    OPEN_CALL = re.compile(r'^\d+ +open(?:at)?\((?:[^,"]+, )?"([^"]*)", ([A-Z0-9_|]+)(?:, (0[0-7]*))?\) += (-?\d+)')
+
+    def traced_opens(self, log):
+        """(line number, path, flags, mode or None, result) for every open or openat in an strace log."""
+        opens = []
+        for number, line in enumerate(Path(log).read_text().splitlines()):
+            if match := self.OPEN_CALL.match(line):
+                path, flags, mode, returned = match.groups()
+                opens.append((number, path, set(flags.split("|")), mode and int(mode, 8), int(returned)))
+        return opens
+
+    def test_failed_rename_writes_the_statistics_document_in_place(self):
+        # A single file bind-mounted into a container refuses rename (EBUSY)
+        # but can be written; strace injects that failure without privileges.
+        # An existing document is opened without O_CREAT, which
+        # fs.protected_regular refuses for another user's file in a sticky
+        # directory even when it may be written; only a new name is created.
+        strace = self.strace_or_skip()
+        for existing in (True, False):
+            with self.subTest(existing=existing), tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as logs:
+                self.trace(tmp)
+                document = Path(tmp) / "run.toml"
+                if existing:
+                    first = self.simulate(tmp, document, instructions=500)
+                    self.assertEqual(first.returncode, 0, first.stderr)
+                log = Path(logs) / "strace.log"
+
+                result = self.traced_simulation(strace, tmp, document, log, "-e", self.INJECT_RENAME_FAILURE)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("in place", result.stderr)
+                self.assertEqual(tomllib.loads(document.read_text())["meta"]["simulation_instructions"], 1000)
+                self.assertEqual(sorted(path.name for path in Path(tmp).iterdir()), ["run.toml", "trace.champsim2"])
+                in_place = [flags for _, path, flags, _, _ in self.traced_opens(log) if Path(path).name == "run.toml" and "O_TRUNC" in flags]
+                self.assertEqual(len(in_place), 1, log.read_text()[-2000:])
+                self.assertEqual("O_CREAT" in in_place[0], not existing, in_place[0])
+
+    def test_replacement_is_created_private_and_given_its_final_mode_before_any_content(self):
+        # Permissions are checked only at open: a sibling created with a new
+        # file's usual bits could be opened by others before narrowing to a
+        # private document's, and read once the document is renamed into place.
+        strace = self.strace_or_skip()
+        umask = os.umask(0)
+        os.umask(umask)
+        for existing in ("private document", "nothing"):
+            with self.subTest(existing=existing), tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as logs:
+                self.trace(tmp)
+                document = Path(tmp) / "run.toml"
+                final_mode = 0o666 & ~umask
+                if existing == "private document":
+                    first = self.simulate(tmp, document, instructions=500)
+                    self.assertEqual(first.returncode, 0, first.stderr)
+                    document.chmod(0o600)
+                    final_mode = 0o600
+                log = Path(logs) / "strace.log"
+
+                result = self.traced_simulation(strace, tmp, document, log)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(stat.S_IMODE(document.stat().st_mode), final_mode)
+                temporary = re.compile(r"\.champsim-toml-[0-9a-f]{16}\.tmp")
+                created = [(number, flags, mode, returned) for number, path, flags, mode, returned in self.traced_opens(log) if temporary.fullmatch(Path(path).name)]
+                # The startup probe and the replacement itself.
+                self.assertEqual(len(created), 2, log.read_text()[-2000:])
+                for _, flags, mode, _ in created:
+                    self.assertTrue({"O_CREAT", "O_EXCL"} <= flags, flags)
+                    self.assertEqual(mode, 0o600)
+                number, _, _, descriptor = created[-1]
+                calls = [line.split(None, 1)[1] for line in log.read_text().splitlines()[number + 1:]]
+                narrowed = next(index for index, call in enumerate(calls) if call.startswith(f"fchmod({descriptor}, "))
+                first_write = next(index for index, call in enumerate(calls) if call.startswith(f"write({descriptor}, "))
+                self.assertLess(narrowed, first_write)
+                self.assertTrue(calls[narrowed].startswith(f"fchmod({descriptor}, 0{final_mode:o})"), calls[narrowed])
 
     @unittest.skipUnless(resource is not None and hasattr(signal, "SIGXFSZ"), "needs RLIMIT_FSIZE to make the final write fail")
     def test_failed_write_leaves_an_existing_statistics_document_intact(self):

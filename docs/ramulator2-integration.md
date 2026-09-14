@@ -402,7 +402,9 @@ fixed length that fits beside any valid name. And
 file behind stdout or stderr now receives the document on that stream. A third
 review found that the rename still gave a document a new file's group and
 dropped its access ACL; a file whose owner, group or access ACL a new sibling
-would not carry is now written in place. Tests use
+would not carry is now written in place. The sibling is also created with mode
+0600 and given its final permission bits before any content, and writing in
+place no longer asks to create a file that already exists. Tests use
 named `--toml FILE -- TRACE` arguments, scratch inputs and checksum checks. See the
 [recovery record](ramulator2-validation.md#validation-input-incident-and-recovery)
 for the hash and original evidence.
