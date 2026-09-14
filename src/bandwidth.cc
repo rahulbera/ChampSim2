@@ -21,22 +21,7 @@
 
 #include "util/to_underlying.h"
 
-champsim::bandwidth::bandwidth(maximum_type maximum) : value_(champsim::to_underlying(maximum)), maximum_(maximum) {}
-
-void champsim::bandwidth::consume(underlying_type delta)
+[[noreturn]] void champsim::bandwidth::throw_exceeded() const
 {
-  value_ -= delta;
-  if (value_ < 0) {
-    throw std::range_error{"Exceeded bandwidth of " + std::to_string(champsim::to_underlying(maximum_))};
-  }
+  throw std::range_error{"Exceeded bandwidth of " + std::to_string(champsim::to_underlying(maximum_))};
 }
-
-void champsim::bandwidth::consume() { consume(1); }
-
-bool champsim::bandwidth::has_remaining() const { return amount_remaining() > 0; }
-
-auto champsim::bandwidth::amount_consumed() const -> underlying_type { return champsim::to_underlying(maximum_) - value_; }
-
-auto champsim::bandwidth::amount_remaining() const -> underlying_type { return value_; }
-
-void champsim::bandwidth::reset() { value_ = champsim::to_underlying(maximum_); }
