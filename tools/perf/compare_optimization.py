@@ -82,7 +82,8 @@ def main():
                 raise RuntimeError(f'NON-INERT optimization: {case}; inspect the paired stats.toml files')
     rows = []
     for case, labels in groups.items():
-        assert len({fingerprint(r) for runs in labels.values() for r in runs}) == 1, case
+        if len({fingerprint(r) for runs in labels.values() for r in runs}) != 1:
+            raise RuntimeError(f'Non-deterministic results across repetitions: {case}')
         values = {label: statistics.median(r['kips'] for r in runs) for label, runs in labels.items()}
         rows.append({'case': case, 'before_kips': values['before'], 'after_kips': values['after'],
                      'improvement_percent': 100 * (values['after'] / values['before'] - 1),
@@ -92,7 +93,8 @@ def main():
     with (args.output / 'summary.csv').open('w', newline='') as stream:
         writer = csv.DictWriter(stream, fieldnames=rows[0].keys()); writer.writeheader(); writer.writerows(rows)
     for trace in traces:
-        assert sha256(trace['path']) == trace['sha256'], 'Trace changed during comparison'
+        if sha256(trace['path']) != trace['sha256']:
+            raise RuntimeError('Trace changed during comparison: ' + trace['path'])
     print(f'PASS: {len(cases)} cases, {len(records)} runs; complete phase/configuration parity', flush=True)
 
 
