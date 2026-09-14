@@ -496,16 +496,20 @@ void O3_CPU::do_execution(ooo_model_instr& instr)
   instr.ready_time = current_time + (warmup ? champsim::chrono::clock::duration{} : EXEC_LATENCY);
 
   // Mark LQ entries as ready to translate
-  for (auto& lq_entry : LQ) {
-    if (lq_entry.has_value() && lq_entry->instr_id == instr.instr_id) {
-      lq_entry->ready_time = current_time + (warmup ? champsim::chrono::clock::duration{} : EXEC_LATENCY);
+  if (!std::empty(instr.source_memory)) {
+    for (auto& lq_entry : LQ) {
+      if (lq_entry.has_value() && lq_entry->instr_id == instr.instr_id) {
+        lq_entry->ready_time = current_time + (warmup ? champsim::chrono::clock::duration{} : EXEC_LATENCY);
+      }
     }
   }
 
   // Mark SQ entries as ready to translate
-  for (auto& sq_entry : SQ) {
-    if (sq_entry.instr_id == instr.instr_id) {
-      sq_entry.ready_time = current_time + (warmup ? champsim::chrono::clock::duration{} : EXEC_LATENCY);
+  if (!std::empty(instr.destination_memory)) {
+    for (auto& sq_entry : SQ) {
+      if (sq_entry.instr_id == instr.instr_id) {
+        sq_entry.ready_time = current_time + (warmup ? champsim::chrono::clock::duration{} : EXEC_LATENCY);
+      }
     }
   }
 
