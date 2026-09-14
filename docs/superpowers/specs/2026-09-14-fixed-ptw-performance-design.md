@@ -51,6 +51,9 @@ then prove deterministic fixed-mode replay and absence of page-table traffic.
 Unit tests exercise delay boundaries, CPU-versus-PTW clock scaling, warmup and
 phase carry-over, bounded backpressure, completion bandwidth, metadata, no-response
 requests, page reuse and per-CPU mapping. Use real PTW/channel/vmem components.
+The default deadlock allowance must cover fixed delay plus walker-tick rounding
+in the actual global clock quantum; explicit `sim.deadlock_cycle` wins. Test a
+real long-latency simulation and reject an unrepresentable default allowance.
 
 Build a fresh Hermes reference from
 `/home/rbera/work/hermes-uncore/Hermes` at
@@ -73,5 +76,6 @@ and absolute and relative KIPS gaps. If reliable phase-only timing is available,
 label it separately; do not divide ROI-only work by whole-process time. Different
 cycle counts and modeling fidelity limit attribution of a KIPS gap to host code.
 
-The first report stops at measured gaps and recommendations for the next
-profiling step. It does not implement unrelated cycle-loop or trace optimizations.
+The user subsequently authorized continuing into hotspot analysis while away.
+The report includes validated stack samples and allocation call paths as well as
+timings. It does not implement unrelated cycle-loop or trace optimizations.

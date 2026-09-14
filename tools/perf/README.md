@@ -97,3 +97,70 @@ framework. Changes in KIPS mix changes in cost per simulated cycle with changes
 in the number of cycles simulated. Compare both metrics before assigning a
 speed gap to PTW implementation overhead. Run optimizations that preserve the
 detailed model only after measuring the remaining bottlenecks.
+
+## Stack profiling without hardware counter access
+
+`profile_ptw.py` replays the exact commands and release binaries from a completed
+campaign, checking input/binary hashes and post-run retirement, cycle and phase
+statistics. Its default `--kind stacks` uses GDB with the supplied
+`gdb_sample.py`, Python-enabled GDB, and Linux pidfds. It does not require changing
+`perf_event_paranoid`. Use a fresh output directory:
+
+```bash
+python3 tools/perf/profile_ptw.py \
+  --campaign /absolute/new-results --output /absolute/new-stack-profiles \
+  --traces sqlite gcc mcf --variants detailed fixed hermes --interval-ms 20
+python3 tools/perf/summarize_stacks.py /absolute/new-stack-profiles \
+  --output /absolute/new-stack-profiles/component-summary.csv
+```
+
+The sampler starts its own inferior, sends jittered SIGINT stops at 75–125% of the
+requested interval, records stacks and continues without passing the signal to
+the application. Percentages are wall-stack sample shares, useful as approximate
+CPU shares for the verified CPU-bound cases. Profiler duration is not KIPS. Raw
+stacks retain function names, PCs, libraries and timing intervals for inspection.
+One profile is suitable for broad ranking, not precise small-difference claims.
+
+Component categories in `summarize_stacks.py` are disjoint. Allocator, bandwidth
+and ROB-scan columns overlap those categories and one another. Hermes has a
+different top-level loop; its remaining main-loop samples share the
+`startup_finish_other` category. Do not add inclusive call-path percentages or
+interpret Hermes and current component implementations as equivalent.
+
+`--kind cpu` and `--kind heap` use GNU gprofng. This host's gprofng 2.42 has a
+reproduced timer problem: a requested 10 ms period sampled at about 100 ms and
+reported CPU seconds about ten times too small. CPU profiles with collector
+warnings are rejected, even if the simulation itself matches its reference.
+Use GDB profiles for this investigation's timing attribution.
+
+Heap tracing records allocation events and can be useful independently of the
+CPU timer, but requires separate calibration. Here a noinline C function with
+1,000 calls to `malloc(64)` followed by `free`, with an inline-assembly use of each
+pointer to prevent optimization, yielded exactly 1,000 allocations / 64,000 bytes
+at that function in gprofng. The probe source, executable and experiment are
+archived with the report. Only after such validation may
+`--allow-heap-timer-warning` accept that specific warning for **heap counts**.
+Other warnings are rejected; no gprofng CPU-time result is accepted this way.
+
+Use a much shorter, separately benchmarked window for heap tracing. Point the
+profiler at that short campaign so it still checks exact reference phase hashes:
+
+```bash
+python3 tools/perf/profile_ptw.py \
+  --campaign /absolute/short-heap-reference --output /absolute/new-heap-profiles \
+  --traces sqlite mcf --variants detailed fixed hermes --kind heap \
+  --allow-heap-timer-warning
+```
+
+Heap tracing can be hundreds of times slower and generate large files. Its
+allocation totals include startup and warmup. Compare normalized counts and call
+paths, not its elapsed time. To export useful allocation rankings:
+
+```bash
+gprofng display text \
+  -metrics i+heapalloccnt:i+heapallocbytes:e+heapalloccnt:name \
+  -sort i+heapalloccnt -limit 100 -functions /absolute/run/profile.er
+```
+
+The report and optimization order are in
+[the performance research log](../../docs/research-log/Performance/2026-09-14-fixed-ptw-hotspots.md).

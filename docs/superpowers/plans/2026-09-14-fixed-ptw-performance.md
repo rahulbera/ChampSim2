@@ -71,11 +71,11 @@ configuration; durable external results directory for binaries and raw evidence.
 **Interface:** the harness accepts binary/config/trace paths, CPU affinity,
 warmup/ROI counts and repetitions, and writes raw run records plus summary CSV.
 
-- [ ] Prepare an isolated Hermes clone, select GLC/perceptron/no prefetch/LRU,
+- [x] Prepare an isolated Hermes clone, select GLC/perceptron/no prefetch/LRU,
   build with `/usr/bin/g++`, and record configuration and source differences.
-- [ ] Rebuild candidate release objects separately from tests. Run a short
+- [x] Rebuild candidate release objects separately from tests. Run a short
   detailed-baseline parity check and fixed replay before measuring performance.
-- [ ] Implement a small subprocess timing harness with `perf_counter`, child CPU
+- [x] Implement a small subprocess timing harness with `perf_counter`, child CPU
   accounting, explicit output directories, actual retired-count parsing, and
   error/timeout checks. Record argv as JSON arrays, not shell strings.
 
@@ -83,10 +83,54 @@ warmup/ROI counts and repetitions, and writes raw run records plus summary CSV.
 kips = actual_retired / (1000.0 * wall_seconds)
 ```
 
-- [ ] Pilot all three variants; size three real-trace runs to exceed startup noise.
-- [ ] Run at least three interleaved repetitions per trace and variant with no
+- [x] Pilot all three variants; size three real-trace runs to exceed startup noise.
+- [x] Run at least three interleaved repetitions per trace and variant with no
   concurrent builds. Preserve results, input hashes, output hashes and host state.
-- [ ] Check model-specific deterministic results across repetitions and verify
+- [x] Check model-specific deterministic results across repetitions and verify
   detailed-phase parity and fixed-mode absence of translation traffic.
-- [ ] Write the report with KIPS gaps, variability, configurations, limitations
+- [x] Write the report with KIPS gaps, variability, configurations, limitations
   and the next profiling recommendation; commit tooling and documentation.
+
+## Task 3: Profile and rank hotspots (user-authorized continuation)
+
+The user subsequently asked to continue thorough performance analysis while away,
+identifying hotspots to optimize. This extends the first experiment to profiling;
+it does not authorize silently weakening the detailed model for a speed claim.
+
+- [x] Finish the unprofiled timing campaign before running profilers or builds.
+- [x] Collect software CPU samples from the same release binaries on SQLite,
+  GCC and mcf, in detailed/fixed/Hermes modes. `perf` is blocked by this host's
+  `perf_event_paranoid=4`. GNU gprofng CPU timing proved unreliable in a
+  controlled timer probe; use GDB jittered stack sampling instead. Preserve
+  rejected collector logs and validate all simulator outputs.
+- [x] Check every profiled run's retirement/cycle counts and ChampSim phase
+  statistics against its corresponding unprofiled run. Separate profiler overhead
+  from the baseline KIPS measurements.
+- [x] Export exclusive and inclusive function costs and call paths. Attribute
+  scheduler, core, cache, translation, trace/decompression, allocator and startup
+  work without summing overlapping inclusive percentages.
+- [x] Run short heap-tracing probes if allocation is material in CPU samples;
+  inspect call paths and event counts. Do not use their perturbed elapsed time as
+  simulator throughput. Archive the original commands and samples.
+- [x] Tie the measured hotspots to concrete source loops/copies/allocations,
+  distinguish evidence from hypotheses, and rank behavior-preserving optimization
+  candidates with the checks each future change would require.
+- [x] Address the review finding that long fixed delays can exceed the default
+  watchdog. First run the new CLI regression against the benchmarked binary;
+  then derive the default allowance from fixed delay, walker period and actual
+  minimum clock quantum, keeping explicit overrides authoritative. Recheck short
+  delay legacy parity after the change.
+- [x] Record completed evidence, methodological limits and a proposed next
+  optimization sequence in the performance report. Keep all raw artifacts outside
+  source control and all code/documentation on `feat/perf-fix`.
+
+
+## Completed evidence
+
+See [the performance report](../../research-log/Performance/2026-09-14-fixed-ptw-hotspots.md).
+The primary campaign contains 36 sequential unprofiled runs, nine accepted full
+stack profiles, and six accepted short heap-event collections. Profiled model
+outputs match their references. Rejected gprofng CPU profiles and the abandoned
+larger heap pilot are explicitly excluded and retained for diagnosis. The fixed
+service is commit `25959793`; watchdog followup is `17bd7fd5`. All remaining
+optimization candidates are documented as future, separately measured changes.

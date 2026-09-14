@@ -330,6 +330,9 @@ still applies to simulations with extremely low IPC.
 The fixed-mode tests are `test/cpp/src/601-fixed-ptw.cc` and
 `test/python/test_fixed_ptw_cli.py`. See
 [the benchmark tooling](tools/perf/README.md) for reproducible KIPS measurements.
+The [performance investigation](docs/research-log/Performance/2026-09-14-fixed-ptw-hotspots.md)
+records the legacy-only Hermes comparison, validated stack/allocation profiles,
+modeling differences, and the proposed order of behavior-preserving optimizations.
 
 ### Tests
 
