@@ -532,3 +532,57 @@ regression pairs may run on separate physical cores to finish the wider suite;
 any such runs are excluded from reported KIPS. The paired runner now accepts
 `--timeout` (seconds per simulation, default still 900) so the larger window need
 not be constrained by the old short-run watchdog.
+
+## 7. Isolate trace-refill stack work from instruction reads
+
+**Issue.** Linux perf identified a roughly 128 KiB stack frame and its page-probe
+loop on every v2 `bulk_tracereader::operator()` call. The large temporary buffers
+are needed only when the 127-record buffer refills.
+
+**Fix.** Extract the existing refill body into a private non-inlined helper.
+The per-instruction path keeps its existing refill condition and move/pop; read
+size, byte copying, conversion, EOF handling and branch lookahead remain unchanged.
+GCC/Clang receive the noinline attribute. Compiler flags and stack protections
+are unchanged. The release assembly has an 8-byte local stack adjustment in the
+v2 ifstream operator; the helper retains the 4 KiB probe loop for its large frame.
+
+**Files touched.**
+
+1. `inc/tracereader.h` — move refill work into the private non-inlined helper.
+2. `test/cpp/src/087-tracereader-v2.cc` — characterize a taken branch across the
+   127-record refill boundary with a one-record final refill.
+3. `docs/research-log/Performance/2026-09-14-performance-optimization.md` — record
+   methods, commit, regression verdict and measured KIPS.
+
+**Implementation commit.** `78679b11c9dbad609c5c4e7f531981bbccb1a1c8`.
+The separate campaign setup/timeout change is `dae97740`; it changes no simulator
+behavior and preserves the runner's previous 900-second default.
+
+**Regression verdict.** **Retained: inert over the checked scope.** The new
+boundary test passes on both the original and optimized headers. The full normal
+C++ suite passes **32,666 assertions / 872 cases**, with 7 native skips; the separate
+payload-enabled suite passes **34,759 assertions / 877 cases**, with 7 native skips.
+Python passes 66 tests with 4 native skips; the 6 performance-tool tests pass.
+All **32 short regression runs and 24 timing runs** preserve full exported phase
+statistics, effective configuration and actual instruction/cycle counts. The
+saved-output audit recomputes fingerprints and KIPS and checks archived binary
+hashes. Read-only review found no behavior blocker. GCC/Clang were the supported
+attribute path assessed here; MSVC performance and empty-stream misuse of the
+existing reader interface were not newly validated.
+
+**KIPS before/after.** Three paired CPU-14 1M/3M runs per trace, detailed PTW,
+legacy DRAM. Medians with minimum–maximum ranges:
+
+| Trace | Before | After | Change |
+|---|---:|---:|---:|
+| sqlite | 303.46 (301.59–304.29) | 318.76 (317.90–318.94) | +5.04% |
+| omnetpp | 332.23 (331.48–333.15) | 353.59 (353.23–354.66) | +6.43% |
+| gcc | 402.48 (401.60–403.03) | 432.67 (431.52–433.00) | +7.50% |
+| mcf | 124.74 (121.87–124.89) | 125.40 (123.20–125.64) | +0.53% |
+
+All nine v2 pairs favor the candidate. mcf's +0.53% median shift is smaller than
+its observed variation and is not evidence of a reliable v1 speedup.
+
+**Evidence.** `07-refill/` beneath the second-pass root contains the archived
+`champsim`, `source-commit.txt`, before/after trace tests, normal/payload/Python
+logs, release assembly, `review.txt`, `regression/`, `timing/`, and `audit.json`.
