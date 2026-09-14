@@ -32,6 +32,12 @@
 //                     capacity, in any queue (default 4). Nonzero also mixes
 //                     in-range PREFETCH packets into RQ and WQ; 0 reproduces
 //                     the first-wave evaluator's packet streams exactly.
+//
+// The recovery campaign ([.differential-recovery]) repeats: an overload burst
+// of DIFF_BURST_OPS operates, each adding 1..DIFF_BURST_SIZE packets; then the
+// producer stops and the adapter operates until the model is quiescent (at
+// most DIFF_RECOVERY_LIMIT operates), for DIFF_CYCLES cycles (defaults 40, 48,
+// 4000000, 20). A new measured phase begins at every other quiescent point.
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -47,8 +53,10 @@
 #include <memory>
 #include <optional>
 #include <random>
+#include <regex>
 #include <stdexcept>
 #include <string>
+#include <unistd.h>
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
 #include <fmt/core.h>
@@ -98,6 +106,11 @@ struct driver_log {
   bool in_tick = false;
   bool finalized = false;
   uint64_t ticks = 0, resets = 0, finalizes = 0, sync_callbacks = 0, callbacks_after_finalize = 0, callbacks_outside = 0;
+  uint64_t accepted_total = 0, callbacks_total = 0;
+  // Every callback closure handed to the native driver holds a copy of this
+  // token, so use_count() - 1 is the number the native side still keeps.
+  std::shared_ptr<int> closure_token = std::make_shared<int>(0);
+  uint64_t live_closures() const { return static_cast<uint64_t>(closure_token.use_count() - 1); }
 };
 
 class logging_driver final : public champsim::ramulator2_driver
@@ -117,8 +130,10 @@ public:
     log->events.push_back({kind::attempt_begin, index, false, log->in_send, log->ticks});
     log->in_send = index;
     std::weak_ptr<driver_log> weak = log;
-    auto wrapped = [weak, index, done = std::move(done)]() {
+    auto wrapped = [weak, index, token = log->closure_token, done = std::move(done)]() {
+      static_cast<void>(token);
       if (auto l = weak.lock()) {
+        ++l->callbacks_total;
         const bool sync = l->in_send && *l->in_send == index;
         l->events.push_back({kind::callback, index, sync, l->in_send, l->ticks});
         ++l->attempts.at(index).callbacks;
@@ -138,6 +153,7 @@ public:
     }
     log->in_send.reset();
     log->attempts[index].accepted = accepted;
+    log->accepted_total += accepted;
     log->attempts[index].returned = true;
     log->events.push_back({kind::attempt_end, index, accepted, std::nullopt, log->ticks});
     return accepted;
@@ -169,6 +185,51 @@ public:
     log->finalized = true;
     log->events.push_back({kind::finalize, 0, false, log->in_send, log->ticks});
     real->finalize();
+  }
+};
+
+// Captures what enclosed code prints to stdout -- the adapter's deadlock
+// diagnostics -- and restores stdout even if that code throws.
+class stdout_capture
+{
+  std::FILE* file_ = std::tmpfile();
+  int saved_ = -1;
+  void restore()
+  {
+    if (saved_ >= 0) {
+      std::fflush(stdout);
+      dup2(saved_, fileno(stdout));
+      close(saved_);
+      saved_ = -1;
+    }
+  }
+
+public:
+  stdout_capture()
+  {
+    if (file_ == nullptr)
+      throw std::runtime_error("stdout_capture: cannot create a temporary file");
+    std::fflush(stdout);
+    saved_ = dup(fileno(stdout));
+    if (saved_ < 0 || dup2(fileno(file_), fileno(stdout)) < 0)
+      throw std::runtime_error("stdout_capture: cannot redirect stdout");
+  }
+  stdout_capture(const stdout_capture&) = delete;
+  stdout_capture& operator=(const stdout_capture&) = delete;
+  ~stdout_capture()
+  {
+    restore();
+    std::fclose(file_);
+  }
+  std::string text()
+  {
+    restore();
+    std::rewind(file_);
+    std::string result;
+    char buffer[4096];
+    for (std::size_t n; (n = std::fread(buffer, 1, sizeof buffer, file_)) > 0;)
+      result.append(buffer, n);
+    return result;
   }
 };
 
@@ -208,6 +269,8 @@ struct totals {
   uint64_t max_backlog = 0, max_outstanding = 0, ops = 0, stats_checks = 0;
   uint64_t max_stall_ops_with_work = 0, stall_ops_current = 0;
   uint64_t boundary_partial_heads = 0, boundary_rejected_heads = 0, boundary_live_parents = 0, warmup_partial_head_visits = 0, teardown_live_parents = 0;
+  uint64_t requested_reads = 0; // response-requested packets outside WQ
+  uint64_t recovery_cycles = 0, overloaded_cycles = 0, recovery_ops = 0, max_recovery_ops = 0, max_backlog_at_pause = 0, max_live_at_pause = 0;
   std::vector<uint64_t> accepted_by_cpu = std::vector<uint64_t>(champsim::defs::num_cpus, 0);
 };
 
@@ -223,6 +286,10 @@ struct config {
   uint64_t backlog = 160;
   bool drain = true;
   uint64_t oor_percent = 4;
+  uint64_t cycles = 20;
+  uint64_t burst_ops = 40;
+  uint64_t burst_size = 48;
+  uint64_t recovery_limit = 4000000;
 };
 
 class harness
@@ -388,6 +455,7 @@ public:
     tot.measured_parents += measured;
     tot.write_parents += queue == 2;
     tot.suppressed_reads += (queue != 2 && !r.response_requested);
+    tot.requested_reads += (queue != 2 && r.response_requested);
   }
 
   void generate(bool measured)
@@ -875,6 +943,127 @@ public:
     finalize_and_destroy();
   }
 
+  champsim::ramulator2_statistics adapter_statistics()
+  {
+    const auto before = log->events.size();
+    auto stats = backend->statistics().sim_ramulator2;
+    require(stats.has_value(), [] { return std::string{"no sim statistics"}; });
+    for (auto i = before; i < log->events.size(); ++i)
+      require(log->events[i].what == kind::stats,
+              [&] { return fmt::format("statistics() produced driver event kind {}", static_cast<int>(log->events[i].what)); });
+    return *stats;
+  }
+
+  // At a quiescent point after the producer stopped: exact accounting for the
+  // cycle, and nothing left anywhere a request could still live.
+  void check_recovered(const champsim::ramulator2_statistics& s0, const totals& t0)
+  {
+    for (std::size_t f = 0; f < cfg.feeders; ++f) {
+      const auto& feeder = feeders[f];
+      require(feeder.RQ.empty() && feeder.PQ.empty() && feeder.WQ.empty() && feeder.returned.empty(), [&] {
+        return fmt::format("recovery: feeder {} still holds RQ {} PQ {} WQ {} returned {}", f, feeder.RQ.size(), feeder.PQ.size(), feeder.WQ.size(),
+                           feeder.returned.size());
+      });
+    }
+    const auto s1 = adapter_statistics();
+    require(s1.outstanding_parents == 0 && s1.outstanding_fragments == 0, [&] {
+      return fmt::format("recovery: adapter still reports {} outstanding parents and {} outstanding fragments", s1.outstanding_parents,
+                         s1.outstanding_fragments);
+    });
+    // The phase began at a quiescent point, so the adapter's own counters balance.
+    require(s1.accepted_reads == s1.completed_reads && s1.accepted_writes == s1.completed_writes && s1.accepted_fragments == s1.completed_fragments, [&] {
+      return fmt::format("recovery: adapter counters do not balance: reads {}/{} writes {}/{} fragments {}/{}", s1.accepted_reads, s1.completed_reads,
+                         s1.accepted_writes, s1.completed_writes, s1.accepted_fragments, s1.completed_fragments);
+    });
+    const uint64_t added = tot.parents - t0.parents;
+    const uint64_t completed = (s1.completed_reads + s1.completed_writes) - (s0.completed_reads + s0.completed_writes);
+    const uint64_t out_of_range = s1.out_of_range_prefetches - s0.out_of_range_prefetches;
+    require(completed + out_of_range == added, [&] {
+      return fmt::format("recovery: {} packets added this cycle, adapter completed {} parents and popped {} out-of-range prefetches", added, completed,
+                         out_of_range);
+    });
+    require(tot.responses - t0.responses == tot.requested_reads - t0.requested_reads, [&] {
+      return fmt::format("recovery: {} upstream responses for {} response-requested reads", tot.responses - t0.responses,
+                         tot.requested_reads - t0.requested_reads);
+    });
+    require(s1.accepted_fragments > s0.accepted_fragments, [] { return std::string{"recovery: the burst admitted no native fragment"}; });
+
+    // Native side: every accepted fragment called back, and no callback
+    // closure is still held anywhere below the driver interface.
+    require(log->accepted_total == log->callbacks_total,
+            [&] { return fmt::format("recovery: {} accepted native requests have not called back", log->accepted_total - log->callbacks_total); });
+    require(log->live_closures() == 0, [&] { return fmt::format("recovery: the native side still holds {} callback closures", log->live_closures()); });
+
+    // The adapter's own diagnostics: no live parent, fragment, queued packet
+    // or retained queue head.
+    const auto events = log->events.size();
+    std::string report;
+    {
+      stdout_capture capture;
+      memory().print_deadlock();
+      report = capture.text();
+    }
+    require(log->events.size() == events, [] { return std::string{"print_deadlock reached the native driver"}; });
+    std::smatch totals_line;
+    require(std::regex_search(report, totals_line, std::regex{R"((\d+) outstanding parents, (\d+) outstanding fragments)"}) && totals_line[1] == "0"
+                && totals_line[2] == "0",
+            [&] { return fmt::format("recovery: adapter diagnostics report live work: {}", report); });
+    const std::regex feeder_line{R"(Feeder (\d+) RQ: (\d+) PQ: (\d+) WQ: (\d+) pending heads: (\d+))"};
+    std::size_t lines = 0;
+    for (auto it = std::sregex_iterator(report.begin(), report.end(), feeder_line); it != std::sregex_iterator(); ++it, ++lines) {
+      const auto& line = *it;
+      require(line[2] == "0" && line[3] == "0" && line[4] == "0" && line[5] == "0",
+              [&] { return fmt::format("recovery: adapter diagnostics: {}", line.str()); });
+    }
+    require(lines == cfg.feeders, [&] { return fmt::format("recovery: adapter diagnostics list {} feeders, expected {}: {}", lines, cfg.feeders, report); });
+  }
+
+  // The recovery campaign: overload bursts, each followed by a producer pause
+  // that must return every queue, parent, fragment and callback to zero.
+  void recover()
+  {
+    begin(true, "warmup0");
+    for (int i = 0; i < 200; ++i)
+      step(true, false);
+    end_all_cpus();
+    std::uniform_int_distribution<uint64_t> burst(1, std::max<uint64_t>(1, cfg.burst_size));
+    for (uint64_t cycle = 0; cycle < cfg.cycles; ++cycle) {
+      if (cycle % 2 == 0)
+        begin(false, "recovery");
+      phase_name = fmt::format("recovery cycle {}", cycle);
+      const auto s0 = adapter_statistics();
+      const auto t0 = tot;
+      for (uint64_t b = 0; b < cfg.burst_ops; ++b) {
+        const auto n = burst(rng);
+        for (uint64_t i = 0; i < n; ++i)
+          add_packet(true);
+        step(false, true);
+      }
+      tot.overloaded_cycles += tot.rejected > t0.rejected;
+      tot.max_backlog_at_pause = std::max(tot.max_backlog_at_pause, backlog());
+      const auto live = static_cast<uint64_t>(std::count_if(parents.begin(), parents.end(), [](const auto& kv) { return kv.second.accepted > 0; }));
+      tot.max_live_at_pause = std::max(tot.max_live_at_pause, live);
+      uint64_t ops = 0;
+      while (backlog() != 0 || !parents.empty()) {
+        step(false, false);
+        require(++ops <= cfg.recovery_limit,
+                [&] { return fmt::format("recovery: not quiescent after {} operates: backlog {} live parents {}", ops, backlog(), parents.size()); });
+      }
+      // Idle operates after recovery: only the native tick, and no progress.
+      for (int i = 0; i < 8; ++i)
+        step(false, false);
+      tot.recovery_ops += ops;
+      tot.max_recovery_ops = std::max(tot.max_recovery_ops, ops);
+      check_stats("recovered");
+      check_recovered(s0, t0);
+      ++tot.recovery_cycles;
+      if (cycle % 2 == 1 || cycle + 1 == cfg.cycles)
+        end_all_cpus();
+    }
+    check_teardown_invariants();
+    finalize_and_destroy();
+  }
+
   std::string summary() const
   {
     const auto joined = [](const std::vector<uint64_t>& values) {
@@ -893,7 +1082,9 @@ public:
                        tot.carry_over_completions, tot.late_warmup_retained, tot.warmup_partial_head_visits, tot.boundary_partial_heads,
                        tot.boundary_rejected_heads, tot.boundary_live_parents, tot.teardown_live_parents, joined(tot.accepted_by_cpu), tot.max_backlog,
                        tot.max_outstanding, tot.max_stall_ops_with_work * static_cast<uint64_t>(period), tot.stats_checks, tot.oor_packets, tot.oor_responses,
-                       tot.oor_dropped, tot.oor_in_warmup, joined(tot.oor_by_queue));
+                       tot.oor_dropped, tot.oor_in_warmup, joined(tot.oor_by_queue))
+           + fmt::format(" recovery_cycles={} overloaded_cycles={} recovery_ops={} max_recovery_ops={} max_backlog_at_pause={} max_live_at_pause={}",
+                         tot.recovery_cycles, tot.overloaded_cycles, tot.recovery_ops, tot.max_recovery_ops, tot.max_backlog_at_pause, tot.max_live_at_pause);
   }
 };
 
@@ -912,6 +1103,10 @@ config from_env()
   c.backlog = env_u64("DIFF_BACKLOG", 160);
   c.drain = env_u64("DIFF_NO_DRAIN", 0) == 0;
   c.oor_percent = env_u64("DIFF_OOR_PERCENT", 4);
+  c.cycles = env_u64("DIFF_CYCLES", 20);
+  c.burst_ops = env_u64("DIFF_BURST_OPS", 40);
+  c.burst_size = env_u64("DIFF_BURST_SIZE", 48);
+  c.recovery_limit = env_u64("DIFF_RECOVERY_LIMIT", 4000000);
   return c;
 }
 
@@ -1022,30 +1217,61 @@ TEST_CASE("The Ramulator2 adapter matches an independent model over the real nat
   CHECK(all.oor_by_queue[0] > 0);
   CHECK(all.oor_by_queue[1] > 0);
   CHECK(all.oor_by_queue[2] > 0);
+
+  // Producer-pause recovery over tiny buffers, one feeder and two.
+  oracle706::totals recovery{};
+  for (const auto& v : variants) {
+    if (v.name.find("tiny") == std::string::npos)
+      continue;
+    CAPTURE(v.name);
+    oracle706::config cfg;
+    cfg.yaml = v.yaml;
+    cfg.tx = v.tx;
+    cfg.period = v.period;
+    cfg.feeders = v.feeders;
+    cfg.stats_every = 7;
+    cfg.cycles = 4;
+    cfg.burst_ops = 16;
+    cfg.burst_size = 24;
+    oracle706::harness h{cfg, 1};
+    try {
+      h.recover();
+    } catch (const oracle706::failure& error) {
+      FAIL(error.what());
+    }
+    recovery.recovery_cycles += h.tot.recovery_cycles;
+    recovery.overloaded_cycles += h.tot.overloaded_cycles;
+    recovery.oor_packets += h.tot.oor_packets;
+    recovery.max_backlog_at_pause = std::max(recovery.max_backlog_at_pause, h.tot.max_backlog_at_pause);
+  }
+  CHECK(recovery.recovery_cycles == 12);
+  CHECK(recovery.overloaded_cycles == 12);
+  CHECK(recovery.max_backlog_at_pause > 100);
+  CHECK(recovery.oor_packets > 0);
 }
 
-TEST_CASE("Differential campaign: production adapter over the real native driver", "[.differential]")
+namespace oracle706
 {
-  if (!champsim::ramulator2_available())
-    SKIP("native build disabled");
-  const auto cfg = oracle706::from_env();
-  REQUIRE_FALSE(cfg.yaml.empty());
-  const auto seeds = oracle706::env_u64("DIFF_SEEDS", 10);
-  const auto seed0 = oracle706::env_u64("DIFF_SEED0", 1);
+// Runs one scenario per seed and prints one summary line for each;
+// test/ramulator2/run_differential.py parses them. Returns the failures.
+unsigned campaign(const config& cfg, void (harness::*scenario)())
+{
+  const auto seeds = env_u64("DIFF_SEEDS", 10);
+  const auto seed0 = env_u64("DIFF_SEED0", 1);
   unsigned failures = 0;
   for (uint64_t seed = seed0; seed < seed0 + seeds; ++seed) {
     const auto t0 = std::chrono::steady_clock::now();
     std::string verdict = "PASS";
     std::string line;
     try {
-      oracle706::harness h{cfg, seed};
+      harness h{cfg, seed};
       try {
-        h.run();
-      } catch (const oracle706::failure& error) {
+        (h.*scenario)();
+      } catch (const failure& error) {
         verdict = std::string{"FAIL "} + error.what();
       }
       line = h.summary();
-    } catch (const oracle706::failure& error) {
+    } catch (const failure& error) {
       verdict = std::string{"FAIL "} + error.what();
       line = fmt::format("seed={} yaml={}", seed, cfg.yaml);
     }
@@ -1054,7 +1280,26 @@ TEST_CASE("Differential campaign: production adapter over the real native driver
     fmt::print("{} wall={:.2f}s {}\n", line, seconds, verdict);
     std::fflush(stdout);
   }
-  REQUIRE(failures == 0);
+  return failures;
+}
+} // namespace oracle706
+
+TEST_CASE("Differential campaign: production adapter over the real native driver", "[.differential]")
+{
+  if (!champsim::ramulator2_available())
+    SKIP("native build disabled");
+  const auto cfg = oracle706::from_env();
+  REQUIRE_FALSE(cfg.yaml.empty());
+  REQUIRE(oracle706::campaign(cfg, &oracle706::harness::run) == 0);
+}
+
+TEST_CASE("Recovery campaign: overload bursts and producer pauses over the real native driver", "[.differential-recovery]")
+{
+  if (!champsim::ramulator2_available())
+    SKIP("native build disabled");
+  const auto cfg = oracle706::from_env();
+  REQUIRE_FALSE(cfg.yaml.empty());
+  REQUIRE(oracle706::campaign(cfg, &oracle706::harness::recover) == 0);
 }
 
 TEST_CASE("Differential diagnostic: dump native statistic paths", "[.differential-dump]")
