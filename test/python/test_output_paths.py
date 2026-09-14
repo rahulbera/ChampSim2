@@ -263,6 +263,58 @@ class OutputPathTests(unittest.TestCase):
             self.assertEqual(document.stat().st_nlink, 2)
             self.assertTrue(os.path.samefile(document, other))
 
+    @staticmethod
+    def new_file_group(directory):
+        """The group a file created in `directory` gets on Linux."""
+        status = os.stat(directory)
+        return status.st_gid if status.st_mode & stat.S_ISGID else os.getegid()
+
+    @unittest.skipUnless(hasattr(os, "getgroups") and hasattr(os, "chown"), "needs supplementary groups")
+    def test_document_in_another_group_keeps_its_group_and_inode(self):
+        # A renamed sibling would carry the group a new file gets, not this one.
+        with tempfile.TemporaryDirectory() as tmp:
+            groups = [group for group in os.getgroups() if group != self.new_file_group(tmp)]
+            if not groups:
+                self.skipTest("no supplementary group differs from the group of a new file")
+            self.trace(tmp)
+            document = Path(tmp) / "run.toml"
+            first = self.simulate(tmp, document, instructions=500)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            os.chown(document, -1, groups[0])
+            document.chmod(0o640)
+            before = document.stat()
+
+            result = self.simulate(tmp, document, instructions=1000)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            after = document.stat()
+            self.assertEqual(tomllib.loads(document.read_text())["meta"]["simulation_instructions"], 1000)
+            self.assertEqual((after.st_gid, after.st_ino, stat.S_IMODE(after.st_mode)), (groups[0], before.st_ino, 0o640))
+            self.assertEqual(sorted(path.name for path in Path(tmp).iterdir()), ["run.toml", "trace.champsim2"])
+
+    @unittest.skipUnless(hasattr(os, "getxattr") and shutil.which("setfacl"), "needs setfacl and extended attributes")
+    def test_document_with_an_access_acl_keeps_it(self):
+        # A renamed sibling would carry a new file's ACL (none, or the
+        # directory's default), dropping this one's named entries.
+        with tempfile.TemporaryDirectory() as tmp:
+            self.trace(tmp)
+            document = Path(tmp) / "run.toml"
+            first = self.simulate(tmp, document, instructions=500)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            document.chmod(0o600)
+            granted = subprocess.run([shutil.which("setfacl"), "-m", f"u:{os.getuid() + 1}:r", str(document)], capture_output=True, text=True, timeout=30)
+            if granted.returncode != 0:
+                self.skipTest(f"setfacl failed here: {granted.stderr.strip()}")
+            acl = os.getxattr(document, "system.posix_acl_access")
+            before = document.stat()
+
+            result = self.simulate(tmp, document, instructions=1000)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            after = document.stat()
+            self.assertEqual(tomllib.loads(document.read_text())["meta"]["simulation_instructions"], 1000)
+            self.assertEqual((after.st_ino, after.st_mode), (before.st_ino, before.st_mode))
+            self.assertEqual(os.getxattr(document, "system.posix_acl_access"), acl)
+            self.assertEqual(sorted(path.name for path in Path(tmp).iterdir()), ["run.toml", "trace.champsim2"])
+
     def test_failed_rename_writes_the_statistics_document_in_place(self):
         # A single file bind-mounted into a container refuses rename (EBUSY)
         # but can be written; strace injects that failure without privileges.

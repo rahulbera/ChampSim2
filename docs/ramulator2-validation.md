@@ -294,8 +294,9 @@ plain report, keeping the log. A FIFO or process substitution is written in
 place without a startup open; a device or socket is written in place but must
 open at startup. A regular file or a new name is replaced by renaming a finished
 `.champsim-toml-<16 hex>.tmp` sibling over it after a successful run. A
-hard-linked file, or one whose directory refuses that sibling at startup, is
-written in place after the run. If the final rename fails, the target is written
+hard-linked file, one whose directory refuses that sibling at startup, and one
+whose owner, group or POSIX access ACL that sibling would not carry are written
+in place after the run. If the final rename fails, the target is written
 in place with a warning; if that fails too, the sibling is kept and named in the
 error. A run killed during the final write can leave the sibling. An existing
 statistics document named by mistake is still replaced, and none of this

@@ -35,7 +35,8 @@ enum class write_mode {
   replace_by_rename,
   // The target is opened, truncated and written only once the run is over:
   // anything but a regular file, a hard-linked file (a rename would split its
-  // links), or a file whose directory refuses a new sibling.
+  // links), a file whose directory refuses a new sibling, or a file a new
+  // sibling would not match in owner, group or access ACL.
   in_place,
   // The target is the file behind standard output or standard error -- a
   // log the shell redirected to, the pipe or terminal behind /dev/stdout --

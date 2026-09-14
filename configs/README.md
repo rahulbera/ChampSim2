@@ -133,7 +133,8 @@ output until the run succeeds, so a failed replay (for example `--config
 run.toml --toml run.toml` after a `config_hash` mismatch) leaves `run.toml`
 unchanged. A regular output is then replaced by renaming a finished
 `.champsim-toml-<16 hex>.tmp` sibling over it; a hard-linked output, one in a
-directory where that sibling cannot be created, and one whose rename fails are
+directory where that sibling cannot be created, one whose owner, group or POSIX
+access ACL a new file there would not carry, and one whose rename fails are
 written in place instead. A run killed during that final write can leave the
 sibling behind. A name that reaches standard output or standard error
 (`/dev/stdout`, or the log stdout is redirected to) receives the document on

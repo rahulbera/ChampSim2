@@ -399,7 +399,10 @@ behaved as before. Hard-linked outputs and files in such directories are now
 written in place, as is a target whose rename fails, and the sibling's name has a
 fixed length that fits beside any valid name. And
 `--toml /dev/stdout` with stdout redirected to a log renamed over the log; the
-file behind stdout or stderr now receives the document on that stream. Tests use
+file behind stdout or stderr now receives the document on that stream. A third
+review found that the rename still gave a document a new file's group and
+dropped its access ACL; a file whose owner, group or access ACL a new sibling
+would not carry is now written in place. Tests use
 named `--toml FILE -- TRACE` arguments, scratch inputs and checksum checks. See the
 [recovery record](ramulator2-validation.md#validation-input-incident-and-recovery)
 for the hash and original evidence.

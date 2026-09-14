@@ -175,8 +175,9 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   // device or socket is written in place but must open now. An existing
   // regular file must be empty or begin like a statistics document, and be
   // writable. It, or a name with nothing there yet, is replaced by renaming a
-  // finished sibling over it -- except that a hard-linked file, or one whose
-  // directory refuses a new file, is written in place after the run.
+  // finished sibling over it -- except that a hard-linked file, one whose
+  // directory refuses a new file, and one a new file would not match in owner,
+  // group or access ACL are written in place after the run.
   std::optional<champsim::output::target> toml_target{};
   if (!list_knobs && toml_option->count() > 0 && !std::empty(toml_file_name)) {
     auto planned = champsim::output::plan(toml_file_name, trace_names);

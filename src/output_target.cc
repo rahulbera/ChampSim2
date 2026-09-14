@@ -25,6 +25,9 @@
 #include <unistd.h>
 #include <fmt/core.h>
 #include <sys/stat.h>
+#ifdef __linux__
+#include <sys/xattr.h>
+#endif
 
 #include "stats_printer.h"
 
@@ -125,16 +128,38 @@ temporary_file create_temporary(const fs::path& directory)
   return created;
 }
 
-// Whether `directory` accepts a new file, leaving nothing behind.
-bool accepts_new_file(const fs::path& directory)
+// The status of a new file created in `directory` and removed again, so its
+// owner and group are the ones a replacement would get there; empty when the
+// directory refuses one. Nothing is left behind.
+std::optional<file_status> probe_new_file(const fs::path& directory)
 {
   const auto probe = create_temporary(directory);
   if (probe.descriptor < 0) {
-    return false;
+    return std::nullopt;
   }
+  file_status created{};
+  const bool described = ::fstat(probe.descriptor, &created) == 0;
   ::close(probe.descriptor);
   ::unlink(probe.path.c_str());
-  return true;
+  if (!described) {
+    return std::nullopt;
+  }
+  return created;
+}
+
+// Whether `path` may carry a POSIX access ACL, which a rename would replace
+// with a new file's: only a definite absence counts as none.
+bool may_have_access_acl(const fs::path& path)
+{
+#ifdef __linux__
+  if (::getxattr(path.c_str(), "system.posix_acl_access", nullptr, 0) >= 0) {
+    return true;
+  }
+  return errno != ENODATA && errno != ENOTSUP && errno != EOPNOTSUPP;
+#else
+  (void)path;
+  return false;
+#endif
 }
 
 std::string describe(int error) { return std::generic_category().message(error); }
@@ -259,12 +284,16 @@ plan_result plan(const std::string& name, const std::vector<std::string>& traces
     // replacement in.
     return plan_result{target{name, reachable, write_mode::in_place}, {}};
   }
-  // A replacement is created beside the target. Where it cannot be -- a
-  // directory that refuses new files -- an existing file is still written in
-  // place, as are hard-linked files, which a rename would split.
-  const bool replaceable = !exists || reached.st_nlink <= 1;
-  if (replaceable && accepts_new_file(located->parent_path())) {
-    return plan_result{target{name, *located, write_mode::replace_by_rename}, {}};
+  // A replacement is created beside the target and renamed over it. An
+  // existing file is written in place instead wherever the rename would not
+  // leave the same file behind: its directory refuses new files, it has a
+  // second hard link (which a rename would split), or a new file there would
+  // not carry its owner, its group or its access ACL.
+  if (!exists || (reached.st_nlink <= 1 && !may_have_access_acl(*located))) {
+    const auto created = probe_new_file(located->parent_path());
+    if (created && (!exists || (created->st_uid == reached.st_uid && created->st_gid == reached.st_gid))) {
+      return plan_result{target{name, *located, write_mode::replace_by_rename}, {}};
+    }
   }
   if (!exists) {
     return cannot_open();

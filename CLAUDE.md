@@ -222,11 +222,14 @@ the write mode, applied after the run:
 - a FIFO (or process substitution): written in place, not opened at startup,
   since that would consume the reader; a device or socket: written in place, but
   opened non-blocking and closed at startup, so an unopenable one costs no run;
-- a hard-linked regular file, or one whose directory refuses the startup probe
-  (a `.champsim-toml-<16 hex>.tmp` sibling created and removed): written in
-  place;
+- a hard-linked regular file, one whose directory refuses the startup probe
+  (a `.champsim-toml-<16 hex>.tmp` sibling created and removed), and one whose
+  owner or group differs from that probe's or that may carry a POSIX access ACL
+  (on Linux, a `system.posix_acl_access` attribute that is not definitely
+  absent): written in place, so its inode, owner, group and ACL are kept;
 - otherwise, a regular file or a new name: a finished sibling of that form is
-  renamed over it (with the old permission bits), so a startup error or a
+  renamed over it (with the old permission bits; other extended attributes
+  are a new file's), so a startup error or a
   failed write of the sibling leaves an earlier document intact. If the rename
   fails (as for a file bind-mounted into a container), the target is written in
   place with a warning, and if that fails too the sibling is kept and named in
