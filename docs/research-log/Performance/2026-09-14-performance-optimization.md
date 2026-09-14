@@ -88,3 +88,58 @@ this check does not claim a full debug-build simulation comparison.
 **Evidence.** `01-debug/{build.log,cpp-tests.log,regression/,alloc-before/,
 alloc-after/,timing/}` beneath the evidence root above. `source-commit.txt` and
 `champsim` preserve the exact measured implementation.
+
+## 2. Reuse phase-local scheduler and CPU views
+
+**Issue.** Each global tick rebuilds the operable and CPU views, copies the trace
+index vector, and allocates a new phase-completion bit vector. The initial
+allocation investigation attributed ten allocations per tick to these temporary
+containers in the one-core hierarchy.
+
+**Fix.** Cache the component references for the duration of a phase, pass CPU and
+trace-index vectors by const reference, and reuse the working sort and completion
+buffers. Copy the canonical operable order into the working buffer before every
+unchanged `std::sort`; retaining the previous sorted order would alter equal-time
+ties. Phase callbacks continue traversing the canonical order. This relies on the
+fixed component membership/order supplied by `static_environment` within a phase.
+
+**Files touched.**
+
+1. `src/champsim.cc`: reuse phase-local storage and eliminate by-value invariant
+   arguments, preserving scheduling, trace feeding, watchdog and phase boundaries.
+2. `test/cpp/src/502-phase-order.cc`: add synthetic mixed-clock/two-CPU tests for
+   scheduling ties, callback order and exact callback tick, staggered completion,
+   and EOF-triggered completion of every remaining CPU.
+3. `docs/research-log/Performance/2026-09-14-performance-optimization.md`: record
+   this change and its evidence.
+
+**Implementation commit.** `482d080f` (`perf: reuse phase-local scheduler and CPU
+views without changing order`).
+
+**Regression verdict.** The initial scheduling test passes on the old loop before
+implementation. The final strengthened tests and C++ suite pass: **17,059
+assertions, 865 passed cases, 7 native skips**. All **16 paired workload cases / 32
+runs** match complete reported statistics, effective configuration and retirement/
+cycle counts. Review found no source issue; its two test-coverage findings were
+addressed and re-reviewed. The short SQLite allocation probe matches the original
+pre-optimization statistics and drops from **562,350 to 179,298** calls, removing
+383,052 calls (ten per tick plus a net two phase-level calls). These synthetic
+phase tests exercise two CPU records, not a full multicore cache/DRAM simulation.
+
+**KIPS before/after.** Medians of three paired 1M/3M runs; parentheses give
+minimum–maximum KIPS. All 24 timing runs pass the complete parity gate.
+
+| Trace | Before | After | Change |
+|---|---:|---:|---:|
+| sqlite | 186.62 (185.53–187.52) | 191.56 (191.00–193.33) | +2.65% |
+| omnetpp | 206.09 (204.60–207.30) | 212.65 (210.11–213.53) | +3.19% |
+| gcc | 249.75 (249.26–254.25) | 259.20 (257.03–260.05) | +3.78% |
+| mcf | 66.00 (65.77–66.65) | 67.45 (67.45–67.80) | +2.19% |
+
+**Retained: inert over the checked cases.** All 12 individual pairs favor the
+candidate. The measured gain is modest, and the shared-host limitation still
+applies; confirm its size on a quiet machine.
+
+
+**Evidence.** `02-cycle/{build.log,cpp-before.log,cpp-reviewed.log,regression/,
+alloc-after/,timing/,source-commit.txt,champsim}` under the common evidence root.
