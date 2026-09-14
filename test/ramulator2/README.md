@@ -69,6 +69,99 @@ reported typed interpretation.
 acceptance, missing leaves, wrong types and a one-bit integer error above 2^53.
 Those cases must fail even when aggregate request counts would still agree.
 
+## Adapter differential oracle (test 706)
+
+`test/cpp/src/706-ramulator2-differential.cc` runs the production request
+adapter (`src/ramulator2_memory_backend.cc`) over the real native driver. A
+logging decorator records every native attempt, its accept/reject result,
+every callback and every tick; an independent model written from the
+documented request contract predicts each operate: the next fragment and its
+address, core and size, where a queue stops, which upstream responses appear
+with which metadata, `operate()` progress, and every adapter counter and gauge.
+Native decisions and callback timing are inputs; no expected value is read
+from the adapter. Traffic mixes repeated and hot addresses, response-suppressed
+reads, writes, bursts larger than native buffers, idle gaps, and PREFETCH
+packets at or above native capacity in all three queues (the out-of-range
+policy). The scenario covers warmup with traffic, two measured phases around a
+zero-length one, staggered per-CPU ROI ends, a later warmup that must retain
+partial heads, and a drain or a finalization with live work.
+
+A non-hidden smoke case runs in every enabled `make test` (under a second):
+DDR4, LPDDR5 and tiny-buffer fixtures, two seeds of 400 parents, one tiny
+variant with two feeders, and four recovery cycles on each tiny variant. It
+asserts that rejections, partial heads, synchronous callbacks, out-of-range
+responses and drops in every queue, and overloaded recovery cycles are still
+reached. Disabled builds compile it and skip.
+
+The campaigns are hidden Catch2 tags configured by `DIFF_*` variables (listed
+at the top of the test file): `[.differential]` for the scenario above and
+`[.differential-recovery]` for producer-pause recovery. A recovery cycle
+overloads tiny buffers with a burst, stops the producer, and operates until the
+model is quiescent. It then requires empty feeder and response queues, zero
+adapter outstanding parents and fragments, balanced adapter counters, packets
+added equal to parents completed plus out-of-range pops, one response per
+response-requested read, a callback for every accepted native request, no
+callback closure still held below the driver (a token each closure carries is
+counted), and the adapter's `print_deadlock` diagnostics reporting no live
+parent, fragment, queued packet or retained queue head. The next burst starts
+from that recovered state.
+
+Generate the YAML variants, then run campaigns against an enabled test binary
+(each output directory must be new):
+
+```sh
+python3 test/ramulator2/oracle_variants.py --output-dir /tmp/oracle-variants
+python3 test/ramulator2/run_differential.py --binary test/bin/000-test-main \
+  --manifest /tmp/oracle-variants/manifest.json --output-dir /tmp/oracle-10x10k \
+  --seeds 10 --parents 10000
+python3 test/ramulator2/run_differential.py --binary test/bin/000-test-main \
+  --manifest /tmp/oracle-variants/manifest.json --output-dir /tmp/oracle-recovery \
+  --campaign recovery --runs ddr4-tiny,lpddr5-tiny,ddr4-tiny-2feeders --env DIFF_CYCLES=40
+```
+
+The variants derive from `configs/ramulator2`: the two fixtures, tiny buffers,
+two and four controllers (asymmetric buffers, interleave bits 2), and 128-byte
+native transactions; two more runs use two feeder channels. The runner writes
+one log per run and `summary.json` with per-run verdicts and totals, and exits
+nonzero on any FAIL line, missing seed line, nonzero exit or timeout. For a
+multi-core check, build the test binary in a separate worktree with
+`num_cpus` changed in `inc/defs.h` and add `--require-all-cores`, which fails
+unless every core received accepted fragments.
+
+`run_mutants.py` checks that the campaigns detect adapter mutants
+(`oracle_mutants.py`). It copies the checkout's tracked and untracked files to
+a scratch directory, builds the test binary there in its own `OBJ_ROOT` and
+`BIN_ROOT` (with `num_cpus` from `--cores`, default 2), runs a short campaign
+on the unmutated copy, then applies each mutant's textual replacements, rebuilds,
+reruns and restores. It never writes to the checkout and fails if the adapter,
+driver or `inc/defs.h` bytes there change during the run.
+
+```sh
+cp -a /path/to/ramulator2 /tmp/ramulator2-mutants   # private native root
+python3 test/ramulator2/run_mutants.py --native-root /tmp/ramulator2-mutants \
+  --output-dir /tmp/oracle-mutants
+```
+
+A new object root makes the build helper rebuild `libramulator.so` in the
+native root (pass `--seed-native-obj` with an object root already built against
+that root to skip it), so never point it at a root another build or run uses.
+Each mutant must be detected, except those marked equivalent: M12 flushes
+completions before popping a fully accepted head, which cannot change
+behavior because `all_accepted` is captured first and the parent reference is
+not used afterwards; M19 (every fragment sent as core 0) is equivalent below
+two cores. A detected equivalent mutant is reported as a false positive. Every
+mutant pattern must occur exactly once in the current source; `test_tools.py`
+fails when one goes stale.
+
+Limits: traffic is synthetic and enters a channel directly, not through a real
+LLC; native accept/reject decisions and timing are trusted rather than checked;
+and the adapter's gauges and diagnostics count only parents with accepted
+fragments, so a leaked parent entry that no longer reports any would not be
+observed.
+`[.differential-latency]` prints adapter read latency beside native
+`read_latency` for an isolated and a write-forwarded read; it characterizes
+the definitions and asserts nothing about them.
+
 ## Simulator integration
 
 The runner creates a 32,768-record, 16 MiB uncompressed v2 trace, makes it read-only
