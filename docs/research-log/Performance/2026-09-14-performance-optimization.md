@@ -384,3 +384,101 @@ python-tests.log,perf-python-tests.log,regression/,alloc-after/,timing/,
 source-commit.txt,champsim}` beneath the common root. Earlier pre-review test logs
 are retained as well; the `*-before-reviewed.log` files contain the strengthened
 boundary tests against the old implementation.
+
+## Commit trail
+
+These are separate implementation and measurement-log commits for each retained
+optimization; the implementation snapshots in the evidence archive name the
+corresponding source commit.
+
+| Optimization | Implementation | Measurement log |
+|---|---|---|
+| 1. Cache debug allocations | `fbcc11ff` | `ebe6081e` |
+| 2. Phase-local containers | `482d080f` | `c9d643fc` |
+| 3. Bandwidth helpers | `bb3f1957` | `5da1d1fc` |
+| 4. Zero-width DRAM swizzle | `63b04767` | `d49f2ea5` |
+| 5. LSQ scan guards | `2a7940b2` | `6ead68fa` |
+| 6. Trace/frontend moves | `f7ee81b9` | `2c275ed0` |
+
+Shared instrumentation and log setup: `3991ee75`; counter-output validation:
+`cf23636c`; parity checks that survive Python `-O`: `e6f937e4`. The step-6 log
+commit also corrects step 3's CPU-14 evidence reference and links this document
+from `CLAUDE.md`. No optimization changes compiler flags or simulation settings.
+
+## Combined result against the original baseline
+
+A fresh CPU-14 campaign compares the original `b1fb06b9` release snapshot
+(`00-baseline`, a binary file) directly with the final `f7ee81b9` release snapshot
+(`06-trace/champsim`). Both endpoints match the hashes recorded by their individual
+campaigns. This comparison measures the combined result directly; it does not
+multiply the incremental medians obtained at different times or on different CPUs.
+
+Every run uses legacy DRAM and detailed PTW, 1M warmup + 3M ROI, with three
+alternating-order paired repetitions per trace. Medians and minimum–maximum KIPS:
+
+| Trace | Original | Final | Throughput change |
+|---|---:|---:|---:|
+| sqlite | 191.53 (191.12–191.86) | 290.33 (290.24–290.64) | +51.58% |
+| omnetpp | 211.46 (209.88–213.24) | 319.11 (317.27–321.29) | +50.91% |
+| gcc | 259.05 (258.09–261.52) | 388.18 (386.87–390.76) | +49.85% |
+| mcf | 69.25 (68.50–69.67) | 119.22 (118.51–119.55) | +72.16% |
+
+All **24 cumulative runs / 12 pairs** preserve reported phase statistics,
+effective configuration and instruction/cycle counts exactly, and every pair
+favors the final binary. The short SQLite probe's total allocation count falls
+from **1,519,975 to 134,612** across the six changes: **91.14% fewer allocation
+calls**, measured separately from throughput. These are allocation counts for the
+stated short probe, not an estimate of bytes saved or a whole-workload memory bound.
+
+The final audit rereads all saved statistics and verifies their configuration and
+count fingerprints, each campaign's KIPS medians, and the archived binary chain.
+It covers **384 comparison runs**: 192 short regression runs and 192 timing runs,
+including the retained CPU-8 bandwidth campaign and the final cumulative campaign.
+All have within-case result parity. Historical regression manifests name the
+mutable build output; their recorded binary hashes match the archived snapshots.
+The current release binary also matches the final measured snapshot.
+
+The final C++ results are 871 passed cases in the normal build and 876 in the
+payload-enabled build, each with seven native-backend skips. Python reports 66
+tests with four native skips and no failures; all six performance-tool tests pass.
+Read-only review of all six production changes found no remaining blocker.
+The verdict is **behavior-neutral over this checked scope**.
+
+**Evidence.** `cumulative/{manifest.json,runs.json,summary.csv,...}`,
+`cumulative.log`, `audit_evidence.py`, and `final-evidence-audit.json` under the
+common evidence root. The original binary SHA-256 is
+`6b1ccf78b6e19c739566a9315193711fd1006350d6562a2f5dfd85c236727bbd`;
+the final binary SHA-256 is
+`e9ab12cd4326dff3e8b92a07f4b6e430a100090820dc85558e7e95c6849d375b`.
+
+## Remaining validation before mainline
+
+1. **Longer and broader workloads.** Repeat exact statistics comparisons over
+   longer trace regions and additional workloads, especially unusual control flow,
+   high memory-level parallelism, and trace EOF/restart boundaries. Four traces
+   and the current seeds cannot prove universal neutrality.
+2. **Full multicore execution.** Exercise real shared-cache/DRAM traffic with
+   staggered core completion and mixed clocks. The new phase tests use two CPU
+   records and synthetic operables; the measured workloads are single-core.
+3. **Independent performance replication.** Repeat on an exclusive physical core
+   with controlled SMT and frequency settings, more repetitions, and another
+   compiler/host. This shared-host study supports the observed gains but cannot
+   establish their exact magnitude everywhere, particularly the small LSQ/copy gains.
+4. **Build modes and native backend.** Payload-enabled coverage is currently unit
+   testing; add full payload simulation comparisons and sanitizer checks for the
+   move/lifetime paths. Step 1's debug check is a syntax build, not a full debug-output
+   comparison. Native Ramulator2 was disabled throughout this user-requested legacy
+   campaign and needs its separate integration checks before mainline.
+5. **Unexported state.** The exported TOML omits warmup cache/DRAM counters.
+   Tests compare the available full ROI statistics plus warmup retirement/cycles,
+   not hidden warmup counters or every transient internal state.
+6. **Separate correctness issue.** Fix and test the pre-existing zero-step DRAM
+   mapping hang for `banks=1, bankgroups=1` independently; it is explicitly outside
+   these terminating-case performance comparisons.
+
+The remaining candidates include repeated ROB/scheduler scans and repeated DRAM
+request-coordinate decoding. They require separate designs for ordering and
+object lifetime; no broader rewrite is included in this pass. Preserve the raw
+results archive with the eventual review materials before deleting scratch
+checkouts: the source, tests and this log are tracked in Git, while raw evidence
+currently lives at the external path documented above.
