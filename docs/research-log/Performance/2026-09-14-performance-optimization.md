@@ -266,3 +266,52 @@ case. Handle it as a separate correctness fix before relying on that geometry.
 **Evidence.** `04-dram/{build.log,cpp-before.log,cpp-after.log,regression/,
 alloc-after/,zero-step-before/,timing/,source-commit.txt,champsim}` under the common
 root.
+
+## 5. Avoid LSQ readiness scans for absent memory operands
+
+**Issue.** Every executing instruction scans the entire load queue and store queue
+to mark matching entries ready, including arithmetic/branch instructions with no
+memory operations. Load-only instructions also scan the store queue and vice versa.
+
+**Fix.** Guard the load-queue scan with a nonempty `source_memory` list and the
+store-queue scan with a nonempty `destination_memory` list. `do_memory_scheduling`
+creates entries from these lists, and the lists remain intact through execution;
+completion updates `completed_mem_ops` rather than removing operands. Preserve
+instruction readiness/execution marking, all remaining loop bodies and traversal
+order. Broader ROB/ready-queue rewrites are deferred.
+
+**Files touched.**
+
+1. `src/ooo_cpu.cc`: skip only the queue scans with no possible matching entry.
+2. `test/cpp/src/251-execution-lsq-readiness.cc`: use actual memory scheduling to
+   cover zero/two loads × zero/two stores × warmup/ROI, verify all matching entries
+   receive the correct deadline, and unrelated entries remain unready.
+3. `docs/research-log/Performance/2026-09-14-performance-optimization.md`: record
+   the ownership invariant, checks and measurements.
+
+**Implementation commit.** `2a7940b2efc521057f0a263d09e29386c05d4e06`.
+
+**Regression verdict.** The new test passes on the previous implementation. The
+final C++ suite passes **29,810 assertions, 869 cases, 7 native skips**. All
+**16 paired workload cases / 32 runs** match complete reported statistics,
+effective configuration and instruction/cycle counts. Review confirmed the
+operand-list invariant and found no issue. The allocation probe remains at
+179,298 calls with the original statistics. Arbitrary external mutation of
+instruction operand lists after creating LSQ entries is outside that invariant.
+
+**KIPS before/after.** CPU-14 medians of three paired 1M/3M runs; parentheses
+give minimum–maximum KIPS. All 24 timing runs pass the complete parity gate.
+
+| Trace | Before | After | Change |
+|---|---:|---:|---:|
+| sqlite | 281.07 (278.44–281.13) | 283.54 (282.38–283.67) | +0.88% |
+| omnetpp | 309.04 (308.85–310.59) | 313.64 (312.73–315.52) | +1.49% |
+| gcc | 369.92 (368.19–371.16) | 376.13 (373.48–377.05) | +1.68% |
+| mcf | 114.94 (114.09–116.08) | 117.48 (117.16–117.89) | +2.20% |
+
+**Retained: inert over the checked cases.** All 12 pairs favor the candidate.
+The small gain warrants quiet-host replication before relying on its exact size.
+
+
+**Evidence.** `05-lsq/{build.log,cpp-before.log,cpp-after.log,regression/,
+alloc-after/,timing/,source-commit.txt,champsim}` beneath the common root.
