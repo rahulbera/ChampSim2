@@ -19,10 +19,11 @@
 
 #include <cstring>
 #include <deque>
+#include <iterator>
 #include <memory>
-#include <numeric>
 #include <string>
 #include <type_traits>
+#include <utility>
 
 #include "instruction.h"
 #include "util/detect.h"
@@ -103,9 +104,14 @@ ooo_model_instr apply_branch_target(ooo_model_instr branch, const ooo_model_inst
 template <typename It>
 void set_branch_targets(It begin, It end)
 {
-  std::reverse_iterator rbegin{end};
-  std::reverse_iterator rend{begin};
-  std::adjacent_difference(rbegin, rend, rbegin, apply_branch_target);
+  if (begin == end) {
+    return;
+  }
+  // The helper reads the next instruction without modifying it. A forward
+  // pass therefore preserves the original adjacent pairs and final lookahead.
+  for (auto next = std::next(begin); next != end; ++begin, ++next) {
+    *begin = apply_branch_target(std::move(*begin), *next);
+  }
 }
 
 template <typename T, typename F>
@@ -133,7 +139,7 @@ ooo_model_instr bulk_tracereader<T, F>::operator()()
     set_branch_targets(std::begin(instr_buffer), std::end(instr_buffer));
   }
 
-  auto retval = instr_buffer.front();
+  auto retval = std::move(instr_buffer.front());
   instr_buffer.pop_front();
 
   return retval;

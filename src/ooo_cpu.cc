@@ -99,7 +99,7 @@ void O3_CPU::initialize_instruction()
     stop_fetch = do_init_instruction(input_queue.front());
 
     // Add to IFETCH_BUFFER
-    IFETCH_BUFFER.push_back(input_queue.front());
+    IFETCH_BUFFER.push_back(std::move(input_queue.front()));
     input_queue.pop_front();
 
     IFETCH_BUFFER.back().ready_time = current_time;

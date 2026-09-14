@@ -91,3 +91,21 @@ TEST_CASE("A sequence of instructions has no branch targets for non-branches")
   REQUIRE_THAT(ip_target_pairs, Catch::Matchers::AllMatch(Catch::Matchers::Predicate<std::pair<champsim::address, champsim::address>>(
                                     [](const auto& val) { return val.first == champsim::address{}; }, "Does not have branch target")));
 }
+
+TEST_CASE("Branch target propagation preserves an empty range and its final lookahead")
+{
+  std::vector<ooo_model_instr> instructions;
+  champsim::set_branch_targets(std::begin(instructions), std::end(instructions));
+  CHECK(instructions.empty());
+
+  auto last = taken_inst(champsim::address{0x2000});
+  last.branch_target = champsim::address{0xcafe};
+  instructions.push_back(last);
+  champsim::set_branch_targets(std::begin(instructions), std::end(instructions));
+  CHECK(instructions.back().branch_target == champsim::address{0xcafe});
+
+  instructions.insert(std::begin(instructions), taken_inst(champsim::address{0x1000}));
+  champsim::set_branch_targets(std::begin(instructions), std::end(instructions));
+  CHECK(instructions.front().branch_target == champsim::address{0x2000});
+  CHECK(instructions.back().branch_target == champsim::address{0xcafe});
+}

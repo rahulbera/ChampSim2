@@ -106,3 +106,69 @@ TEST_CASE("A v1 and a v2 record describing the same instruction yield the same i
     REQUIRE(a.destination_memory == b.destination_memory);
   }
 }
+
+TEST_CASE("Trace operands and targets survive multiple refill boundaries")
+{
+  std::vector<input_instr_v2> program(260);
+  for (std::size_t i = 0; i < program.size(); ++i) {
+    auto& record = program.at(i);
+    record.ip = 0x1000 + 4 * i;
+    record.is_branch = static_cast<unsigned char>(i % 3 != 0);
+    record.branch_taken = static_cast<unsigned char>(i % 3 == 2);
+    // These lookahead records acquire their targets from the next refill.
+    if (i == 126 || i == 253) {
+      record.is_branch = 1;
+      record.branch_taken = 1;
+    }
+    record.source_registers[0] = record.is_branch ? champsim::REG_INSTRUCTION_POINTER : 10;
+    record.source_registers[2] = record.is_branch ? champsim::REG_FLAGS : 12;
+    record.destination_registers[1] = record.is_branch ? champsim::REG_INSTRUCTION_POINTER : 11;
+    record.source_memory[0] = 0x100000 + 64 * i;
+    record.source_memory[2] = 0x200000 + 64 * i;
+    record.destination_memory[1] = 0x300000 + 64 * i;
+    record.source_memory_pa[0] = 0x400000 + 64 * i;
+    record.source_memory_pa[2] = 0x500000 + 64 * i;
+    record.destination_memory_pa[1] = 0x600000 + 64 * i;
+    record.source_memory_size[0] = 8;
+    record.source_memory_size[2] = 4;
+    record.destination_memory_size[1] = 2;
+    record.privilege = static_cast<unsigned char>(i % 2);
+    record.instr_type = static_cast<unsigned char>(i % 3);
+    for (std::size_t byte = 0; byte < MAX_MEM_VALUE_SIZE; ++byte) {
+      record.source_memory_value[0][byte] = static_cast<unsigned char>(i + byte);
+      record.source_memory_value[2][byte] = static_cast<unsigned char>(i ^ byte);
+      record.destination_memory_value[1][byte] = static_cast<unsigned char>(i - byte);
+    }
+  }
+
+  champsim::bulk_tracereader<input_instr_v2, std::istringstream> reader{0, std::istringstream{serialize(program)}};
+  // Keep the trailing lookahead record, matching the reader's EOF contract for
+  // a partial final read. This crosses the 127- and 254-record refill boundaries.
+  for (std::size_t i = 0; i + 1 < program.size(); ++i) {
+    CAPTURE(i);
+    REQUIRE_FALSE(reader.eof());
+    const auto actual = reader();
+    const ooo_model_instr expected{0, program.at(i)};
+    CHECK(actual.ip == expected.ip);
+    CHECK(actual.asid == expected.asid);
+    CHECK(actual.branch == expected.branch);
+    CHECK(actual.is_branch == expected.is_branch);
+    CHECK(actual.branch_taken == expected.branch_taken);
+    CHECK(actual.branch_target == (expected.is_branch && expected.branch_taken ? champsim::address{program.at(i + 1).ip} : champsim::address{}));
+    CHECK(actual.source_registers == expected.source_registers);
+    CHECK(actual.destination_registers == expected.destination_registers);
+    CHECK(actual.source_memory == expected.source_memory);
+    CHECK(actual.destination_memory == expected.destination_memory);
+#if CHAMPSIM_TRACE_MEMORY_VALUES
+    CHECK(actual.source_memory_pa == expected.source_memory_pa);
+    CHECK(actual.destination_memory_pa == expected.destination_memory_pa);
+    CHECK(actual.source_memory_size == expected.source_memory_size);
+    CHECK(actual.destination_memory_size == expected.destination_memory_size);
+    CHECK(actual.source_memory_value == expected.source_memory_value);
+    CHECK(actual.destination_memory_value == expected.destination_memory_value);
+    CHECK(actual.privilege == expected.privilege);
+    CHECK(actual.instr_type == expected.instr_type);
+#endif
+  }
+  CHECK(reader.eof());
+}
