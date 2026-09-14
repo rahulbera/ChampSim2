@@ -565,6 +565,104 @@ jobs:
           ${{ runner.temp }}/native-integration
           .csconfig/ramulator2-native/build.log
 
+  # The native library and every host object are built with ASan and UBSan
+  # through RAMULATOR2_SANITIZE=1, so native allocations, callbacks and
+  # teardown are checked along with the adapter. Its own runner and native
+  # checkout keep the instrumented library away from the release job's.
+  native_sanitize:
+    name: Ubuntu 24.04 GCC 13 with Ramulator 2.1, ASan and UBSan
+    runs-on: ubuntu-24.04
+    env:
+      CXX: /usr/bin/g++-13
+      WITH_RAMULATOR2: "1"
+      RAMULATOR2_SANITIZE: "1"
+      RAMULATOR2_ROOT: ${{ github.workspace }}/native-source
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: 'true'
+
+    - uses: actions/checkout@v6
+      with:
+        repository: CMU-SAFARI/ramulator2
+        ref: 72427a1bba3771564c4fb0e494ba02242fd1eaa7
+        path: native-source
+
+    - name: Set up native build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y g++-13 cmake curl zip unzip tar python3-venv
+        python3 -m venv "$RUNNER_TEMP/native-python"
+        "$RUNNER_TEMP/native-python/bin/python" -m pip install PyYAML
+        echo "$RUNNER_TEMP/native-python/bin" >> "$GITHUB_PATH"
+        vcpkg/bootstrap-vcpkg.sh
+        vcpkg/vcpkg install
+
+    # GCC 13's AddressSanitizer cannot place its shadow memory under the
+    # 32-bit mmap randomization some hosted kernels use, and then fails every
+    # instrumented program at startup.
+    - name: Limit mmap randomization for AddressSanitizer
+      run: sudo sysctl -w vm.mmap_rnd_bits=28
+
+    - name: Build instrumented simulator and tests
+      run: |
+        ./config.sh
+        env -u CXXFLAGS -u CPPFLAGS -u LDFLAGS -u CFLAGS make -j6 all test/bin/000-test-main
+
+    # Suppressions cover only vendored ITTAGE; see test/ramulator2/README.md.
+    # Tests are selected by file tag, without hidden cases, so a differential
+    # oracle test (706) contributes its smoke cases when it is present. The
+    # pinned native RITAddrMapper leaks its nested mapper, which test 704
+    # constructs, so LeakSanitizer fails this step at exit until that is
+    # resolved; it is deliberately not suppressed.
+    - name: Run native C++ tests under sanitizers
+      env:
+        CHAMPSIM_EXPECT_RAMULATOR2: "1"
+      run: |
+        export ASAN_OPTIONS=halt_on_error=1:detect_leaks=1
+        export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1:suppressions=$PWD/test/ramulator2/sanitizers/ubsan.supp"
+        export LSAN_OPTIONS="suppressions=$PWD/test/ramulator2/sanitizers/lsan.supp"
+        for required in 704 705 708; do
+          ls test/cpp/src/"$required"-*.cc > /dev/null
+        done
+        spec=""
+        for file in test/cpp/src/70[4568]-*.cc; do
+          spec="$spec${spec:+,}[#$(basename "$file" .cc)]~[.]"
+        done
+        test/bin/000-test-main -# --order rand "$spec"
+
+    - name: Simulate a generated trace with the instrumented binary
+      run: |
+        export ASAN_OPTIONS=halt_on_error=1:detect_leaks=1
+        export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1:suppressions=$PWD/test/ramulator2/sanitizers/ubsan.supp"
+        export LSAN_OPTIONS="suppressions=$PWD/test/ramulator2/sanitizers/lsan.supp"
+        python3 test/ramulator2/generate_trace.py --output "$RUNNER_TEMP/sanitized.champsim2" --instructions 32768
+        # Small data caches force LLC reads and writebacks, as in run_integration.py.
+        bin/champsim --trace-version 2 --config configs/ramulator2.toml -w 2000 -i 10000 \
+          --set ooo_cpu.cpu0.branch_predictor=hashed_perceptron --set ooo_cpu.cpu0.btb=basic_btb \
+          --set cache.cpu0_l1d.sets=16 --set cache.cpu0_l1d.ways=4 \
+          --set cache.cpu0_l2c.sets=16 --set cache.cpu0_l2c.ways=4 \
+          --set cache.llc.sets=32 --set cache.llc.ways=4 \
+          --toml "$RUNNER_TEMP/sanitized.toml" -- "$RUNNER_TEMP/sanitized.champsim2"
+        python3 - "$RUNNER_TEMP/sanitized.toml" <<'PY'
+        import json, sys, tomllib
+        doc = tomllib.load(open(sys.argv[1], "rb"))
+        mode = json.loads(doc["meta"]["ramulator2"]["build"])["mode"]
+        assert mode == "RelWithDebInfo C++20 Python=OFF Sanitizers=address,undefined", mode
+        adapter = doc["phase"]["simulation"]["roi"]["ramulator2"]["adapter"]
+        assert adapter["accepted_reads"] > 0 and adapter["accepted_writes"] > 0, adapter
+        print("instrumented native simulation validated:", mode)
+        PY
+
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: native-sanitize-validation
+        path: |
+          ${{ runner.temp }}/sanitized.toml
+          .csconfig/ramulator2-native/build.log
+
   upload_coveralls:
     runs-on: ubuntu-latest
     needs: [cpp, python, stats_output]
