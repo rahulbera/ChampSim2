@@ -99,3 +99,74 @@ bin/champsim --trace-version 2 --set dram-model=ramulator2 \
 
 The generator opens its output exclusively, so it cannot replace existing input.
 Simulation commands always use a named output and `--` before trace paths.
+
+## Sanitizer builds
+
+`RAMULATOR2_SANITIZE=1` instruments the native library and ChampSim together
+with AddressSanitizer and UndefinedBehaviorSanitizer (LeakSanitizer runs at
+exit):
+
+```sh
+make -j6 WITH_RAMULATOR2=1 RAMULATOR2_ROOT=/path/to/ramulator2-sanitize \
+  RAMULATOR2_SANITIZE=1 all test/bin/000-test-main
+```
+
+The build helper configures the pinned native checkout as `RelWithDebInfo`
+with `-fsanitize=address,undefined -fno-omit-frame-pointer` for compilation
+and the shared-library link; fmt and yaml-cpp inherit those flags through
+FetchContent. The Makefile adds the same options, plus `-g`, to every host
+compile and link, for both `bin/champsim` and the test binary. Release builds
+are unaffected when the variable is unset or 0. It is rejected without
+`WITH_RAMULATOR2=1`: an instrumented host with an uninstrumented native library
+would leave native allocations and callbacks unchecked.
+
+Provenance records the mode. The native manifest's inputs carry the build
+type, flags and sanitizers; the compiler stamp gains `"sanitizers"`; and the
+build string in `meta.ramulator2.build` names the mode, for example
+`RelWithDebInfo C++20 Python=OFF Sanitizers=address,undefined` instead of
+`Release C++20 Python=OFF`. The runtime library check fingerprints whichever
+library the helper built, so no manual step is involved.
+
+Changing the variable in either direction changes the compiler stamp and the
+manifest inputs, so the next build rebuilds the native library, every host
+object and both executables; one object root never mixes instrumented and
+uninstrumented objects. Switching back to a release build rebuilds the
+byte-identical release library. `make -n`/`-q`/`-t` still execute nothing, and,
+as for any change of flags, mode, compiler or root, they do not refresh the
+stamps and so do not show that rebuild. Because the library is written into the
+native source root, a sanitized build and a release build that must both exist
+at once need separate native roots, and separate checkouts: the test binary's
+path does not follow `OBJ_ROOT` or `BIN_ROOT`.
+
+Run instrumented binaries with these options, using absolute suppression paths
+so that subprocesses started elsewhere find them:
+
+```sh
+export ASAN_OPTIONS=halt_on_error=1:detect_leaks=1
+export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1:suppressions=$PWD/test/ramulator2/sanitizers/ubsan.supp
+export LSAN_OPTIONS=suppressions=$PWD/test/ramulator2/sanitizers/lsan.supp
+CHAMPSIM_EXPECT_RAMULATOR2=1 test/bin/000-test-main
+```
+
+The two suppression files cover only the known, pre-existing issues in
+vendored ITTAGE (`inc/ittage/ittage.hpp`): the shift in `MYRANDOM()` and the
+tables it never frees. They must not name ChampSim integration code or native
+Ramulator sources. LeakSanitizer lists the suppressions it used at exit; any
+other report is a failure.
+
+The pinned native revision has one such report of its own. With a controller
+whose `addr_mapper` is `RITAddrMapper`, `RITAddrMapper::create_base_mapper()`
+creates the nested mapper through `Factory::create_implementation` and never
+adds it as a child, so LeakSanitizer reports it (about 500 bytes in five
+allocations per controller) at exit. Test 704's case for admitted row-indirection
+mappers constructs two, so an instrumented `test/bin/000-test-main` exits
+non-zero after every test has passed. It is deliberately not suppressed.
+
+C++ test 708 exercises repeated driver and adapter construction, and teardown
+with live native requests, parent contexts and callbacks, with and without
+`finalize()`; it runs in every enabled build and is meant to be run
+instrumented. vcpkg's static libraries and libstdc++ are not instrumented.
+
+The instrumented library is much larger than the release one, and every driver
+construction fingerprints the loaded library, so tests that construct many
+drivers are noticeably slower in this mode.

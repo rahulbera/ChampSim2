@@ -1,0 +1,8 @@
+# LeakSanitizer suppressions for RAMULATOR2_SANITIZE=1 builds.
+#
+# Only known, pre-existing issues in vendored code belong here. Never add
+# ChampSim integration code or native Ramulator 2 sources.
+#
+# Vendored ITTAGE allocates its tagged tables with new[]
+# (inc/ittage/ittage.hpp:164) and never frees them.
+leak:*/inc/ittage/ittage.hpp

@@ -19,6 +19,63 @@ import tempfile
 REVISION = '72427a1bba3771564c4fb0e494ba02242fd1eaa7'
 DEPENDENCIES = {'fmt': 'e69e5f977d458f2650bb346dadf2ad30c5320281',
                 'yaml-cpp': '56e3bb550c91fd7005566f19c079cb7a503223cf'}
+SANITIZERS = 'address,undefined'
+SANITIZER_FLAGS = ['-fsanitize=' + SANITIZERS, '-fno-omit-frame-pointer']
+
+
+def native_settings(sanitize):
+    """How the native library is compiled and linked.
+
+    RAMULATOR2_SANITIZE=1 instruments it with the same sanitizers the Makefile
+    adds to every host object, keeping debug information for their reports. fmt
+    and yaml-cpp are built through FetchContent, so they inherit these flags.
+    """
+    flags = ' '.join(SANITIZER_FLAGS) if sanitize else ''
+    return {'build_type': 'RelWithDebInfo' if sanitize else 'Release', 'cxx_flags': flags,
+            'shared_linker_flags': flags, 'sanitizers': SANITIZERS if sanitize else ''}
+
+
+def mode_string(settings):
+    mode = f'{settings["build_type"]} C++20 Python=OFF'
+    return f'{mode} Sanitizers={settings["sanitizers"]}' if settings['sanitizers'] else mode
+
+
+def cmake_commands(root, build, compiler, settings):
+    return [['cmake', '-S', str(root), '-B', str(build), '-DRAMULATOR_PYTHON_BINDINGS=OFF',
+             f'-DCMAKE_BUILD_TYPE={settings["build_type"]}', f'-DCMAKE_CXX_COMPILER={compiler}',
+             f'-DCMAKE_CXX_FLAGS={settings["cxx_flags"]}',
+             f'-DCMAKE_SHARED_LINKER_FLAGS={settings["shared_linker_flags"]}', '-DCMAKE_EXE_LINKER_FLAGS='],
+            # Unknown/replaced libraries cannot acquire provenance from an up-to-date no-op.
+            ['cmake', '--build', str(build), '--target', 'ramulator', '--clean-first', '-j6']]
+
+
+def compiler_identity(command, flags, sanitize):
+    compiler = shutil.which(command[0])
+    if not compiler:
+        raise RuntimeError(f'compiler not found: {shlex.join(command)}')
+    identity = {'command': command, 'path': str(Path(compiler).resolve()),
+                'version': output(command + ['--version']), 'flags': flags}
+    if sanitize:
+        # Host objects are instrumented too; every one depends on this stamp.
+        identity['sanitizers'] = SANITIZERS
+    return identity
+
+
+def manifest_inputs(root, revision, identity, settings):
+    return {'root': str(root), 'revision': revision, 'compiler': identity, 'native': settings,
+            'helper': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+
+
+def manifest_matches(prior, inputs, digest):
+    return prior.get('inputs') == inputs and prior.get('sha256') == digest and digest is not None
+
+
+def build_directory(native, inputs):
+    return native / ('build-' + hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()[:16])
+
+
+def build_record(identity, dependencies, settings):
+    return json.dumps({'compiler': identity, 'dependencies': dependencies, 'mode': mode_string(settings)}, sort_keys=True)
 
 
 def write_changed(path, text):
@@ -41,8 +98,8 @@ def fingerprint(data):
     return f'{value:016x}'
 
 
-def check_abi(command, flags, root=None):
-    """Compare the default native ABI to the actual driver compile options.
+def check_abi(command, flags, root=None, native_flags=()):
+    """Compare the native library's ABI to the actual driver compile options.
 
     Let the compiler expand response files and forced includes, including nested
     files. Comparing type identities as well as sizes catches libstdc++'s dual
@@ -96,7 +153,7 @@ int main() {
         probe = path / 'probe.cc'
         probe.write_text(source)
         signatures = []
-        for name, options in (('native', []), ('driver', shlex.split(flags))):
+        for name, options in (('native', list(native_flags)), ('driver', shlex.split(flags))):
             executable = path / name
             result = subprocess.run(command + options + common + [str(probe), '-o', str(executable)],
                                     text=True, capture_output=True)
@@ -121,18 +178,22 @@ def main():
     parser.add_argument('--flags', default='')
     parser.add_argument('--abi-flags', default='')
     parser.add_argument('--check-abi', action='store_true')
+    parser.add_argument('--sanitize', action='store_true',
+                        help='build the native library with the sanitizers the host objects use')
     args = parser.parse_args()
+    if args.sanitize and args.mode != '1':
+        raise RuntimeError('RAMULATOR2_SANITIZE=1 instruments the native library together with the host, '
+                           'so it requires WITH_RAMULATOR2=1 RAMULATOR2_ROOT=/path/to/ramulator2')
+    settings = native_settings(args.sanitize)
     if args.check_abi:
-        check_abi(shlex.split(args.cxx), args.flags, Path(args.root).resolve() if args.root else None)
+        check_abi(shlex.split(args.cxx), args.flags, Path(args.root).resolve() if args.root else None,
+                  shlex.split(settings['cxx_flags']))
         return
     obj = Path(args.obj).resolve()
     obj.mkdir(parents=True, exist_ok=True)
     command = shlex.split(args.cxx)
+    identity = compiler_identity(command, args.flags, args.sanitize)
     compiler = shutil.which(command[0])
-    if not compiler:
-        raise RuntimeError(f'compiler not found: {args.cxx}')
-    identity = {'command': command, 'path': str(Path(compiler).resolve()),
-                'version': output(command + ['--version']), 'flags': args.flags}
     write_changed(obj / 'compiler.stamp', json.dumps(identity, sort_keys=True))
     if args.mode == '0':
         write_changed(obj / 'ramulator2_build.h', '#define CHAMPSIM_WITH_RAMULATOR2 0\n')
@@ -147,16 +208,15 @@ def main():
         raise RuntimeError(f'unsupported native revision {revision}; expected {REVISION}')
     if output(['git', '-C', str(root), 'status', '--porcelain', '--untracked-files=no']):
         raise RuntimeError('native tracked source is modified; use the pinned clean checkout')
-    check_abi(command, args.abi_flags, root)
+    check_abi(command, args.abi_flags, root, shlex.split(settings['cxx_flags']))
     native = obj / 'ramulator2-native'
     native.mkdir(exist_ok=True)
     manifest_path = native / 'manifest.json'
     library = root / 'libramulator.so'
-    inputs = {'root': str(root), 'revision': revision, 'compiler': identity,
-              'helper': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+    inputs = manifest_inputs(root, revision, identity, settings)
     prior = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
     digest = hashlib.sha256(library.read_bytes()).hexdigest() if library.exists() else None
-    valid = prior.get('inputs') == inputs and prior.get('sha256') == digest and digest is not None
+    valid = manifest_matches(prior, inputs, digest)
     for dep, commit in prior.get('dependencies', {}).items():
         path = root / 'ext' / dep
         valid = valid and output(['git', '-C', str(path), 'rev-parse', 'HEAD']) == commit
@@ -167,15 +227,10 @@ def main():
             raise RuntimeError(f'unsupported {name} dependency revision; expected {expected}')
     env = {k: v for k, v in os.environ.items() if k not in ('CXXFLAGS', 'CPPFLAGS', 'CFLAGS', 'LDFLAGS')}
     if not valid:
-        build = native / ('build-' + hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()[:16])
+        build = build_directory(native, inputs)
         with (native / 'build.log').open('w') as log:
-            subprocess.run(['cmake', '-S', str(root), '-B', str(build), '-DRAMULATOR_PYTHON_BINDINGS=OFF',
-                            '-DCMAKE_BUILD_TYPE=Release', f'-DCMAKE_CXX_COMPILER={compiler}',
-                            '-DCMAKE_CXX_FLAGS=', '-DCMAKE_SHARED_LINKER_FLAGS=', '-DCMAKE_EXE_LINKER_FLAGS='],
-                           stdout=log, stderr=subprocess.STDOUT, env=env, check=True)
-            # Unknown/replaced libraries cannot acquire provenance from an up-to-date no-op.
-            subprocess.run(['cmake', '--build', str(build), '--target', 'ramulator', '--clean-first', '-j6'],
-                           stdout=log, stderr=subprocess.STDOUT, env=env, check=True)
+            for step in cmake_commands(root, build, compiler, settings):
+                subprocess.run(step, stdout=log, stderr=subprocess.STDOUT, env=env, check=True)
         deps = {name: output(['git', '-C', str(root / 'ext' / name), 'rev-parse', 'HEAD']) for name in ('fmt', 'yaml-cpp')}
         if deps != DEPENDENCIES:
             raise RuntimeError(f'native dependency revisions differ from the pinned build: {deps}')
@@ -195,7 +250,7 @@ list(c.levels).index('Column'),c.timing_params.index('tCK_ps')] for c in DRAMSta
     lines = ['#define CHAMPSIM_WITH_RAMULATOR2 1', '#include <array>', 'namespace champsim::native_build {',
              f'inline constexpr auto revision = {json.dumps(revision)};',
              f'inline constexpr auto fingerprint = {json.dumps(prior["fingerprint"])};',
-             f'inline constexpr auto build = {json.dumps(json.dumps({"compiler": identity, "dependencies": prior["dependencies"], "mode": "Release C++20 Python=OFF"}, sort_keys=True))};',
+             f'inline constexpr auto build = {json.dumps(build_record(identity, prior["dependencies"], settings))};',
              'struct model { const char* name; int levels, commands, timings, prefetch, column, clock; };',
              f'inline constexpr std::array<model, {len(models)}> models = {{{{']
     lines += ['{' + json.dumps(row[0]) + ',' + ','.join(map(str, row[1:])) + '},' for row in models]

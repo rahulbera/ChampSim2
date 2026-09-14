@@ -10,12 +10,29 @@ DEP_ROOT:=$(OBJ_ROOT)
 
 WITH_RAMULATOR2 ?= 0
 RAMULATOR2_ROOT ?=
+# RAMULATOR2_SANITIZE=1 builds the native library RelWithDebInfo with ASan and
+# UBSan, and instruments every host compile and link with the same options. The
+# options reach compiler.stamp, which every object depends on, so flipping the
+# variable rebuilds all of them and the library together: one OBJ_ROOT never
+# mixes instrumented and uninstrumented code.
+RAMULATOR2_SANITIZE ?= 0
+ifeq ($(RAMULATOR2_SANITIZE),1)
+ifneq ($(WITH_RAMULATOR2),1)
+$(error RAMULATOR2_SANITIZE=1 instruments the native library together with the host, so it requires WITH_RAMULATOR2=1 RAMULATOR2_ROOT=/path/to/ramulator2)
+endif
+sanitizer_options := -fsanitize=address,undefined -fno-omit-frame-pointer
+override CXXFLAGS += $(sanitizer_options) -g
+override LDFLAGS += $(sanitizer_options)
+else ifneq ($(RAMULATOR2_SANITIZE),0)
+$(error RAMULATOR2_SANITIZE must be 0 or 1, not '$(RAMULATOR2_SANITIZE)')
+endif
+native_sanitize_option = $(if $(filter 1,$(RAMULATOR2_SANITIZE)), --sanitize)
 # Quote arbitrary user flags as one shell argument, including embedded apostrophes.
 shellquote = '$(subst ','"'"',$1)'
 # GNU Make stores bundled short flags first; ignore long options and assignments.
 make_short_flags := $(if $(findstring =,$(firstword $(MAKEFLAGS))),,$(filter-out --%,$(firstword $(MAKEFLAGS))))
 make_no_execute := $(strip $(foreach flag,n q t,$(findstring $(flag),$(make_short_flags))))
-native_helper = python3 $(ROOT_DIR)/config/ramulator2_build.py --mode=$(call shellquote,$(WITH_RAMULATOR2)) --root=$(call shellquote,$(RAMULATOR2_ROOT)) --obj=$(call shellquote,$(OBJ_ROOT)) --cxx=$(call shellquote,$(CXX)) --flags=$(call shellquote,$(user_build_flags)) --abi-flags=$(call shellquote,$(call reverse,$(addprefix @,$(filter %.options,$(wildcard $(base_options))))) $(CPPFLAGS) $(CXXFLAGS))
+native_helper = python3 $(ROOT_DIR)/config/ramulator2_build.py --mode=$(call shellquote,$(WITH_RAMULATOR2)) --root=$(call shellquote,$(RAMULATOR2_ROOT)) --obj=$(call shellquote,$(OBJ_ROOT)) --cxx=$(call shellquote,$(CXX)) --flags=$(call shellquote,$(user_build_flags)) --abi-flags=$(call shellquote,$(call reverse,$(addprefix @,$(filter %.options,$(wildcard $(base_options))))) $(CPPFLAGS) $(CXXFLAGS))$(native_sanitize_option)
 user_build_flags := $(CPPFLAGS) $(CXXFLAGS) $(LDFLAGS)
 # These recipes also make a fresh dry-run printable without creating any files.
 $(OBJ_ROOT)/compiler.stamp $(OBJ_ROOT)/ramulator2_build.h:
@@ -144,7 +161,7 @@ attach_options = $(call reverse, $(addprefix @,$(filter %.options, $^)))
 
 # All .o files should be made like .cc files
 define obj_recipe
-	$(if $(native_options),python3 $(ROOT_DIR)/config/ramulator2_build.py --mode=1 --check-abi --root=$(call shellquote,$(RAMULATOR2_ROOT)) --obj=$(call shellquote,$(OBJ_ROOT)) --cxx=$(call shellquote,$(CXX)) --flags=$(call shellquote,$(attach_options) $(CPPFLAGS) $(CXXFLAGS) $(native_options)))
+	$(if $(native_options),python3 $(ROOT_DIR)/config/ramulator2_build.py --mode=1 --check-abi --root=$(call shellquote,$(RAMULATOR2_ROOT)) --obj=$(call shellquote,$(OBJ_ROOT)) --cxx=$(call shellquote,$(CXX)) --flags=$(call shellquote,$(attach_options) $(CPPFLAGS) $(CXXFLAGS) $(native_options))$(native_sanitize_option))
 	$(CXX) $(attach_options) $(CPPFLAGS) $(CXXFLAGS) $(native_options) -c -o $@ $(filter %.cc, $^)
 endef
 
