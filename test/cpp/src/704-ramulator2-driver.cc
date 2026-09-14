@@ -334,6 +334,17 @@ champsim::ramulator2_native_limits request_limit(uint64_t accepted)
   limits.accepted_requests_per_statistics_phase = accepted;
   return limits;
 }
+champsim::channel::request_type feeder_read(uint64_t address)
+{
+  champsim::channel::request_type request;
+  request.address = champsim::address{address};
+  request.cpu = 0;
+  return request;
+}
+int64_t native_reads(const champsim::memory_backend& backend)
+{
+  return counter(backend.statistics().sim_ramulator2.value().native, {"memory_system", "total_num_read_requests"});
+}
 } // namespace
 
 TEST_CASE("The driver refuses a native send that could pass a signed request total")
@@ -408,40 +419,62 @@ TEST_CASE("Fast warmup does not use the native request limit, and each phase beg
   champsim::channel feeder;
   auto backend = champsim::make_ramulator2_memory_backend(champsim::make_ramulator2_driver(file.config(), request_limit(1)), {&feeder});
   auto& memory = backend->clocked_component();
-  const auto native_reads = [&] {
-    return counter(backend->statistics().sim_ramulator2.value().native, {"memory_system", "total_num_read_requests"});
-  };
-  const auto read = [](uint64_t address) {
-    champsim::channel::request_type request;
-    request.address = champsim::address{address};
-    request.cpu = 0;
-    return request;
-  };
-
   memory.warmup = true;
   memory.begin_phase();
   for (uint64_t block = 0; block < 4; ++block)
-    REQUIRE(feeder.add_rq(read(0x100000 + 64 * block)));
+    REQUIRE(feeder.add_rq(feeder_read(0x100000 + 64 * block)));
   REQUIRE_NOTHROW(memory._operate());
   REQUIRE(feeder.RQ.empty());
   REQUIRE(feeder.returned.size() == 4);
-  REQUIRE(native_reads() == 0);
+  REQUIRE(native_reads(*backend) == 0);
 
   memory.warmup = false;
   memory.begin_phase();
   feeder.returned.clear();
-  REQUIRE(feeder.add_rq(read(0x200000)));
-  REQUIRE(feeder.add_rq(read(0x200040)));
+  REQUIRE(feeder.add_rq(feeder_read(0x200000)));
+  REQUIRE(feeder.add_rq(feeder_read(0x200040)));
   REQUIRE_THROWS_WITH(memory._operate(), Catch::Matchers::ContainsSubstring("limit of 1 accepted read requests"));
   REQUIRE(feeder.RQ.size() == 1);
-  REQUIRE(native_reads() == 1);
+  REQUIRE(native_reads(*backend) == 1);
 
   // begin_phase resets native statistics, so the refused read now fits.
   memory.begin_phase();
   REQUIRE_NOTHROW(memory._operate());
   REQUIRE(feeder.RQ.empty());
-  REQUIRE(native_reads() == 1);
+  REQUIRE(native_reads(*backend) == 1);
   REQUIRE(backend->statistics().sim_ramulator2.value().accepted_reads == 1);
+}
+
+// Native counts transactions, not cache blocks: each 64-byte block is two
+// LPDDR5 sends, so the limit can fall between a block's fragments.
+TEST_CASE("The native request limit can stop a split cache block between its fragments")
+{
+  if (!champsim::ramulator2_available())
+    SKIP("native build disabled");
+  temporary_yaml file(fixture("lpddr5"));
+  champsim::channel feeder;
+  auto backend = champsim::make_ramulator2_memory_backend(champsim::make_ramulator2_driver(file.config(), request_limit(3)), {&feeder});
+  auto& memory = backend->clocked_component();
+  memory.warmup = false;
+  memory.begin_phase();
+  REQUIRE(feeder.add_rq(feeder_read(0x100000)));
+  REQUIRE(feeder.add_rq(feeder_read(0x100040)));
+  REQUIRE_THROWS_WITH(memory._operate(), Catch::Matchers::ContainsSubstring("limit of 3 accepted read requests"));
+  REQUIRE(feeder.RQ.size() == 1); // the second block stays at the head with one fragment admitted
+  REQUIRE(native_reads(*backend) == 3);
+  auto stats = backend->statistics().sim_ramulator2.value();
+  REQUIRE(stats.accepted_reads == 2);
+  REQUIRE(stats.accepted_fragments == 3);
+
+  // After the phase begins again, only the unaccepted fragment is submitted.
+  memory.begin_phase();
+  REQUIRE_NOTHROW(memory._operate());
+  REQUIRE(feeder.RQ.empty());
+  REQUIRE(native_reads(*backend) == 1);
+  stats = backend->statistics().sim_ramulator2.value();
+  REQUIRE(stats.accepted_reads == 0);
+  REQUIRE(stats.accepted_fragments == 1);
+  REQUIRE(stats.outstanding_parents == 2);
 }
 
 TEST_CASE("Native plugins with a never-reset signed tick counter stop the memory clock at its limit")
