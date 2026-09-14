@@ -1289,7 +1289,8 @@ TEST_CASE("Differential campaign: production adapter over the real native driver
   if (!champsim::ramulator2_available())
     SKIP("native build disabled");
   const auto cfg = oracle706::from_env();
-  REQUIRE_FALSE(cfg.yaml.empty());
+  if (cfg.yaml.empty())
+    SKIP("set DIFF_YAML to run this campaign (test/ramulator2/run_differential.py does)");
   REQUIRE(oracle706::campaign(cfg, &oracle706::harness::run) == 0);
 }
 
@@ -1298,7 +1299,8 @@ TEST_CASE("Recovery campaign: overload bursts and producer pauses over the real 
   if (!champsim::ramulator2_available())
     SKIP("native build disabled");
   const auto cfg = oracle706::from_env();
-  REQUIRE_FALSE(cfg.yaml.empty());
+  if (cfg.yaml.empty())
+    SKIP("set DIFF_YAML to run this campaign (test/ramulator2/run_differential.py does)");
   REQUIRE(oracle706::campaign(cfg, &oracle706::harness::recover) == 0);
 }
 
@@ -1307,6 +1309,8 @@ TEST_CASE("Differential diagnostic: dump native statistic paths", "[.differentia
   if (!champsim::ramulator2_available())
     SKIP("native build disabled");
   const auto cfg = oracle706::from_env();
+  if (cfg.yaml.empty())
+    SKIP("set DIFF_YAML to a native YAML to run this diagnostic");
   champsim::runtime_config rc;
   rc.set("ramulator2.config=" + cfg.yaml);
   auto driver = champsim::make_ramulator2_driver(rc);
@@ -1338,6 +1342,8 @@ TEST_CASE("Differential diagnostic: adapter read latency versus native read_late
   if (!champsim::ramulator2_available())
     SKIP("native build disabled");
   const auto cfg = oracle706::from_env();
+  if (cfg.yaml.empty())
+    SKIP("set DIFF_YAML to a native YAML to run this diagnostic");
   champsim::runtime_config rc;
   rc.set("ramulator2.config=" + cfg.yaml);
   auto real = champsim::make_ramulator2_driver(rc);
