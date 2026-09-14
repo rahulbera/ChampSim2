@@ -208,3 +208,61 @@ not continuous proof of exclusive use.
 alloc-after/,symbols.txt,timing/,source-commit.txt,champsim}` beneath the common
 root. Source-level neutrality still needs broader workload/compiler coverage
 before being treated as universal.
+
+## 4. Skip zero-width legacy DRAM swizzling
+
+**Issue.** The mapper iterates over row slices even when the selected channel,
+bank-group or bank field has zero width. Every XOR operand is then zero. The
+one-group primary configuration pays this cost repeatedly during request lookup
+and scheduling.
+
+**Fix.** Return the input field immediately for zero-width fields with a nonzero
+segment size, after preserving row-slice construction/validation. All nonzero-width
+hashing, arbitration and request state remain unchanged. This is the narrow first
+part of the repeated-decoding target; caching request indices or rewriting the
+mapper is deferred for a separate change with stronger lifetime contracts.
+
+**Files touched.**
+
+1. `src/dram_controller.cc`: bypass row XORs that cannot change the field.
+2. `test/cpp/src/703-dram-address-mapping.cc`: compare six decoded coordinates
+   against an independent integer/XOR oracle over 198 geometries × 64 addresses;
+   cover partial row segments, high address bits and zero-width fields, including
+   an arbitrary nonzero input field to the public swizzle helper.
+3. `docs/research-log/Performance/2026-09-14-performance-optimization.md`: record
+   the measured scope, validation and the separate zero-step issue.
+
+**Implementation commit.** `63b04767` (`perf: skip zero-width legacy DRAM swizzle
+work`).
+
+**Regression verdict.** The new oracle passes on the previous implementation.
+The final C++ suite passes **29,746 assertions, 868 cases, 7 native skips**. All
+**16 paired workload cases / 32 runs** preserve complete reported statistics,
+effective configuration and instruction/cycle counts, including multichannel,
+multirank and nonzero-bank-group configurations. Review found no issue. The short
+allocation probe remains at 179,298 calls and matches the original statistics.
+
+**KIPS before/after.** CPU-14 medians of three paired 1M/3M runs; parentheses
+give minimum–maximum KIPS. All 24 timing runs pass the complete parity gate.
+
+| Trace | Before | After | Change |
+|---|---:|---:|---:|
+| sqlite | 271.59 (270.22–271.86) | 280.29 (279.20–281.86) | +3.20% |
+| omnetpp | 298.82 (298.03–299.19) | 308.67 (308.61–309.44) | +3.30% |
+| gcc | 358.72 (356.82–360.76) | 369.00 (366.35–370.25) | +2.86% |
+| mcf | 101.87 (101.43–103.06) | 115.30 (114.86–115.63) | +13.18% |
+
+**Retained: inert over the checked terminating cases.** All 12 paired timings
+favor the candidate. Shared-host replication limits still apply.
+
+
+**Separate pre-existing issue.** `banks=1, bankgroups=1` produces a zero-bit
+segment, so the legacy loop never advances. A 1k/4k SQLite invocation with the
+pre-patch `03-bandwidth/champsim` binary timed out after three seconds; the source
+loop explains the nontermination. This patch deliberately excludes `segment_size=0`
+from its fast path and does not claim regression coverage for that nonterminating
+case. Handle it as a separate correctness fix before relying on that geometry.
+
+**Evidence.** `04-dram/{build.log,cpp-before.log,cpp-after.log,regression/,
+alloc-after/,zero-step-before/,timing/,source-commit.txt,champsim}` under the common
+root.
