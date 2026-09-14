@@ -96,8 +96,11 @@ which changes the modeled device.
 Rejections name what was wrong. An `impl` that is not admitted, including a
 misspelled or unregistered one, "is not one of the components supported behind
 ChampSim's External frontend", followed by the supported list; a negative
-`reserved_rows_per_bank` "is invalid; it must be absent or 0"; and a component
-that is present but not a table "must be a table with an impl key".
+`reserved_rows_per_bank` "is invalid; it must be absent or 0"; a component
+that is present but not a table "must be a table with an impl key"; an `impl`
+given as a sequence or table "must be a single name"; and a table without one
+reports "impl is missing". The last three are also followed by the supported
+list.
 
 Two reproducible fixtures are included:
 

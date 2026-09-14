@@ -151,11 +151,13 @@ std::string joined(const auto& names)
   return text;
 }
 // A component is a table naming its impl. The wording avoids calling a
-// misspelled or unregistered impl a registered component that does not fit.
+// misspelled or unregistered impl a registered component that does not fit,
+// and an impl given as a sequence or table a missing one.
 void require_supported(const std::string& component, const ConfigNode& node, const auto& names, const std::string& extra = "")
 {
   const auto supported = "; supported: " + joined(names) + extra;
   require(!node || node.is_map(), component + " must be a table with an impl key" + supported);
+  require(!node["impl"] || node["impl"].is_scalar(), component + " impl must be a single name" + supported);
   const auto impl = implementation(node);
   require(std::find(names.begin(), names.end(), impl) != names.end(),
           impl.empty() ? component + " impl is missing" + supported

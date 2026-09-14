@@ -151,6 +151,7 @@ TEST_CASE("Native driver rejects components that cannot serve the External shim"
   };
   const std::string unsupported = " is not one of the components supported behind ChampSim's External frontend; supported: ";
   const std::string table = " must be a table with an impl key; supported: ";
+  const std::string single = " impl must be a single name; supported: ";
   for (const auto& [yaml, diagnostic] : std::vector<std::pair<std::string, std::string>>{
            // A misspelled or unregistered name is not described as a registered component that does not fit.
            {changed(original, "impl: GenericDDR", "impl: DDR4Controller"),
@@ -161,6 +162,11 @@ TEST_CASE("Native driver rejects components that cannot serve the External shim"
            {changed(original, "impl: RoBaRaCoCh", "impl: roBaRaCoCh"), "addr_mapper impl 'roBaRaCoCh'" + unsupported + "RoBaRaCoCh"},
            {changed(original, flat_mapper, ""), "addr_mapper impl is missing; supported: RoBaRaCoCh, ChRaBaRoCo, MOP4CLXOR, or RITAddrMapper"},
            {changed(original, flat_mapper, "      addr_mapper: RoBaRaCoCh\n"), "addr_mapper" + table + "RoBaRaCoCh, ChRaBaRoCo, MOP4CLXOR, or RITAddrMapper"},
+           // An impl key is present, so it is not missing, but it names nothing.
+           {changed(original, "impl: GenericDDR", "impl: [GenericDDR]"), "controller" + single + "GenericDDR, LPDDR5"},
+           {changed(original, "impl: RoBaRaCoCh", "impl: [RoBaRaCoCh]"), "addr_mapper" + single + "RoBaRaCoCh, ChRaBaRoCo, MOP4CLXOR, or RITAddrMapper"},
+           {changed(original, "impl: RoBaRaCoCh", "impl: {name: RoBaRaCoCh}"), "addr_mapper" + single + "RoBaRaCoCh, ChRaBaRoCo, MOP4CLXOR, or RITAddrMapper"},
+           {rit("        addr_mapper:\n          impl: [MOP4CLXOR]\n"), "RITAddrMapper nested addr_mapper" + single + "RoBaRaCoCh"},
            {original + changed(controller, "impl: RoBaRaCoCh", "impl: PassThroughAddrMapper"), "addr_mapper impl 'PassThroughAddrMapper'" + unsupported},
            {rit("        reserved_rows_per_bank: 64\n        addr_mapper:\n          impl: RoBaRaCoCh\n"), "reserved_rows_per_bank 64 is not supported"},
            {rit("        reserved_rows_per_bank: 1024\n        addr_mapper:\n          impl: ChRaBaRoCo\n"), "reserved_rows_per_bank 1024 is not supported"},
