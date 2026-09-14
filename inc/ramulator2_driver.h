@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <string>
 #include <variant>
@@ -44,7 +45,18 @@ public:
   virtual ramulator2_config_record config_record() const = 0;
   virtual void finalize() = 0;
 };
-std::unique_ptr<ramulator2_driver> make_ramulator2_driver(const runtime_config&);
+// Ramulator 2.1 keeps these native counters in signed int, where passing the
+// maximum is undefined behaviour. The driver refuses the operation that could
+// take one past its limit. The defaults are the native limits; tests lower them.
+struct ramulator2_native_limits {
+  // GenericDRAM total_num_read_requests and total_num_write_requests: accepted
+  // native requests of one type between statistics resets.
+  uint64_t accepted_requests_per_statistics_phase = static_cast<uint64_t>(std::numeric_limits<int>::max());
+  // AQUA, Graphene, Hydra and RRS controller plugins: memory ticks since
+  // construction, a counter native never resets.
+  uint64_t plugin_ticks = static_cast<uint64_t>(std::numeric_limits<int>::max());
+};
+std::unique_ptr<ramulator2_driver> make_ramulator2_driver(const runtime_config&, const ramulator2_native_limits& limits = {});
 bool ramulator2_available();
 } // namespace champsim
 #endif

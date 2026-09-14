@@ -8,8 +8,11 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include "channel.h"
 #include "defs.h"
+#include "operable.h"
 #include "ramulator2_driver.h"
+#include "ramulator2_memory_backend.h"
 #include "runtime_config.h"
 // Missing submission/ticking/callback forwarding must fail this real native request.
 TEST_CASE("The native DDR4 driver completes an external read", "[native-required]")
@@ -310,4 +313,186 @@ TEST_CASE("Driver validates requests and preserves callbacks across statistics r
   REQUIRE_NOTHROW(driver->finalize());
   REQUIRE_THROWS(driver->tick());
   REQUIRE_THROWS(driver->send(false, 0, 0, 64, {}));
+}
+
+// Ramulator 2.1 keeps GenericDRAM's accepted-request totals and the tick
+// counters of four controller plugins in signed int, where passing the maximum
+// is undefined behaviour. The driver refuses the operation that could do so;
+// these tests lower the limits so they can reach them.
+TEST_CASE("Native signed counter limits default to the native int maximum")
+{
+  const champsim::ramulator2_native_limits limits;
+  REQUIRE(limits.accepted_requests_per_statistics_phase == static_cast<uint64_t>(std::numeric_limits<int>::max()));
+  REQUIRE(limits.plugin_ticks == static_cast<uint64_t>(std::numeric_limits<int>::max()));
+}
+
+namespace
+{
+champsim::ramulator2_native_limits request_limit(uint64_t accepted)
+{
+  champsim::ramulator2_native_limits limits;
+  limits.accepted_requests_per_statistics_phase = accepted;
+  return limits;
+}
+} // namespace
+
+TEST_CASE("The driver refuses a native send that could pass a signed request total")
+{
+  if (!champsim::ramulator2_available())
+    SKIP("native build disabled");
+  temporary_yaml file(fixture());
+  auto driver = champsim::make_ramulator2_driver(file.config(), request_limit(3));
+  unsigned completed = 0;
+  const auto done = [&] {
+    ++completed;
+  };
+  for (uint64_t block = 0; block < 3; ++block)
+    REQUIRE(driver->send(false, 0x100000 + 64 * block, 0, 64, done));
+  REQUIRE_THROWS_WITH(driver->send(false, 0x200000, 0, 64, done), Catch::Matchers::ContainsSubstring("native GenericDRAM total_num_read_requests")
+                                                                      && Catch::Matchers::ContainsSubstring("limit of 3 accepted read requests"));
+  // Writes have their own total, and a duplicate write the controller absorbs
+  // at send() counts toward it exactly as native counts it.
+  REQUIRE(driver->send(true, 0x300000, 0, 64, done));
+  REQUIRE(driver->send(true, 0x300040, 0, 64, done));
+  REQUIRE(driver->send(true, 0x300000, 0, 64, done));
+  REQUIRE_THROWS_WITH(driver->send(true, 0x400000, 0, 64, done), Catch::Matchers::ContainsSubstring("native GenericDRAM total_num_write_requests")
+                                                                     && Catch::Matchers::ContainsSubstring("limit of 3 accepted write requests"));
+  for (int i = 0; i < 10000 && completed != 6; ++i)
+    driver->tick();
+  REQUIRE(completed == 6);
+  // Nothing refused reached native: its totals hold the limit, and no further callback arrives.
+  for (int i = 0; i < 1000; ++i)
+    driver->tick();
+  REQUIRE(completed == 6);
+  auto stats = driver->statistics();
+  REQUIRE(counter(stats, {"memory_system", "total_num_read_requests"}) == 3);
+  REQUIRE(counter(stats, {"memory_system", "total_num_write_requests"}) == 3);
+  REQUIRE(counter(stats, {"memory_system", "controller", "channel0", "num_read_reqs"}) == 3);
+  REQUIRE(counter(stats, {"memory_system", "controller", "channel0", "num_write_reqs_coalesced"}) == 1);
+  // Native resets both totals with its statistics, and the limit restarts with them.
+  driver->reset_stats();
+  for (uint64_t block = 0; block < 3; ++block) {
+    REQUIRE(driver->send(false, 0x200000 + 64 * block, 0, 64, done));
+    REQUIRE(driver->send(true, 0x400000 + 64 * block, 0, 64, done));
+  }
+  REQUIRE_THROWS_WITH(driver->send(false, 0x500000, 0, 64, done), Catch::Matchers::ContainsSubstring("total_num_read_requests"));
+  stats = driver->statistics();
+  REQUIRE(counter(stats, {"memory_system", "total_num_read_requests"}) == 3);
+  REQUIRE(counter(stats, {"memory_system", "total_num_write_requests"}) == 3);
+}
+
+TEST_CASE("Rejected native sends do not count toward the request limit")
+{
+  if (!champsim::ramulator2_available())
+    SKIP("native build disabled");
+  temporary_yaml file(changed(fixture(), "read_buffer_size: 32", "read_buffer_size: 1"));
+  auto driver = champsim::make_ramulator2_driver(file.config(), request_limit(2));
+  REQUIRE(driver->send(false, 0x100000, 0, 64, {}));
+  for (int attempt = 0; attempt < 5; ++attempt)
+    REQUIRE_FALSE(driver->send(false, 0x200000, 0, 64, {}));
+  bool accepted = false;
+  for (int i = 0; i < 10000 && !accepted; ++i) {
+    driver->tick();
+    accepted = driver->send(false, 0x200000, 0, 64, {});
+  }
+  REQUIRE(accepted);
+  REQUIRE(counter(driver->statistics(), {"memory_system", "total_num_read_requests"}) == 2);
+  REQUIRE_THROWS_WITH(driver->send(false, 0x300000, 0, 64, {}), Catch::Matchers::ContainsSubstring("limit of 2 accepted read requests"));
+}
+
+TEST_CASE("Fast warmup does not use the native request limit, and each phase begin restarts it")
+{
+  if (!champsim::ramulator2_available())
+    SKIP("native build disabled");
+  temporary_yaml file(fixture());
+  champsim::channel feeder;
+  auto backend = champsim::make_ramulator2_memory_backend(champsim::make_ramulator2_driver(file.config(), request_limit(1)), {&feeder});
+  auto& memory = backend->clocked_component();
+  const auto native_reads = [&] {
+    return counter(backend->statistics().sim_ramulator2.value().native, {"memory_system", "total_num_read_requests"});
+  };
+  const auto read = [](uint64_t address) {
+    champsim::channel::request_type request;
+    request.address = champsim::address{address};
+    request.cpu = 0;
+    return request;
+  };
+
+  memory.warmup = true;
+  memory.begin_phase();
+  for (uint64_t block = 0; block < 4; ++block)
+    REQUIRE(feeder.add_rq(read(0x100000 + 64 * block)));
+  REQUIRE_NOTHROW(memory._operate());
+  REQUIRE(feeder.RQ.empty());
+  REQUIRE(feeder.returned.size() == 4);
+  REQUIRE(native_reads() == 0);
+
+  memory.warmup = false;
+  memory.begin_phase();
+  feeder.returned.clear();
+  REQUIRE(feeder.add_rq(read(0x200000)));
+  REQUIRE(feeder.add_rq(read(0x200040)));
+  REQUIRE_THROWS_WITH(memory._operate(), Catch::Matchers::ContainsSubstring("limit of 1 accepted read requests"));
+  REQUIRE(feeder.RQ.size() == 1);
+  REQUIRE(native_reads() == 1);
+
+  // begin_phase resets native statistics, so the refused read now fits.
+  memory.begin_phase();
+  REQUIRE_NOTHROW(memory._operate());
+  REQUIRE(feeder.RQ.empty());
+  REQUIRE(native_reads() == 1);
+  REQUIRE(backend->statistics().sim_ramulator2.value().accepted_reads == 1);
+}
+
+TEST_CASE("Native plugins with a never-reset signed tick counter stop the memory clock at its limit")
+{
+  if (!champsim::ramulator2_available())
+    SKIP("native build disabled");
+  const auto original = fixture();
+  const std::string flat_mapper = "      addr_mapper:\n        impl: RoBaRaCoCh\n";
+  const auto rit = [&] {
+    return changed(original, flat_mapper, "      addr_mapper:\n        impl: RITAddrMapper\n        addr_mapper:\n          impl: RoBaRaCoCh\n");
+  };
+  // DDR4_VRR is DDR4 with a VRR command and an nVRR timing appended. Native
+  // AllBank refresh has no scope for it, and refresh is irrelevant here.
+  const auto vrr = [&] {
+    auto text = changed(original, "impl: AllBank\n        scatter_interval: 0\n        debug: false\n", "impl: NoRefresh\n");
+    text = changed(changed(text, "impl: DDR4\n", "impl: DDR4_VRR\n"), "2, 833]", "2, 833, 1]");
+    return changed(text, "command_cycles: [1, 1, 1, 1, 1, 1, 1, 1]", "command_cycles: [1, 1, 1, 1, 1, 1, 1, 1, 1]");
+  };
+  const auto with_plugin = [](const std::string& text, const std::string& plugin) {
+    return changed(text, "      row_policy:\n", "      controller_plugins:\n" + plugin + "      row_policy:\n");
+  };
+  champsim::ramulator2_native_limits limits;
+  limits.plugin_ticks = 3;
+  for (const auto& [name, yaml] : std::vector<std::pair<std::string, std::string>>{
+           {"AQUA", with_plugin(rit(), "        - impl: AQUA\n          num_art_entries: 16\n          num_fpt_entries: 16\n          num_qrows_per_bank: 64\n"
+                                       "          art_threshold: 1000\n")},
+           {"Graphene",
+            with_plugin(
+                vrr(),
+                "        - impl: Graphene\n          num_table_entries: 16\n          activation_threshold: 1000\n          reset_period_ns: 64000000\n")},
+           {"Hydra", with_plugin(vrr(), "        - impl: Hydra\n          hydra_tracking_threshold: 1000\n          hydra_group_threshold: 800\n")},
+           {"RRS", with_plugin(rit(), "        - impl: RRS\n          num_hrt_entries: 16\n          num_rit_entries: 16\n          rss_threshold: 1000\n")}}) {
+    CAPTURE(name);
+    temporary_yaml file(yaml);
+    auto driver = champsim::make_ramulator2_driver(file.config(), limits);
+    for (int i = 0; i < 3; ++i)
+      driver->tick();
+    REQUIRE_THROWS_WITH(driver->tick(),
+                        Catch::Matchers::ContainsSubstring("native controller plugin " + name) && Catch::Matchers::ContainsSubstring("limit of 3 ticks"));
+    REQUIRE(counter(driver->statistics(), {"memory_system", "controller", "channel0", "cycles"}) == 3);
+    // Native never resets the plugin counter, so a statistics reset does not restart the limit.
+    driver->reset_stats();
+    REQUIRE_THROWS_WITH(driver->tick(), Catch::Matchers::ContainsSubstring("native controller plugin " + name));
+    REQUIRE(counter(driver->statistics(), {"memory_system", "controller", "channel0", "cycles"}) == 0);
+  }
+  // A plugin whose counters are 64-bit, or no plugin, leaves the memory clock unlimited.
+  for (const auto& yaml :
+       {original, with_plugin(original, "        - impl: CommandCounter\n          commands_to_count: [ACT, RD]\n          path: unused.csv\n")}) {
+    temporary_yaml file(yaml);
+    auto driver = champsim::make_ramulator2_driver(file.config(), limits);
+    for (int i = 0; i < 10; ++i)
+      REQUIRE_NOTHROW(driver->tick());
+  }
 }

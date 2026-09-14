@@ -179,6 +179,17 @@ void validate_components(const ConfigNode& controller)
                            + " is not supported: ChampSim addresses every row, and shifted top rows fall outside the device; omit it or use 0");
   }
 }
+// These plugins increment a signed int clock in every pre_schedule(), which
+// each controller calls once per memory tick, and never reset it.
+constexpr std::array<std::string_view, 4> int_clock_plugins{"AQUA", "Graphene", "Hydra", "RRS"};
+std::string int_clock_plugin(const ConfigNode& controller)
+{
+  if (const auto plugins = controller["controller_plugins"]; plugins.is_sequence())
+    for (const auto& plugin : plugins.seq())
+      if (const auto name = implementation(plugin); std::find(int_clock_plugins.begin(), int_clock_plugins.end(), name) != int_clock_plugins.end())
+        return name;
+  return {};
+}
 const champsim::native_build::model& validate_tables(const ConfigNode& controller)
 {
   const auto dram = controller["dram"];
@@ -310,9 +321,31 @@ class native_driver final : public champsim::ramulator2_driver
   std::unique_ptr<Ramulator::IFrontEnd> frontend_;
   std::unique_ptr<Ramulator::IMemorySystem> memory_;
   bool finalized_ = false;
+  // Mirrors of native signed int counters, kept below their limits. Accepted
+  // requests restart with native statistics; plugin clocks never do.
+  uint64_t request_limit_;
+  uint64_t accepted_reads_ = 0, accepted_writes_ = 0;
+  uint64_t tick_limit_ = std::numeric_limits<uint64_t>::max(), ticks_ = 0;
+  std::string tick_limited_plugin_;
+
+  [[noreturn]] void request_limit_reached(const std::string& kind) const
+  {
+    throw std::runtime_error("ramulator2: native GenericDRAM total_num_" + kind + "_requests is a signed int already at its limit of "
+                             + std::to_string(request_limit_) + " accepted " + kind
+                             + " requests in this statistics phase, and one more would overflow it; it counts native transactions, not cache "
+                               "blocks, and restarts at every phase, so shorten the phase (for example, fewer simulation instructions)");
+  }
+  [[noreturn]] void tick_limit_reached() const
+  {
+    throw std::runtime_error("ramulator2: native controller plugin " + tick_limited_plugin_
+                             + " increments a signed int clock every memory tick and never resets it, and the memory clock is at its limit of "
+                             + std::to_string(tick_limit_) + " ticks (" + std::to_string(tick_limit_ * static_cast<uint64_t>(period_.count()))
+                             + " ps since construction); shorten the whole run, warmup included, or remove the plugin");
+  }
 
 public:
-  explicit native_driver(const champsim::runtime_config& cfg)
+  native_driver(const champsim::runtime_config& cfg, const champsim::ramulator2_native_limits& limits)
+      : request_limit_(limits.accepted_requests_per_statistics_phase)
   {
     verify_library();
     require(champsim::defs::num_cpus > 0 && champsim::defs::num_cpus <= static_cast<std::size_t>(std::numeric_limits<int>::max()), "invalid core count");
@@ -340,8 +373,13 @@ public:
     const auto controllers = system["controllers"];
     require(controllers.is_sequence() && power_of_two(controllers.seq().size()), "controllers must be a nonempty power-of-two sequence");
     uint64_t channel_capacity = 0;
-    for (const auto& controller : controllers.seq())
+    for (const auto& controller : controllers.seq()) {
       validate_components(controller); // Before any native component is constructed.
+      if (auto plugin = int_clock_plugin(controller); !plugin.empty() && tick_limited_plugin_.empty()) {
+        tick_limited_plugin_ = std::move(plugin);
+        tick_limit_ = limits.plugin_ticks;
+      }
+    }
     for (const auto& controller : controllers.seq()) {
       const auto& model = validate_tables(controller);
       auto spec = Ramulator::DRAMSpec::create(model.name, controller);
@@ -391,24 +429,38 @@ public:
     require(bytes > 0 && bytes <= transaction_, "invalid request size");
     require(address < capacity_ && bytes <= capacity_ - address, "request address out of range");
     require(bytes <= transaction_ - address % transaction_, "request crosses transaction boundary");
-    return frontend_->receive_external_requests(
+    // GenericDRAM increments a signed int total for every accepted request,
+    // forwarded reads and absorbed duplicate writes included. Whether native
+    // will accept is unknown before send(), so once one more acceptance would
+    // overflow the total, refuse every further send of that type.
+    auto& accepted = write ? accepted_writes_ : accepted_reads_;
+    if (accepted >= request_limit_)
+      request_limit_reached(write ? "write" : "read");
+    const bool success = frontend_->receive_external_requests(
         write ? Ramulator::Request::Type::Write : Ramulator::Request::Type::Read, static_cast<Ramulator::Addr_t>(address), static_cast<int>(cpu),
         [done = std::move(done)](Ramulator::Request&) {
           if (done)
             done();
         },
         static_cast<int>(bytes));
+    if (success)
+      ++accepted;
+    return success;
   }
   void tick() override
   {
     require(!finalized_, "tick after finalize");
+    if (ticks_ >= tick_limit_)
+      tick_limit_reached();
     memory_->tick();
+    ++ticks_;
   }
   void reset_stats() override
   {
     require(!finalized_, "reset after finalize");
     frontend_->reset_stats_recursive();
     memory_->reset_stats_recursive();
+    accepted_reads_ = accepted_writes_ = 0;
   }
   champsim::native_memory_statistics statistics() override
   {
@@ -437,16 +489,17 @@ public:
 #endif
 
 bool champsim::ramulator2_available() { return CHAMPSIM_WITH_RAMULATOR2 != 0; }
-std::unique_ptr<champsim::ramulator2_driver> champsim::make_ramulator2_driver(const runtime_config& cfg)
+std::unique_ptr<champsim::ramulator2_driver> champsim::make_ramulator2_driver(const runtime_config& cfg, const ramulator2_native_limits& limits)
 {
 #if CHAMPSIM_WITH_RAMULATOR2
   try {
-    return std::make_unique<native_driver>(cfg);
+    return std::make_unique<native_driver>(cfg, limits);
   } catch (const std::exception& error) {
     throw std::runtime_error(std::string{"ramulator2 configuration: "} + error.what());
   }
 #else
   (void)cfg;
+  (void)limits;
   throw std::runtime_error("ramulator2 not available: build WITH_RAMULATOR2=1 RAMULATOR2_ROOT=/path/to/ramulator2");
 #endif
 }
