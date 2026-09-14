@@ -96,6 +96,8 @@ public:
 
   explicit PageTableWalker(champsim::ptw_builder builder);
 
+  [[nodiscard]] std::optional<champsim::chrono::picoseconds> fixed_translation_latency() const { return fixed_latency; }
+
   long operate() final;
 
   void begin_phase() final;

@@ -231,6 +231,33 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
       deadlock_default = std::max(deadlock_default, static_cast<int>(ticks));
       native_allowance.emplace(ticks, quantum);
     }
+    if (!runtime_cfg.holds<int64_t>("sim.deadlock_cycle")) {
+      for (const PageTableWalker& ptw : built_environment->ptw_view()) {
+        if (const auto latency = ptw.fixed_translation_latency(); latency.has_value()) {
+          // A pending translation timer is not progress. The default guard
+          // must allow its delay plus rounding to the next walker tick, in
+          // global simulation ticks. Explicit user overrides still win.
+          auto quantum = champsim::chrono::picoseconds::max();
+          for (const champsim::operable& op : built_environment->operable_view()) {
+            if (op.clock_period <= champsim::chrono::picoseconds::zero()) {
+              throw std::runtime_error{"runtime config: fixed PTW requires a positive operable clock period"};
+            }
+            quantum = std::min(quantum, op.clock_period);
+          }
+          const auto ceil_ticks = [quantum](auto duration) {
+            return duration / quantum + (duration % quantum != champsim::chrono::picoseconds::zero());
+          };
+          const auto delay_ticks = ceil_ticks(*latency);
+          const auto rounding_ticks = ceil_ticks(ptw.clock_period);
+          constexpr auto max_guard = std::numeric_limits<int>::max();
+          if (rounding_ticks >= max_guard || delay_ticks >= max_guard - rounding_ticks) {
+            throw std::runtime_error{
+                "runtime config: fixed PTW delay exceeds the default sim.deadlock_cycle range; reduce fixed_latency or set an explicit guard"};
+          }
+          deadlock_default = std::max(deadlock_default, static_cast<int>(delay_ticks + rounding_ticks + 1));
+        }
+      }
+    }
     sim_knobs.deadlock_cycle = runtime_cfg.positive_value<int>("sim.deadlock_cycle", deadlock_default);
 
     // An explicit value stays authoritative, but a short one is almost always

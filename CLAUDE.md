@@ -321,10 +321,14 @@ their deadlines across phase resets. Existing PSCL configuration keys stay
 accepted for easy configuration overlays but have no effect in fixed mode.
 `fixed_latency` is an unused-key error in detailed mode. Negative/overflowing
 delays, unknown models and zero fixed-mode queue/bandwidth limits are rejected.
-For delays longer than the no-progress allowance, configure
-`sim.deadlock_cycle` appropriately; pending timers do not invent progress.
+The default `sim.deadlock_cycle` grows when necessary to cover the fixed delay
+and rounding to the next PTW tick, measured in global simulation ticks. Explicit
+user overrides remain authoritative; pending timers do not invent progress.
+An unrepresentable default allowance is rejected. The separate livelock check
+still applies to simulations with extremely low IPC.
 
-The fixed-mode tests are `test/cpp/src/601-fixed-ptw.cc`. See
+The fixed-mode tests are `test/cpp/src/601-fixed-ptw.cc` and
+`test/python/test_fixed_ptw_cli.py`. See
 [the benchmark tooling](tools/perf/README.md) for reproducible KIPS measurements.
 
 ### Tests
