@@ -33,7 +33,8 @@ namespace champsim::output
 enum class write_mode {
   // A regular file, or a name that reaches nothing yet.
   regular_file,
-  // A FIFO, device or socket, opened for writing only once the run is over.
+  // A FIFO, not opened until the run is over, or a device or socket, opened
+  // non-blocking at startup to check it; each is written after the run.
   special_file,
   // The file behind standard output or standard error -- a log the shell
   // redirected to, the pipe or terminal behind /dev/stdout -- so the document

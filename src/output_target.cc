@@ -115,11 +115,17 @@ using champsim::output::plan_result;
 using champsim::output::target;
 using champsim::output::write_mode;
 
+// How often a check that saw the name change underneath it is repeated:
+// another run naming the same output creates and removes it at startup.
+constexpr int max_checks = 16;
+
 // Every check on a named output. At startup (`probe`), whatever is to be
 // opened after the run is also opened now -- a new name by creating it and
 // removing it again -- so that a target that cannot be opened costs no run.
 // After the run the real open does that instead, and reports its own failure.
-plan_result check(const std::string& name, const std::vector<std::string>& traces, bool probe)
+// Empty when the name appeared or vanished while it was being checked, which
+// is no reason to refuse it: the caller checks again.
+std::optional<plan_result> check(const std::string& name, const std::vector<std::string>& traces, bool probe)
 {
   const auto refuse = [](std::string message) {
     return plan_result{std::nullopt, std::move(message)};
@@ -147,7 +153,9 @@ plan_result check(const std::string& name, const std::vector<std::string>& trace
     if (!location_exists || !same_file(at_location, reached)) {
       located.reset();
     }
-  } else if (!located || location_exists || location_errno != ENOENT) {
+  } else if (located && location_exists) {
+    return std::nullopt; // created since the stat above
+  } else if (!located || location_errno != ENOENT) {
     return cannot_open();
   }
   const fs::path reachable = located ? *located : fs::path{name};
@@ -168,6 +176,9 @@ plan_result check(const std::string& name, const std::vector<std::string>& trace
     if (probe) {
       // O_EXCL: the file removed again is the one created here.
       const int created = ::open(reachable.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOCTTY | O_CLOEXEC, 0666);
+      if (created < 0 && errno == EEXIST) {
+        return std::nullopt; // someone else's file, perhaps another run's proof
+      }
       if (created < 0) {
         return cannot_open();
       }
@@ -196,6 +207,9 @@ plan_result check(const std::string& name, const std::vector<std::string>& trace
     // blocking or acquiring a controlling terminal.
     if (probe) {
       const int descriptor = ::open(reachable.c_str(), O_WRONLY | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
+      if (descriptor < 0 && errno == ENOENT) {
+        return std::nullopt;
+      }
       if (descriptor < 0) {
         return cannot_open();
       }
@@ -208,6 +222,9 @@ plan_result check(const std::string& name, const std::vector<std::string>& trace
     // Opening it for writing, without truncation, is what refuses a read-only
     // document.
     const int writable = ::open(reachable.c_str(), O_WRONLY | O_NOCTTY | O_CLOEXEC);
+    if (writable < 0 && errno == ENOENT) {
+      return std::nullopt; // removed since the stat above
+    }
     if (writable < 0) {
       return cannot_open();
     }
@@ -225,6 +242,8 @@ plan_result check(const std::string& name, const std::vector<std::string>& trace
   if (const int readable = ::open(reachable.c_str(), O_RDONLY | O_NOCTTY | O_CLOEXEC); readable >= 0) {
     head = read_head(readable, std::size(signature));
     ::close(readable);
+  } else if (errno == ENOENT) {
+    return std::nullopt;
   } else if (reached.st_size != 0) {
     return cannot_read();
   }
@@ -234,12 +253,13 @@ plan_result check(const std::string& name, const std::vector<std::string>& trace
   if (!std::empty(*head) && *head != signature) {
     // /dev/fd/N, /dev/stdin and the like name an open descriptor, not a
     // trace path the optional value swallowed. (/dev/shm can hold traces.)
+    // After the run, a file that changed meanwhile was not swallowed either.
     const bool descriptor_name =
         name.rfind("/dev/fd/", 0) == 0 || name.rfind("/proc/", 0) == 0 || name == "/dev/stdin" || name == "/dev/stdout" || name == "/dev/stderr";
     return refuse(fmt::format("TOML output '{}' is not a ChampSim statistics document; refusing to replace it.{}", name,
-                              descriptor_name ? ""
-                                              : " If it is a trace, --toml took it as the output filename: use --toml=FILE, or put -- before the "
-                                                "trace paths."));
+                              descriptor_name || !probe ? ""
+                                                        : " If it is a trace, --toml took it as the output filename: use --toml=FILE, or put -- before "
+                                                          "the trace paths."));
   }
   return planned(write_mode::regular_file);
 }
@@ -247,7 +267,15 @@ plan_result check(const std::string& name, const std::vector<std::string>& trace
 
 namespace champsim::output
 {
-plan_result plan(const std::string& name, const std::vector<std::string>& traces) { return check(name, traces, true); }
+plan_result plan(const std::string& name, const std::vector<std::string>& traces)
+{
+  for (int attempt = 0; attempt < max_checks; ++attempt) {
+    if (auto checked = check(name, traces, true)) {
+      return *checked;
+    }
+  }
+  return plan_result{std::nullopt, fmt::format("cannot open '{}' to receive the TOML statistics: it kept changing while it was checked.", name)};
+}
 
 write_result write(const std::string& name, const std::vector<std::string>& traces, std::string_view document)
 {
@@ -257,14 +285,20 @@ write_result write(const std::string& name, const std::vector<std::string>& trac
     return result;
   };
 
-  // A name created by someone else between the check and the create is
-  // checked like any other existing file, once.
+  // A name created or removed by someone else between the check and the open
+  // is checked again, like any other change, a bounded number of times.
   for (int attempt = 0;; ++attempt) {
     const auto checked = check(name, traces, false);
-    if (!checked.planned) {
-      return fail(fmt::format("ERROR: {} The run completed, but the TOML statistics were not written.", checked.error));
+    if (!checked) {
+      if (attempt + 1 < max_checks) {
+        continue;
+      }
+      return fail(fmt::format("ERROR: '{}' kept changing while it was checked. The run completed, but the TOML statistics were not written.", name));
     }
-    const auto& destination = *checked.planned;
+    if (!checked->planned) {
+      return fail(fmt::format("ERROR: {} The run completed, but the TOML statistics were not written.", checked->error));
+    }
+    const auto& destination = *checked->planned;
 
     if (destination.mode == write_mode::standard_stream) {
       // After the plain report, which is still buffered in stdout.
@@ -294,7 +328,7 @@ write_result write(const std::string& name, const std::vector<std::string>& trac
       // or the directory's default ACL decides, as for any new file.
       descriptor = ::open(destination.path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOCTTY | O_CLOEXEC, 0666);
       open_error = descriptor < 0 ? errno : 0;
-      if (descriptor < 0 && open_error == EEXIST && attempt == 0) {
+      if (descriptor < 0 && open_error == EEXIST && attempt + 1 < max_checks) {
         continue;
       }
     }

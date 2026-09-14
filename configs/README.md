@@ -136,7 +136,8 @@ run.toml --toml run.toml` after a `config_hash` mismatch) leaves `run.toml`
 unchanged. After the run the output is checked again and the document is written
 in place: an existing file keeps its inode, hard links, owner, group, ACLs and
 permissions, and a new file gets default permissions. If that final write fails,
-the output may be empty or partial; the error says so and the run exits 1. A
+the output may be empty or partial; the error says so and the run exits 1. The
+write is not atomic: give concurrent runs distinct output names. A
 name that reaches standard output or standard error (`/dev/stdout`, or the log
 stdout is redirected to) receives the document on that stream, after the plain
 report. FIFOs and devices are written in place; a device that cannot be opened

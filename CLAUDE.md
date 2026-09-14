@@ -233,7 +233,10 @@ a missing one, including one removed during the run, is created
 owner, group, ACLs and permissions, and new files get what the umask or a
 default ACL gives any new file there. A failed open leaves the target untouched;
 a failure after the truncating open can leave it empty or partial, and says so.
-Every failure exits 1. `--knobs` never probes output paths. Full stdout with
+Every failure exits 1. The write is not atomic, so concurrent writers or readers
+of one name can see an empty or mixed document. A check that sees the name
+appear or vanish under it (another run's startup probe) repeats, up to 16
+times, instead of refusing. `--knobs` never probes output paths. Full stdout with
 unnamed `--toml` still contains progress/plain output before the TOML tail.
 See [the validation record](docs/ramulator2-validation.md) for evidence, limitations,
 the corrected default guard, and the recovered validation input incident. Portable

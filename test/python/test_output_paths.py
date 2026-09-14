@@ -487,6 +487,58 @@ class OutputPathTests(unittest.TestCase):
                     # The other name still holds the file that was removed from this one.
                     self.assertEqual(other.read_bytes(), earlier)
 
+    @unittest.skipUnless(os.path.isdir("/proc/self/fd"), "needs /proc to see when the run is under way")
+    def test_document_replaced_during_the_run_is_refused_without_the_startup_hint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.trace(tmp)
+            document = Path(tmp) / "run.toml"
+            first = self.simulate(tmp, document, instructions=500)
+            self.assertEqual(first.returncode, 0, first.stderr)
+
+            process = self.start_simulation(tmp, document, self.LONG_RUN)
+            try:
+                self.wait_until_simulating(process, tmp)
+                document.write_bytes(b"precious notes written during the run\n")
+                self.assertIsNone(process.poll(), "the run ended before the document was replaced")
+            finally:
+                result = self.finish(process)
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(document.read_bytes(), b"precious notes written during the run\n")
+            self.assertIn("not a ChampSim statistics document", result.stderr)
+            self.assertIn("The run completed, but the TOML statistics were not written.", result.stderr)
+            # Advice about a trace swallowed by --toml belongs to the startup check only.
+            self.assertNotIn("--toml=FILE", result.stderr)
+
+    def test_concurrent_runs_naming_one_new_output_are_not_refused_at_startup(self):
+        # Every run proves at startup that the new name can be created. Runs
+        # launched together must not mistake one another's proof for a refusal.
+        runs, rounds = 6, 8
+        with tempfile.TemporaryDirectory() as tmp:
+            trace = self.trace(tmp)
+            document = Path(tmp) / "shared.toml"
+            arguments = ["--trace-version", "2", "-w", "0", "--hide-heartbeat", "--toml", str(document), "--", *([str(trace)] * self.cores)]
+            refused = []
+            for round_index in range(rounds):
+                if document.exists():
+                    document.unlink()
+                start = threading.Barrier(runs)
+
+                def launch(index, results):
+                    start.wait()
+                    results[index] = subprocess.run([str(BINARY), "-i", str(1000 * (index + 1)), *arguments], cwd=tmp, capture_output=True, text=True,
+                                                    timeout=120)
+
+                results = [None] * runs
+                threads = [threading.Thread(target=launch, args=(index, results)) for index in range(runs)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join()
+                refused += [result.stderr for result in results if result.returncode != 0]
+                self.assertEqual(tomllib.loads(document.read_text())["meta"]["warmup_instructions"], 0)
+                self.assertEqual(sorted(path.name for path in Path(tmp).iterdir()), ["shared.toml", "trace.champsim2"], f"round {round_index}")
+            self.assertEqual(refused, [], f"{len(refused)} of {runs * rounds} concurrent runs failed")
+
     def strace_or_skip(self):
         strace = shutil.which("strace")
         if strace is None:

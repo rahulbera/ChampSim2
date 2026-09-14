@@ -404,9 +404,13 @@ new file's group, ACL or permissions, a refused long name or read-only
 directory) or a document it lost, so the rename was removed. The target is
 checked at startup without being modified, checked again after a successful
 run, and written in place: existing files keep their inode, links, owner, group,
-ACLs and permissions, and new files get default permissions. The one guarantee
-given up concerns a failure during that final write itself, such as a full
-disk: it can leave the target empty or partial, and the error says so. An
+ACLs and permissions, and new files get default permissions. Two guarantees are
+given up. A failure during that final write itself, such as a full disk, can
+leave the target empty or partial, and the error says so. And the write is not
+atomic: another run writing the same name at the same moment, or anyone reading
+it, can see an empty or mixed document. Runs launched together at one new name
+are not refused at startup, because each check repeats when the name appears
+or vanishes while it is being checked. An
 existing output that may be written but not read is accepted when empty and
 refused as unreadable otherwise. Tests use
 named `--toml FILE -- TRACE` arguments, scratch inputs and checksum checks. See the
