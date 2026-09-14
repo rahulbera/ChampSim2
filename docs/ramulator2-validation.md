@@ -288,19 +288,23 @@ the kernel, so those names are "cannot open", as they were at `74159f1e`.
 
 It refuses an input trace, a directory, and an existing non-empty regular file
 that does not begin with `# ChampSim statistics.`; an existing regular file must
-also open for writing. The file behind stdout or stderr (`/dev/stdout` redirected
-to a log, or the log's own name) receives the document on that stream after the
-plain report, keeping the log. A FIFO or process substitution is written in
-place without a startup open; a device or socket is written in place but must
-open at startup. A regular file or a new name is replaced by renaming a finished
-`.champsim-toml-<16 hex>.tmp` sibling over it after a successful run. A
-hard-linked file, one whose directory refuses that sibling at startup, and one
-whose owner, group or POSIX access ACL that sibling would not carry are written
-in place after the run. If the final rename fails, the target is written
-in place with a warning; if that fails too, the sibling is kept and named in the
-error. A run killed during the final write can leave the sibling. An existing
-statistics document named by mistake is still replaced, and none of this
-protects against concurrent path renames.
+also open for writing, and a non-empty one for reading (an empty one that cannot
+be read is accepted; a non-empty one is refused as "cannot read"). The file
+behind stdout or stderr (`/dev/stdout` redirected to a log, or the log's own
+name) receives the document on that stream after the plain report, keeping the
+log. A FIFO or process substitution is written in place without a startup open;
+a device or socket is written in place but must open at startup. A regular file
+or a new name is replaced by renaming a finished `.champsim-toml-<16 hex>.tmp`
+sibling over it after a successful run. A hard-linked file, one whose directory
+refuses that sibling at startup, and one whose owner, group or POSIX access ACL
+that sibling would not carry are written in place after the run. If the final
+rename fails, the target is written in place with a warning; if that fails too,
+the sibling is kept and named in the error, which says the target may now be
+empty or partial. Writing in place, fallbacks included, truncates the target
+first and does not preserve the earlier document when it fails. A run killed
+during the final write can leave the sibling. An existing statistics document
+named by mistake is still replaced, and none of this protects against concurrent
+path renames.
 
 ## Archived implementation rulings
 

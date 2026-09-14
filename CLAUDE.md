@@ -214,8 +214,11 @@ time and never folding `..` by text, so `missing/../x` is "cannot open" as in
 and an existing non-empty regular file that does not begin with
 `# ChampSim statistics.` (`toml_printer::document_signature`). That protects a
 trace the optional value swallowed when one path too many is given, a `--config`
-source, and the YAML. An existing regular file must also open for writing. Then
-the write mode, applied after the run:
+source, and the YAML. An existing regular file must also open for writing
+(without truncation), and its first bytes are read through a separate read-only
+open: an empty file that cannot be read is accepted, and a non-empty one is
+refused as "cannot read ... to check that it is a ChampSim statistics
+document". Then the write mode, applied after the run:
 - the inode behind stdout or stderr (`/dev/stdout`, `/proc/self/fd/1`, the log
   the shell redirected to): the document is appended to that stream after the
   plain report, and nothing is probed, renamed or truncated;
@@ -234,9 +237,14 @@ the write mode, applied after the run:
   a startup error or a failed write of the sibling leaves an earlier document
   intact. If the rename fails (as for a file bind-mounted into a container),
   the target is written in place with a warning, and if that fails too the
-  sibling is kept and named in the error. If the sibling cannot be created by
-  then, the target is written in place with a warning. A new name in a
-  directory that refuses the probe is "cannot open".
+  sibling is kept and named in the error, which says the target may now be
+  empty or partial. If the sibling cannot be created by then, the target is
+  written in place with a warning. A new name in a directory that refuses the
+  probe is "cannot open".
+
+Writing in place truncates a regular file before writing, in any mode and in
+both fallbacks, so a failure there does not preserve the earlier document; every
+failed in-place write says the target may now be empty or partial.
 
 Writing in place opens a name that existed at startup without `O_CREAT`, which
 `fs.protected_regular` refuses on another user's file in a sticky directory even
@@ -617,14 +625,14 @@ Four things about the numbers are easy to get wrong:
 ### The machine-readable stats document is TOML (`--toml`), not JSON
 
 `src/toml_printer.cc` emits the statistics document; `--json` is **rejected at
-startup** with an error pointing at `--toml`. `src/json_printer.cc` is still
-compiled and linked so it cannot rot silently; the CLI rejects it, while focused
-stream tests exercise native JSON compatibility. An unwritable `--toml` path is also
-rejected at startup, as is an existing non-empty regular file that is not a statistics
-document, and a failed write exits non-zero rather than reporting success; how each
-kind of target is written, and what a failure leaves, is described with `--toml`
-under *Optional native DRAM backend*. The format differs from the old JSON in ways
-that matter to a parser:
+startup** with an error pointing at `--toml`. `src/json_printer.cc` is still compiled
+and linked so it cannot rot silently; the CLI rejects it, while focused stream tests
+exercise native JSON compatibility. An unwritable `--toml` path is also rejected at
+startup, as is an existing non-empty regular file that is not a statistics document or
+cannot be read to check, and a failed write exits non-zero rather than reporting
+success; how each kind of target is written, and what a failure leaves, is described
+with `--toml` under *Optional native DRAM backend*. The format differs from the old
+JSON in ways that matter to a parser:
 
 - **`lower_snake_case` core/cache/legacy memory keys**, including lower-cased component names
   (`cpu0_l1d`, `llc`). A configured name that is not a bare TOML key is quoted,

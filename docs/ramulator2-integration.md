@@ -404,7 +404,11 @@ review found that the rename still gave a document a new file's group and
 dropped its access ACL; a file whose owner, group or access ACL a new sibling
 would not carry is now written in place. The sibling is also created with mode
 0600 and given its final permission bits before any content, and writing in
-place no longer asks to create a file that already exists. Tests use
+place no longer asks to create a file that already exists. Writing in place,
+fallbacks included, truncates first and so does not preserve an earlier document
+when it fails; those errors now say the target may be empty or partial. An
+existing output that may be written but not read is accepted when empty and
+refused as unreadable otherwise. Tests use
 named `--toml FILE -- TRACE` arguments, scratch inputs and checksum checks. See the
 [recovery record](ramulator2-validation.md#validation-input-incident-and-recovery)
 for the hash and original evidence.

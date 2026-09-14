@@ -260,19 +260,35 @@ plan_result plan(const std::string& name, const std::vector<std::string>& traces
   }
 
   if (exists) {
-    // A trace the optional value consumed, a --config source, the native
-    // YAML: none of them begins like a statistics document, and replacing any
-    // of them would be unrecoverable. Opening it for writing (without
-    // truncation) is also what refuses a read-only document.
-    const int descriptor = ::open(reachable.c_str(), O_RDWR | O_NOCTTY | O_CLOEXEC);
-    if (descriptor < 0) {
+    // Opening it for writing, without truncation, is what refuses a read-only
+    // document.
+    const int writable = ::open(reachable.c_str(), O_WRONLY | O_NOCTTY | O_CLOEXEC);
+    if (writable < 0) {
       return cannot_open();
     }
-    const auto& signature = champsim::toml_printer::document_signature;
-    const auto head = read_head(descriptor, std::size(signature));
-    ::close(descriptor);
-    if (!head) {
+    file_status opened{};
+    const bool described = ::fstat(writable, &opened) == 0;
+    ::close(writable);
+    if (!described) {
       return cannot_open();
+    }
+    // A trace the optional value consumed, a --config source, the native
+    // YAML: none of them begins like a statistics document, and replacing any
+    // of them would be unrecoverable. So its first bytes are read, through a
+    // separate open; only an empty file, with nothing to check, may refuse it.
+    const auto cannot_read = [&] {
+      return refuse(fmt::format("cannot read '{}' to check that it is a ChampSim statistics document.", name));
+    };
+    const auto& signature = champsim::toml_printer::document_signature;
+    std::optional<std::string> head{std::string{}};
+    if (const int readable = ::open(reachable.c_str(), O_RDONLY | O_NOCTTY | O_CLOEXEC); readable >= 0) {
+      head = read_head(readable, std::size(signature));
+      ::close(readable);
+    } else if (opened.st_size != 0) {
+      return cannot_read();
+    }
+    if (!head) {
+      return cannot_read();
     }
     if (!std::empty(*head) && *head != signature) {
       // /dev/fd/N, /dev/stdin and the like name an open descriptor, not a
@@ -335,6 +351,13 @@ write_result write(const target& destination, std::string_view document, const o
     result.messages.push_back(fmt::format("ERROR: failed to write the TOML statistics to '{}'.", destination.name));
     return result;
   };
+  // Writing in place truncates the target before any of the document is
+  // written, so its earlier contents do not survive a failure.
+  const auto failed_in_place = [&](int error) {
+    result.messages.push_back(
+        fmt::format("ERROR: failed to write the TOML statistics to '{}' in place ({}); it may now be empty or partial.", destination.name, describe(error)));
+    return result;
+  };
 
   if (destination.mode == write_mode::standard_stream) {
     // After the plain report, which is still buffered in stdout.
@@ -350,8 +373,8 @@ write_result write(const target& destination, std::string_view document, const o
   }
 
   if (destination.mode == write_mode::in_place) {
-    if (ops.write_in_place(destination.path, document, !destination.existed) != 0) {
-      return failed();
+    if (const int error = ops.write_in_place(destination.path, document, !destination.existed); error != 0) {
+      return failed_in_place(error);
     }
     result.written = true;
     return result;
@@ -364,8 +387,8 @@ write_result write(const target& destination, std::string_view document, const o
   if (temporary.descriptor < 0) {
     // The directory took a probe at startup but refuses a file now. Every
     // check writing in place needs has passed, and this is the only copy.
-    if (ops.write_in_place(destination.path, document, !destination.existed) != 0) {
-      return failed();
+    if (const int error = ops.write_in_place(destination.path, document, !destination.existed); error != 0) {
+      return failed_in_place(error);
     }
     result.messages.push_back(fmt::format("WARNING: could not create a temporary file beside '{}' ({}); wrote the TOML statistics in place instead.",
                                           destination.name, describe(temporary.error)));
@@ -402,9 +425,9 @@ write_result write(const target& destination, std::string_view document, const o
     result.written = true;
     return result;
   }
-  result.messages.push_back(fmt::format("ERROR: failed to write the TOML statistics to '{}': renaming failed ({}), and so did writing in place ({}). "
-                                        "The complete document is kept in '{}'.",
-                                        destination.name, describe(rename_error), describe(in_place_error), temporary.path.string()));
+  result.messages.push_back(fmt::format("ERROR: failed to write the TOML statistics to '{}': renaming failed ({}), and so did writing in place ({}), "
+                                        "so '{}' may now be empty or partial. The complete document is kept in '{}'.",
+                                        destination.name, describe(rename_error), describe(in_place_error), destination.name, temporary.path.string()));
   return result;
 }
 } // namespace champsim::output

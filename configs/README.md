@@ -135,7 +135,11 @@ unchanged. A regular output is then replaced by renaming a finished
 `.champsim-toml-<16 hex>.tmp` sibling over it; a hard-linked output, one in a
 directory where that sibling cannot be created, one whose owner, group or POSIX
 access ACL a new file there would not carry, and one whose rename fails are
-written in place instead. A run killed during that final write can leave the
+written in place instead. Writing in place, that fallback included, truncates
+the output first, so a failed in-place write does not preserve an earlier
+document, and its error says the output may now be empty or partial. An
+existing output must be writable, and a non-empty one readable, so that its
+first bytes can be checked. A run killed during that final write can leave the
 sibling behind. A name that reaches standard output or standard error
 (`/dev/stdout`, or the log stdout is redirected to) receives the document on
 that stream, after the plain report. FIFOs and devices are written in place; a

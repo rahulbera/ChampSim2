@@ -1,8 +1,10 @@
 #include <algorithm>
 #include <cerrno>
+#include <csignal>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <regex>
 #include <stdexcept>
 #include <string>
@@ -11,6 +13,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
+#include <sys/resource.h>
 #include <sys/stat.h>
 
 #include "output_target.h"
@@ -61,6 +64,27 @@ std::vector<std::string> names_in(const fs::path& directory)
   std::sort(std::begin(names), std::end(names));
   return names;
 }
+
+// While it lives, a write that would grow a regular file fails with EFBIG, as
+// on a full disk; opening and truncating still succeed.
+struct files_cannot_grow {
+  rlimit previous{};
+  void (*previous_handler)(int){};
+  files_cannot_grow()
+  {
+    REQUIRE(::getrlimit(RLIMIT_FSIZE, &previous) == 0);
+    previous_handler = std::signal(SIGXFSZ, SIG_IGN);
+    const rlimit none{0, previous.rlim_max};
+    REQUIRE(::setrlimit(RLIMIT_FSIZE, &none) == 0);
+  }
+  files_cannot_grow(const files_cannot_grow&) = delete;
+  files_cannot_grow& operator=(const files_cannot_grow&) = delete;
+  ~files_cannot_grow()
+  {
+    ::setrlimit(RLIMIT_FSIZE, &previous);
+    std::signal(SIGXFSZ, previous_handler);
+  }
+};
 
 bool is_temporary_name(const std::string& name) { return std::regex_match(name, std::regex{R"(\.champsim-toml-[0-9a-f]{16}\.tmp)"}); }
 
@@ -140,23 +164,25 @@ TEST_CASE("A --toml document whose rename fails is written in place instead, cre
   CHECK_THAT(result.messages.front(), Catch::Matchers::StartsWith("WARNING:") && Catch::Matchers::ContainsSubstring("in place"));
 }
 
-TEST_CASE("A --toml document that can be neither renamed nor written in place is kept beside the target")
+TEST_CASE("A --toml document that can be neither renamed nor written in place is kept beside a target that may now be empty")
 {
   scratch_directory scratch;
   const auto document = scratch.path / "run.toml";
   put(document, old_document);
   const auto destination = planned_target(document);
+  REQUIRE(destination.mode == write_mode::replace_by_rename);
 
+  // The real in-place write, failing after its open has truncated the target.
   auto ops = champsim::output::system_operations();
-  ops.rename = [](const fs::path&, const fs::path&) {
+  std::optional<files_cannot_grow> full_disk;
+  ops.rename = [&](const fs::path&, const fs::path&) {
+    full_disk.emplace();
     return EBUSY;
   };
-  ops.write_in_place = [](const fs::path&, std::string_view, bool) {
-    return EIO;
-  };
   const auto result = champsim::output::write(destination, new_document, ops);
+  full_disk.reset();
   REQUIRE_FALSE(result.written);
-  REQUIRE(contents(document) == old_document);
+  REQUIRE(contents(document).empty());
 
   const auto names = names_in(scratch.path);
   REQUIRE(std::size(names) == 2);
@@ -166,7 +192,59 @@ TEST_CASE("A --toml document that can be neither renamed nor written in place is
   REQUIRE(contents(kept) == new_document);
   REQUIRE(std::size(result.messages) == 1);
   CHECK_THAT(result.messages.front(), Catch::Matchers::StartsWith("ERROR:") && Catch::Matchers::ContainsSubstring(document.string())
+                                          && Catch::Matchers::ContainsSubstring("may now be empty or partial")
                                           && Catch::Matchers::ContainsSubstring(kept.string()));
+}
+
+TEST_CASE("A failed in-place --toml write says the target may now be empty or partial")
+{
+  scratch_directory scratch;
+  const auto document = scratch.path / "run.toml";
+  const auto other = scratch.path / "latest.toml";
+  put(document, old_document);
+  fs::create_hard_link(document, other);
+  const auto destination = planned_target(document);
+  REQUIRE(destination.mode == write_mode::in_place);
+
+  std::optional<files_cannot_grow> full_disk{std::in_place};
+  const auto result = champsim::output::write(destination, new_document);
+  full_disk.reset();
+  REQUIRE_FALSE(result.written);
+  REQUIRE(contents(document).empty());
+  REQUIRE(std::size(result.messages) == 1);
+  CHECK_THAT(result.messages.front(), Catch::Matchers::StartsWith("ERROR:") && Catch::Matchers::ContainsSubstring(document.string())
+                                          && Catch::Matchers::ContainsSubstring("may now be empty or partial"));
+}
+
+TEST_CASE("An existing --toml file that may be written but not read")
+{
+  if (::geteuid() == 0) {
+    SKIP("permissions do not bind the superuser");
+  }
+  scratch_directory scratch;
+  const auto document = scratch.path / "run.toml";
+
+  SECTION("is written when it is empty, which needs no read")
+  {
+    put(document, "");
+    fs::permissions(document, fs::perms::owner_write);
+    const auto destination = planned_target(document);
+    REQUIRE(champsim::output::write(destination, new_document).written);
+    REQUIRE((fs::status(document).permissions() & fs::perms::all) == fs::perms::owner_write);
+    fs::permissions(document, fs::perms::owner_read, fs::perm_options::add);
+    REQUIRE(contents(document) == new_document);
+  }
+
+  SECTION("is refused when it has contents that cannot be checked")
+  {
+    put(document, old_document);
+    fs::permissions(document, fs::perms::owner_write);
+    const auto planned = champsim::output::plan(document.string(), {});
+    REQUIRE_FALSE(planned.planned.has_value());
+    REQUIRE_THAT(planned.error, Catch::Matchers::Equals("cannot read '" + document.string() + "' to check that it is a ChampSim statistics document."));
+    fs::permissions(document, fs::perms::owner_read, fs::perm_options::add);
+    REQUIRE(contents(document) == old_document);
+  }
 }
 
 TEST_CASE("A --toml document whose directory stops taking new files during the run is written in place")
