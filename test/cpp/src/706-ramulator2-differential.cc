@@ -59,6 +59,7 @@
 #include <unistd.h>
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 #include <fmt/core.h>
 
 #include "channel.h"
@@ -1144,6 +1145,32 @@ public:
   std::string path() const { return path_.string(); }
 };
 } // namespace oracle706
+
+// Runs in every build, so a disabled build's `make test TEST_NUM=706` has a
+// case that is not skipped. The recovery campaign reads the adapter's
+// diagnostics through stdout_capture, and the smoke case's tiny variants come
+// from temporary_yaml.
+TEST_CASE("The differential oracle's stdout capture and fixture rewriting work in any build")
+{
+  for (int round = 0; round < 2; ++round) {
+    oracle706::stdout_capture capture;
+    fmt::print("captured {}\n", round);
+    std::fputs("through stdio\n", stdout);
+    REQUIRE(capture.text() == fmt::format("captured {}\nthrough stdio\n", round));
+  }
+  REQUIRE_THROWS_WITH(oracle706::temporary_yaml("configs/ramulator2/ddr4.yaml", {{"no_such_key: 1", "x"}}), Catch::Matchers::ContainsSubstring("has no"));
+  std::string path;
+  {
+    oracle706::temporary_yaml shrunk{"configs/ramulator2/ddr4.yaml", {{"read_buffer_size: 32", "read_buffer_size: 1"}}};
+    path = shrunk.path();
+    std::ifstream in(path);
+    const std::string text{std::istreambuf_iterator<char>{in}, {}};
+    REQUIRE(text.find("read_buffer_size: 1\n") != std::string::npos);
+    REQUIRE(text.find("read_buffer_size: 32") == std::string::npos);
+    REQUIRE(text.find("write_buffer_size: 32") != std::string::npos);
+  }
+  REQUIRE_FALSE(std::filesystem::exists(path));
+}
 
 TEST_CASE("The Ramulator2 adapter matches an independent model over the real native driver")
 {
