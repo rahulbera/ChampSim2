@@ -482,3 +482,19 @@ object lifetime; no broader rewrite is included in this pass. Preserve the raw
 results archive with the eventual review materials before deleting scratch
 checkouts: the source, tests and this log are tracked in Git, while raw evidence
 currently lives at the external path documented above.
+
+## Linux perf follow-up — 2026-09-15
+
+The [Linux perf investigation](2026-09-15-linux-perf-hotspots.md) profiles the
+unchanged final release with hardware counters and call stacks. All 42 collected
+simulation runs preserve reported-result parity; the main eight cycle profiles
+contain 67,113 samples with zero loss. It identifies cache iterator/helper costs,
+per-instruction trace-reader stack probing, register-query calls, nonzero DRAM
+swizzling on mcf, and remaining ROB scans.
+
+These are candidate targets, not applied optimizations. No new before/after KIPS
+gain is claimed. The recommended next patch isolates trace-refill stack work,
+followed by cache empty-work/iterator changes, with the same per-fix regression,
+fresh KIPS and commit-recording gates used above. The report and its portable JSON
+summary contain methods, ranges, source locations, proposed fixes and required
+regressions; raw evidence is in `champsim-perf-results/2026-09-15-perf/`.
