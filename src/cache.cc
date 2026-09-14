@@ -505,7 +505,9 @@ long CACHE::operate()
       champsim::bandwidth per_upper_tag_bw{std::min(per_upper_bandwidth, champsim::bandwidth::maximum_type{initiate_tag_bw.amount_remaining()})};
       auto bandwidth_consumed =
           champsim::transform_while_n(q.get(), std::back_inserter(inflight_tag_check), per_upper_tag_bw, can_translate, initiate_tag_check<true>(ul));
-      channels_bandwidth_consumed.push_back(bandwidth_consumed);
+      if constexpr (champsim::debug_print) {
+        channels_bandwidth_consumed.push_back(bandwidth_consumed);
+      }
       initiate_tag_bw.consume(bandwidth_consumed);
     }
   }
