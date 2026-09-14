@@ -170,3 +170,26 @@ instrumented. vcpkg's static libraries and libstdc++ are not instrumented.
 The instrumented library is much larger than the release one, and every driver
 construction fingerprints the loaded library, so tests that construct many
 drivers are noticeably slower in this mode.
+
+## Long native pauses and the no-progress guard
+
+`ddr4_nbl16384.py` is the DDR4 fixture with the burst length raised to 16384
+cycles; `ddr4_nbl16384.yaml` is its export from the pinned native revision
+(export it as the fixtures above are). A closed-row read then takes
+nRCD + nCL + nBL = 16416 cycles, 13.7 us at 833 ps, which is longer than the
+10 us that native mode's default `sim.deadlock_cycle` allows. The burst length
+is not a JEDEC timing.
+
+`test/python/test_ramulator2_cli.py` rewrites a generated trace so that the
+measured phase issues one page walk and read, and requires that the default
+guard aborts the run, that an explicit guard of four read latencies in the
+machine's ticks lets it finish, and that a guard a hundred times larger
+produces identical statistics. It runs in a few seconds and skips without a
+native build.
+
+The C++ test `707-ramulator2-clocks.cc` checks the global clock itself: an
+independent scheduling reference predicts the tick and time of every operation,
+native tick, submission, completion and response under dividing, non-dividing,
+equal and extreme core/cache/native period ratios, across empty,
+one-instruction and later warmup phases, with a fake driver and with the real
+DDR4 and LPDDR5 drivers.

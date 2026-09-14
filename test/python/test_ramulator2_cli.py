@@ -1,4 +1,5 @@
 """Runtime CLI regressions; run against CHAMPSIM_BINARY or the local build."""
+import math
 import os
 from pathlib import Path
 import re
@@ -28,6 +29,13 @@ def native_quantum(effective, tck):
     periods = [int(1e6 / entry['frequency']) for table in ('cache', 'ooo_cpu', 'ptw') for entry in effective[table].values()
                if isinstance(entry, dict) and 'frequency' in entry]
     return min([tck, *periods])
+
+
+def same_leaves(left, right):
+    """Type-exact comparison in which NaN equals NaN."""
+    if isinstance(left, dict):
+        return isinstance(right, dict) and left.keys() == right.keys() and all(same_leaves(value, right[key]) for key, value in left.items())
+    return type(left) is type(right) and (left == right or isinstance(left, float) and math.isnan(left) and math.isnan(right))
 
 
 def no_core_dump():
@@ -230,6 +238,71 @@ class RamulatorCliTests(unittest.TestCase):
                         self.assertEqual(tomllib.loads(result.stdout)['sim']['deadlock_cycle'], ticks)
                         # Warned exactly when the explicit ticks cover less than 10 us.
                         self.assertEqual(GUARD_WARNING in result.stderr, ticks * quantum < 10_000_000, result.stderr)
+
+    def test_native_valid_pause_longer_than_the_default_guard_passes_with_an_explicit_one(self):
+        # One read on this fixture takes 13.7 us, so the default guard aborts a
+        # correct run. An explicit guard computed from the YAML lets it finish,
+        # and a hundred times more changes no statistic.
+        self.native_settings()
+        fixture = ROOT / 'test' / 'ramulator2' / 'ddr4_nbl16384.yaml'
+        text = fixture.read_text()
+        read_latency = int(re.search(r'^\s*read_latency: ([0-9]+)$', text, re.MULTILINE).group(1))
+        tck = int(re.search(r'^\s*timing: \[.*, ([0-9]+)\]$', text, re.MULTILINE).group(1))
+        self.assertGreater(read_latency * tck, 10_000_000)
+        cores = self.cores()
+        native = ['dram-model=ramulator2', f'ramulator2.config={fixture}', 'sim.livelock_period=1000000000000']
+        for cpu in range(cores):
+            native += [f'ooo_cpu.cpu{cpu}.branch_predictor=hashed_perceptron', f'ooo_cpu.cpu{cpu}.btb=basic_btb']
+        effective = self.effective(*native)
+        quantum = native_quantum(effective, tck)
+        self.assertEqual(effective['sim']['deadlock_cycle'], max(500, -(-10_000_000 // quantum)))
+        # Four closed-row reads' worth of silence, in this machine's ticks.
+        explicit = -(-4 * read_latency * tck // quantum)
+        with tempfile.TemporaryDirectory() as tmp:
+            # Loads and stores stay inside one warmed page, except one load in
+            # the measured phase: its page walk and read are the only DRAM traffic.
+            generated = Path(tmp) / 'generated.champsim2'
+            generate(generated, 4096)
+            records = bytearray(generated.read_bytes())
+            for index in range(4096):
+                offset = index * 512 + (16 if index % 4 == 0 else 32)
+                address = 0x4000000 + index * 4096 if index == 1301 else 0x800000 + (index % 64) * 64
+                records[offset:offset + 8] = address.to_bytes(8, 'little')
+            trace = Path(tmp) / 'pause.champsim2'
+            trace.write_bytes(bytes(records))
+
+            def run(*settings, output=None):
+                command = [str(BINARY), '--trace-version', '2', '-w', '1000', '-i', '1000', '--hide-heartbeat']
+                for setting in (*native, *settings):
+                    command.extend(['--set', setting])
+                if output is not None:
+                    command.extend(['--toml', str(output)])
+                command.extend(['--', *([str(trace)] * cores)])
+                return subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=120, preexec_fn=no_core_dump)
+
+            aborted = run()
+            self.assertEqual(aborted.returncode, -signal.SIGABRT, aborted.stderr)
+            self.assertIn('DEADLOCK!', aborted.stdout)
+            last = [line for line in aborted.stdout.splitlines() if line.strip()][-1]
+            self.assertRegex(last, r'^  (No native completion yet|Last completion [0-9]+ ps ago)$')
+
+            documents = {}
+            for ticks in (explicit, 100 * explicit):
+                with self.subTest(guard=ticks):
+                    output = Path(tmp) / f'guard{ticks}.toml'
+                    result = run(f'sim.deadlock_cycle={ticks}', output=output)
+                    self.assertEqual(result.returncode, 0, result.stdout[-2000:] + result.stderr)
+                    self.assertNotIn(GUARD_WARNING, result.stderr)
+                    documents[ticks] = tomllib.loads(output.read_text())
+                    self.assertEqual(documents[ticks]['config']['sim']['deadlock_cycle'], ticks)
+            channel = documents[explicit]['phase']['simulation']['roi']['ramulator2']['native']['memory_system']['controller']['channel0']
+            # The measured phase did contain reads each longer than the default allowance.
+            self.assertGreater(channel['num_read_reqs_served'], 0)
+            self.assertGreater(channel['avg_read_latency'] * tck, 10_000_000)
+            self.assertTrue(same_leaves(documents[explicit]['phase'], documents[100 * explicit]['phase']))
+            for document in documents.values():
+                del document['config']['sim']['deadlock_cycle']
+            self.assertTrue(same_leaves(documents[explicit]['config'], documents[100 * explicit]['config']))
 
     def test_native_rejects_an_operable_clock_that_rounds_to_zero(self):
         result = self.knobs(*self.native_settings(), 'cache.llc.frequency=2000000')
