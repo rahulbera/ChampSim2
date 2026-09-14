@@ -28,6 +28,10 @@
 //   DIFF_MAX_BURST    maximum ordinary burst (24)
 //   DIFF_BACKLOG      pause the producer above this feeder backlog (160)
 //   DIFF_NO_DRAIN     1 = finalize with live native work instead of draining
+//   DIFF_OOR_PERCENT  share of packets that are PREFETCHes at or above native
+//                     capacity, in any queue (default 4). Nonzero also mixes
+//                     in-range PREFETCH packets into RQ and WQ; 0 reproduces
+//                     the first-wave evaluator's packet streams exactly.
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -38,6 +42,7 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -171,7 +176,7 @@ public:
 using request_type = champsim::channel::request_type;
 struct counters {
   uint64_t accepted_reads = 0, accepted_writes = 0, completed_reads = 0, completed_writes = 0;
-  uint64_t accepted_fragments = 0, completed_fragments = 0, rejected_submissions = 0;
+  uint64_t accepted_fragments = 0, completed_fragments = 0, rejected_submissions = 0, out_of_range_prefetches = 0;
   uint64_t outstanding_parents = 0, outstanding_fragments = 0, total_read_latency_ps = 0, read_latency_samples = 0;
   // Native-side cross-check: fragments accepted in this phase's window.
   uint64_t read_fragments = 0, write_fragments = 0;
@@ -185,7 +190,8 @@ struct parent_model {
   uint64_t block = 0;
   std::size_t fragments = 1;
   std::size_t accepted = 0, completed = 0;
-  bool created = false; // reached the head of its queue in a measured phase
+  bool created = false;      // reached the head of its queue in a measured phase
+  bool out_of_range = false; // a PREFETCH whose cache block is not wholly inside capacity
   uint64_t first_accept_op = 0;
   uint64_t first_accept_phase = 0;
   std::vector<bool> fragment_done{};
@@ -196,6 +202,8 @@ struct expected_response {
 };
 struct totals {
   uint64_t parents = 0, measured_parents = 0, attempts = 0, accepted = 0, rejected = 0, sync = 0, responses = 0, write_parents = 0, suppressed_reads = 0;
+  uint64_t oor_packets = 0, oor_responses = 0, oor_dropped = 0, oor_in_warmup = 0;
+  std::vector<uint64_t> oor_by_queue = std::vector<uint64_t>(3, 0);
   uint64_t warmup_responses = 0, warmup_dropped = 0, partial_rejects = 0, first_rejects = 0, carry_over_completions = 0, late_warmup_retained = 0;
   uint64_t max_backlog = 0, max_outstanding = 0, ops = 0, stats_checks = 0;
   uint64_t max_stall_ops_with_work = 0, stall_ops_current = 0;
@@ -214,6 +222,7 @@ struct config {
   uint64_t max_burst = 24;
   uint64_t backlog = 160;
   bool drain = true;
+  uint64_t oor_percent = 4;
 };
 
 class harness
@@ -316,13 +325,32 @@ public:
     return block + offset(rng);
   }
 
+  // A physical prefetcher's request past the top of native capacity: the
+  // first block past the end (next_line after the top frame), up to 256 blocks
+  // ahead (va_ampm_lite), anywhere above, or at the top of the address space.
+  uint64_t pick_out_of_range_address()
+  {
+    std::uniform_int_distribution<int> pct(0, 99);
+    std::uniform_int_distribution<uint64_t> offset(0, BLOCK_SIZE - 1);
+    const int choice = pct(rng);
+    if (choice < 40)
+      return capacity + offset(rng);
+    if (choice < 70)
+      return capacity + std::uniform_int_distribution<uint64_t>(1, 256)(rng) * BLOCK_SIZE + offset(rng);
+    if (choice < 85)
+      return std::uniform_int_distribution<uint64_t>(capacity, std::numeric_limits<uint64_t>::max())(rng);
+    return std::numeric_limits<uint64_t>::max() - offset(rng);
+  }
+
   void add_packet(bool measured)
   {
     std::uniform_int_distribution<int> pct(0, 99);
     const uint64_t id = next_id++;
     request_type r;
-    const auto address = pick_address();
-    prev_address = address;
+    const bool out_of_range = cfg.oor_percent != 0 && static_cast<uint64_t>(pct(rng)) < cfg.oor_percent;
+    const auto address = out_of_range ? pick_out_of_range_address() : pick_address();
+    if (!out_of_range)
+      prev_address = address;
     r.address = champsim::address{address};
     r.v_address = champsim::address{0x7f0000000000ULL + id * 64};
     r.data = champsim::address{id * 0x9e3779b97f4a7c15ULL};
@@ -334,6 +362,12 @@ public:
     const int qsel = pct(rng);
     const std::size_t queue = qsel < 45 ? 0 : (qsel < 65 ? 1 : 2);
     r.type = queue == 2 ? access_type::WRITE : (queue == 1 ? access_type::PREFETCH : (pct(rng) < 20 ? access_type::RFO : access_type::LOAD));
+    // The adapter's policy keys on the packet type, not the queue: a
+    // prefetch-as-load cache sends PREFETCH packets through RQ.
+    if (cfg.oor_percent != 0 && queue != 1 && pct(rng) < 10)
+      r.type = access_type::PREFETCH;
+    if (out_of_range)
+      r.type = access_type::PREFETCH;
     const std::size_t feeder = std::uniform_int_distribution<std::size_t>(0, cfg.feeders - 1)(rng);
     const bool ok = queue == 0 ? feeders[feeder].add_rq(r) : (queue == 1 ? feeders[feeder].add_pq(r) : feeders[feeder].add_wq(r));
     require(ok, [] { return std::string{"unbounded feeder rejected a packet"}; });
@@ -346,6 +380,8 @@ public:
     p.block = address - address % BLOCK_SIZE;
     p.fragments = fragments();
     p.fragment_done.assign(p.fragments, false);
+    // The documented range rule, applied by the model itself.
+    p.out_of_range = r.type == access_type::PREFETCH && (p.block >= capacity || BLOCK_SIZE > capacity - p.block);
     parents.emplace(id, std::move(p));
     queues[3 * feeder + queue].push_back(id);
     ++tot.parents;
@@ -418,6 +454,25 @@ public:
     while (!dq.empty()) {
       auto& p = parents.at(dq.front());
       if (!p.created) {
+        if (p.out_of_range) {
+          // In either phase: a requested read is answered at once with the
+          // original packet; a suppressed read or a write gets nothing. No
+          // parent, native attempt or latency sample; counted and progress.
+          if (!p.write && p.packet.response_requested) {
+            expected[p.feeder].push_back({p.id, p.packet});
+            ++tot.oor_responses;
+          } else {
+            ++tot.oor_dropped;
+          }
+          ++model.out_of_range_prefetches;
+          ++tot.oor_packets;
+          tot.oor_in_warmup += warmup;
+          ++tot.oor_by_queue.at(p.queue);
+          parents.erase(p.id);
+          dq.pop_front();
+          ++op_events;
+          continue;
+        }
         if (warmup) {
           // Fast warmup returns a requested read at once and drops the rest.
           if (!p.write && p.packet.response_requested) {
@@ -593,6 +648,7 @@ public:
     mismatch("accepted_fragments", s.accepted_fragments, c.accepted_fragments);
     mismatch("completed_fragments", s.completed_fragments, c.completed_fragments);
     mismatch("rejected_submissions", s.rejected_submissions, c.rejected_submissions);
+    mismatch("out_of_range_prefetches", s.out_of_range_prefetches, c.out_of_range_prefetches);
     mismatch("outstanding_parents", s.outstanding_parents, c.outstanding_parents);
     mismatch("outstanding_fragments", s.outstanding_fragments, c.outstanding_fragments);
     mismatch("total_read_latency_ps", s.total_read_latency_ps, c.total_read_latency_ps);
@@ -609,6 +665,7 @@ public:
     frozen.accepted_fragments = r.accepted_fragments;
     frozen.completed_fragments = r.completed_fragments;
     frozen.rejected_submissions = r.rejected_submissions;
+    frozen.out_of_range_prefetches = r.out_of_range_prefetches;
     frozen.outstanding_parents = r.outstanding_parents;
     frozen.outstanding_fragments = r.outstanding_fragments;
     frozen.total_read_latency_ps = r.total_read_latency_ps;
@@ -820,19 +877,23 @@ public:
 
   std::string summary() const
   {
-    std::string cpus;
-    for (auto count : tot.accepted_by_cpu)
-      cpus += (cpus.empty() ? "" : "/") + std::to_string(count);
+    const auto joined = [](const std::vector<uint64_t>& values) {
+      std::string text;
+      for (auto value : values)
+        text += (text.empty() ? "" : "/") + std::to_string(value);
+      return text;
+    };
     return fmt::format("seed={} yaml={} tx={} feeders={} ops={} parents={} measured={} writes={} suppressed={} attempts={} accepted={} rejected={} "
                        "first_rejects={} partial_rejects={} sync_callbacks={} responses={} warmup_responses={} warmup_dropped={} carry_over={} "
                        "late_warmup_retained_visits={} warmup_partial_head_visits={} boundary_partial_heads={} boundary_rejected_heads={} "
                        "boundary_live_parents={} teardown_live={} accepted_by_cpu={} max_backlog={} max_outstanding={} max_stall_ps_with_work={} "
-                       "stats_checks={}",
+                       "stats_checks={} oor_packets={} oor_responses={} oor_dropped={} oor_in_warmup={} oor_by_queue={}",
                        seed, cfg.yaml, tx, cfg.feeders, tot.ops, tot.parents, tot.measured_parents, tot.write_parents, tot.suppressed_reads, tot.attempts,
                        tot.accepted, tot.rejected, tot.first_rejects, tot.partial_rejects, tot.sync, tot.responses, tot.warmup_responses, tot.warmup_dropped,
                        tot.carry_over_completions, tot.late_warmup_retained, tot.warmup_partial_head_visits, tot.boundary_partial_heads,
-                       tot.boundary_rejected_heads, tot.boundary_live_parents, tot.teardown_live_parents, cpus, tot.max_backlog, tot.max_outstanding,
-                       tot.max_stall_ops_with_work * static_cast<uint64_t>(period), tot.stats_checks);
+                       tot.boundary_rejected_heads, tot.boundary_live_parents, tot.teardown_live_parents, joined(tot.accepted_by_cpu), tot.max_backlog,
+                       tot.max_outstanding, tot.max_stall_ops_with_work * static_cast<uint64_t>(period), tot.stats_checks, tot.oor_packets, tot.oor_responses,
+                       tot.oor_dropped, tot.oor_in_warmup, joined(tot.oor_by_queue));
   }
 };
 
@@ -850,6 +911,7 @@ config from_env()
   c.max_burst = env_u64("DIFF_MAX_BURST", 24);
   c.backlog = env_u64("DIFF_BACKLOG", 160);
   c.drain = env_u64("DIFF_NO_DRAIN", 0) == 0;
+  c.oor_percent = env_u64("DIFF_OOR_PERCENT", 4);
   return c;
 }
 
@@ -937,6 +999,12 @@ TEST_CASE("The Ramulator2 adapter matches an independent model over the real nat
       all.warmup_responses += h.tot.warmup_responses;
       all.boundary_live_parents += h.tot.boundary_live_parents;
       all.carry_over_completions += h.tot.carry_over_completions;
+      all.oor_packets += h.tot.oor_packets;
+      all.oor_responses += h.tot.oor_responses;
+      all.oor_dropped += h.tot.oor_dropped;
+      all.oor_in_warmup += h.tot.oor_in_warmup;
+      for (std::size_t q = 0; q < 3; ++q)
+        all.oor_by_queue[q] += h.tot.oor_by_queue[q];
     }
   }
   // The smoke case must keep exercising what it exists to check.
@@ -947,6 +1015,13 @@ TEST_CASE("The Ramulator2 adapter matches an independent model over the real nat
   CHECK(all.warmup_responses > 0);
   CHECK(all.boundary_live_parents > 0);
   CHECK(all.carry_over_completions > 0);
+  CHECK(all.oor_responses > 0);
+  CHECK(all.oor_dropped > 0);
+  CHECK(all.oor_in_warmup > 0);
+  CHECK(all.oor_packets > all.oor_in_warmup);
+  CHECK(all.oor_by_queue[0] > 0);
+  CHECK(all.oor_by_queue[1] > 0);
+  CHECK(all.oor_by_queue[2] > 0);
 }
 
 TEST_CASE("Differential campaign: production adapter over the real native driver", "[.differential]")
