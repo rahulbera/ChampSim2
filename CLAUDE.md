@@ -333,6 +333,9 @@ The fixed-mode tests are `test/cpp/src/601-fixed-ptw.cc` and
 The [performance investigation](docs/research-log/Performance/2026-09-14-fixed-ptw-hotspots.md)
 records the legacy-only Hermes comparison, validated stack/allocation profiles,
 modeling differences, and the proposed order of behavior-preserving optimizations.
+The [running optimization log](docs/research-log/Performance/2026-09-14-performance-optimization.md)
+records each retained optimization, changed files, commits, regression verdict,
+and paired KIPS measurements, along with the remaining validation limits.
 
 ### Tests
 

@@ -205,7 +205,7 @@ not continuous proof of exclusive use.
 
 
 **Evidence.** `03-bandwidth/{build.log,cpp-before.log,cpp-after.log,regression/,
-alloc-after/,symbols.txt,timing/,source-commit.txt,champsim}` beneath the common
+alloc-after/,symbols.txt,timing/,timing-cpu14/,source-commit.txt,champsim}` beneath the common
 root. Source-level neutrality still needs broader workload/compiler coverage
 before being treated as universal.
 
@@ -315,3 +315,72 @@ The small gain warrants quiet-host replication before relying on its exact size.
 
 **Evidence.** `05-lsq/{build.log,cpp-before.log,cpp-after.log,regression/,
 alloc-after/,timing/,source-commit.txt,champsim}` beneath the common root.
+
+## 6. Move consumed trace instructions through the frontend
+
+**Issue.** Branch-target assignment uses reverse `std::adjacent_difference`,
+which copies instruction objects and their operand vectors. The bulk reader and
+frontend also copy queue entries immediately before removing them. These copies
+allocate storage and move data without extending any instruction's useful lifetime.
+
+**Fix.** Visit adjacent instructions forward, moving the current instruction into
+the unchanged branch-target helper while reading the next instruction by reference.
+The helper reads only the next IP, so original adjacent pairs remain available;
+leave the final lookahead untouched. Move the consumed bulk-reader entry on return
+and the initialized input-queue entry into `IFETCH_BUFFER`. Keep branch prediction,
+warmup folding, stop-fetch decisions, queue removal and readiness timestamps in
+their original order. This relies on the current helper's read-only next-instruction
+contract and on no references being retained to the consumed queue entry.
+
+**Files touched.**
+
+1. `inc/tracereader.h`: remove branch-target copies and move the consumed reader
+   entry; include the iterator/move utilities explicitly.
+2. `src/ooo_cpu.cc`: move the initialized input-queue entry into the fetch buffer.
+3. `test/cpp/src/082-branch-targets.cc`: cover empty/singleton ranges and preservation
+   of an arbitrary final lookahead target.
+4. `test/cpp/src/087-tracereader-v2.cc`: check operands and targets over 260 records,
+   including taken branches at both refill boundaries; check optional payload fields
+   when compiled with `CHAMPSIM_TRACE_MEMORY_VALUES=1`.
+5. `docs/research-log/Performance/2026-09-14-performance-optimization.md`: record
+   checks, review correction and measurements; correct step 3's evidence reference.
+6. `CLAUDE.md`: link this running log for future project orientation.
+
+**Implementation commit.** `f7ee81b9da04de212f89972795b9cdb2e4c56f9a`.
+
+**Regression verdict.** The strengthened tests pass on both old and optimized
+implementations. The normal C++ suite passes **32,664 assertions, 871 cases, 7
+native skips**; the payload-enabled suite passes **34,757 assertions, 876 cases,
+7 native skips**. Their object roots and binaries are separate. Python passes
+**66 tests with 4 native skips**, and all **6 performance-tool tests** pass.
+All **16 paired workload cases / 32 runs** match complete reported statistics,
+effective configuration, and instruction/cycle counts. Review found the initial
+refill test lacked taken branches at its boundaries; records 126 and 253 now
+explicitly exercise nonzero targets from the next refill, and review confirmed
+the correction. No source blocker remains.
+
+The short allocation probe falls from **179,298 to 134,612 calls** (44,686 fewer,
+24.92%) while retaining the original pre-optimization statistics. The throughput
+runs use the normal, payload-disabled release build; payload coverage here is
+from the C++ suite, not a separate full-simulation timing campaign.
+
+**KIPS before/after.** CPU-14 medians of three paired 1M/3M runs; parentheses
+give minimum–maximum KIPS. All 24 timing runs pass the complete parity gate.
+
+| Trace | Before | After | Change |
+|---|---:|---:|---:|
+| sqlite | 282.50 (282.06–283.27) | 289.46 (289.25–291.28) | +2.46% |
+| omnetpp | 314.00 (312.79–314.85) | 321.04 (320.67–322.22) | +2.24% |
+| gcc | 376.51 (376.20–377.13) | 388.13 (387.05–388.61) | +3.09% |
+| mcf | 117.36 (115.94–117.46) | 119.07 (118.73–119.74) | +1.45% |
+
+**Retained: inert over the checked cases.** All 12 pairs favor the candidate.
+As with the small LSQ gain, quiet-host replication should precede reliance on
+its exact magnitude.
+
+**Evidence.** `06-trace/{build.log,test-build.log,payload-build.log,
+cpp-before-reviewed.log,payload-before-reviewed.log,cpp-after.log,payload-after.log,
+python-tests.log,perf-python-tests.log,regression/,alloc-after/,timing/,
+source-commit.txt,champsim}` beneath the common root. Earlier pre-review test logs
+are retained as well; the `*-before-reviewed.log` files contain the strengthened
+boundary tests against the old implementation.
