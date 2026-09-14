@@ -37,8 +37,8 @@ __attribute__((destructor)) static void report_counts(void)
     if (fd >= 0) {
         char buffer[100];
         int size = snprintf(buffer, sizeof buffer, "{\"allocation_calls\": %llu}\n", value);
-        if (size > 0 && (size_t)size < sizeof buffer)
-            (void)write(fd, buffer, (size_t)size);
+        if (size > 0 && (size_t)size < sizeof buffer && write(fd, buffer, (size_t)size) != size)
+            (void)unlink(path);
         close(fd);
     }
 }
