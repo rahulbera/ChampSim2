@@ -556,6 +556,11 @@ unsigned long DRAM_ADDRESS_MAPPING::swizzle_bits(champsim::address address, unsi
                                                  unsigned long field, unsigned long field_bits) const
 {
   champsim::address_slice row{get<SLICER_ROW_IDX>(address_slicer), address};
+  // A zero-width slice contributes zero to every XOR. Leave the legacy
+  // zero-step case unchanged; it needs a separate correctness fix.
+  if (field_bits == 0 && segment_size != 0) {
+    return field;
+  }
   unsigned long permute_field = field;
 
   for (champsim::dynamic_extent subextent{champsim::data::bits{0}, segment_size}; subextent.upper <= row.upper_extent();
