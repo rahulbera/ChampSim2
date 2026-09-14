@@ -16,7 +16,8 @@ not a proof covering every possible workload or configuration.
 Every simulation uses `dram-model=legacy`; release/test builds use
 `WITH_RAMULATOR2=0` and separate object directories. Primary KIPS measurements use
 **detailed PTW**, the same four protected traces and GLC comparison overlay as the
-initial investigation, 1M warmup + 3M ROI, three before/after repetitions, and CPU 8.
+initial investigation, 1M warmup + 3M ROI, three before/after repetitions, and a pinned CPU (8 for steps 1–2; 14 from
+step 3 onward, following the SMT-contention finding below).
 Order alternates within each pair. KIPS counts actual warmup plus ROI retirement
 over whole-process wall time. Builds and other experiments do not overlap timing.
 Record each pair's fresh baseline, rather than comparing against historical timing.
@@ -143,3 +144,67 @@ applies; confirm its size on a quiet machine.
 
 **Evidence.** `02-cycle/{build.log,cpp-before.log,cpp-reviewed.log,regression/,
 alloc-after/,timing/,source-commit.txt,champsim}` under the common evidence root.
+
+## 3. Inline small bandwidth-accounting helpers
+
+**Issue.** Tiny `bandwidth` operations are defined in a separate translation unit.
+Release assembly therefore pays function-call overhead for a comparison, load,
+subtraction or reset in cache and core loops, and the compiler cannot simplify the
+surrounding loops across those calls. The initial profiles attributed 9–15% of
+exclusive samples collectively to these helpers; that sampling share is not a
+prediction of achievable speedup.
+
+**Fix.** Put the small definitions in the class header and leave only construction
+of the exhaustion exception in an out-of-line private helper. Preserve signed
+accounting, underflow detection, the state update before an exception, its exact
+message, and reset behavior. Compiler flags and LTO settings are unchanged.
+
+**Files touched.**
+
+1. `inc/bandwidth.h`: inline constructor, consumption, predicates, accessors and
+   reset; declare the throwing slow-path helper and required header dependencies.
+2. `src/bandwidth.cc`: retain the original exception construction in that helper.
+3. `test/cpp/src/036-bandwidth.cc`: pin exception type/message, post-underflow state,
+   negative-consumption recovery and reset through the public API.
+4. `docs/research-log/Performance/2026-09-14-performance-optimization.md`: record
+   implementation and evidence.
+
+**Implementation commit.** `bb3f195720d134bd0d46a0f9649062234832f856`.
+
+**Regression verdict.** The added boundary test passes against the old helpers
+before implementation. The final C++ suite passes **17,068 assertions, 866 cases,
+7 native skips**. All **16 paired workload cases / 32 runs** preserve complete
+reported statistics, effective configuration, and instruction/cycle counts.
+Read-only review found no issue. The short allocation probe remains at 179,298
+calls with the original phase-statistics hash. `nm -C` now finds only
+`bandwidth::throw_exceeded` as an out-of-line bandwidth method in the release
+binary, confirming the small helpers were inlined in this build.
+
+**KIPS before/after.** A complete CPU-8 campaign passed all 24 parity checks but
+showed a late performance reversal on GCC and a simultaneous slowdown on mcf.
+A process observation confirmed another unpinned simulation executing on CPU 24,
+the SMT sibling of CPU 8. Its raw data are retained in `timing/`: median KIPS
+202.58→266.19 (SQLite), 221.78→287.17 (omnetpp), 271.09→343.57 (GCC),
+73.12→97.98 (mcf). GCC's candidate range is 229.81–345.85 and includes a slower
+individual pair. Those medians do not establish precise single-run gains.
+
+The complete CPU-14 repeat passes all 24 parity checks. Medians and ranges:
+
+| Trace | Before | After | Change |
+|---|---:|---:|---:|
+| sqlite | 208.80 (205.58–209.04) | 266.50 (266.48–266.69) | +27.64% |
+| omnetpp | 229.64 (228.73–230.58) | 293.57 (292.72–293.91) | +27.84% |
+| gcc | 281.11 (278.83–281.55) | 352.21 (352.07–353.93) | +25.29% |
+| mcf | 72.62 (72.24–72.92) | 100.50 (100.39–100.73) | +38.38% |
+
+**Retained: inert over all checked cases.** All 12 CPU-14 pairs favor the
+candidate. The repeated campaign has tighter ranges, but the host is still
+shared and the core is not reserved. A contemporaneous process snapshot found
+no other ChampSim process on CPU 14 or its sibling 30; this is an observation,
+not continuous proof of exclusive use.
+
+
+**Evidence.** `03-bandwidth/{build.log,cpp-before.log,cpp-after.log,regression/,
+alloc-after/,symbols.txt,timing/,source-commit.txt,champsim}` beneath the common
+root. Source-level neutrality still needs broader workload/compiler coverage
+before being treated as universal.
