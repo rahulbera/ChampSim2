@@ -240,16 +240,17 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 
     // An explicit value stays authoritative, but a short one is almost always
     // inherited rather than chosen: every legacy --knobs dump and statistics
-    // document records sim.deadlock_cycle = 500, and 500 ticks at 250 ps abort
-    // inside the first DDR4 refresh stall. Stderr, so --knobs stays TOML.
+    // document records the sim.deadlock_cycle its run used (500 by default),
+    // and 500 ticks at 250 ps abort inside the first DDR4 refresh stall.
+    // Stderr, so --knobs stays TOML.
     const auto applied_settings = runtime_cfg.applied();
     const bool explicit_deadlock_cycle =
         std::any_of(std::cbegin(applied_settings), std::cend(applied_settings), [](const auto& setting) { return setting.first == "sim.deadlock_cycle"; });
     if (native_allowance && explicit_deadlock_cycle && sim_knobs.deadlock_cycle < native_allowance->first) {
       fmt::print(stderr,
                  "WARNING: sim.deadlock_cycle = {} allows only {} ps without progress, less than the 10 us ramulator2 allowance ({} ticks, this machine's "
-                 "native default). The explicit value is kept. Legacy --knobs dumps and statistics documents record 500: remove sim.deadlock_cycle from "
-                 "a converted configuration, or raise it.\n",
+                 "native default). The explicit value is kept. Legacy --knobs dumps and statistics documents record the value they used (500 by default): "
+                 "remove sim.deadlock_cycle from a converted configuration, or raise it.\n",
                  sim_knobs.deadlock_cycle, (native_allowance->second * sim_knobs.deadlock_cycle).count(), deadlock_default);
     }
   } catch (const std::runtime_error& err) {

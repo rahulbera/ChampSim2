@@ -115,7 +115,8 @@ class RamulatorCliTests(unittest.TestCase):
                     self.assertIn(f'sim.deadlock_cycle = {ticks}', warnings[0])
                     self.assertIn(f'{ticks * 250} ps', warnings[0])
                     self.assertIn('40000', warnings[0])
-                    self.assertIn('500', warnings[0])
+                    # A legacy document records whatever value its run used, not always 500.
+                    self.assertIn('Legacy --knobs dumps and statistics documents record the value they used (500 by default)', warnings[0])
                     self.assertIn('remove', warnings[0])
                     self.assertNotIn(GUARD_WARNING, result.stdout)
 

@@ -145,7 +145,8 @@ phase changes preserve pending requests, and finalization adds no drain cycles.
 The default native no-progress allowance is 10 µs in actual simulator ticks;
 explicit `sim.deadlock_cycle` values remain authoritative, with a stderr warning
 when one allows less than 10 µs. Legacy `--knobs` dumps and statistics documents
-record 500, so remove the key along with `pmem.*` when converting one. See
+record the value they used (500 by default), so remove the key along with
+`pmem.*` when converting one. See
 [configuration examples](configs/README.md) and the
 [validation record](docs/ramulator2-validation.md) for counter units, transaction
 sizes, reproducibility limits, and the completed evidence.

@@ -250,7 +250,8 @@ is now `max(500, ceil(10 microseconds / minimum actual operable period))`:
 `sim.deadlock_cycle` settings remain authoritative. In native mode an explicit
 value whose ticks cover less than 10 µs prints one stderr warning naming the value,
 the stall it allows in picoseconds and this machine's native default, and saying
-that legacy configurations record 500; it is not changed. Idle native ticks do not
+that legacy configurations record the value they used (500 by default); it is not
+changed. Idle native ticks do not
 pretend to be progress. The 10 µs allowance is a practical default, not a bound
 derived from every possible native plugin/device pause.
 
