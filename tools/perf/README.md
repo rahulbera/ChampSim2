@@ -164,3 +164,24 @@ gprofng display text \
 
 The report and optimization order are in
 [the performance research log](../../docs/research-log/Performance/2026-09-14-fixed-ptw-hotspots.md).
+
+
+## Behavior-neutral optimization comparisons
+
+`compare_optimization.py --before BINARY --after BINARY --traces MANIFEST
+--config configs/champsim_config.toml --config configs/perf-hermes.toml
+--output NEW_DIRECTORY` runs paired detailed-PTW timings (1M/3M, three repetitions,
+CPU 8), rejecting any difference in complete phase statistics or effective config.
+`--regression --warmup 100000 --instructions 500000 --repetitions 1` additionally
+covers both PTW modes, changed seeds/clocks, prefetching and DRAM geometry; its
+short-run timings are not performance claims. Build and run these sequentially.
+
+`malloc_counts.c` is an optional Linux/glibc diagnostic interposer, compiled with
+`gcc -std=c11 -O2 -fPIC -shared tools/perf/malloc_counts.c -o /absolute/counter.so`.
+Set `LD_PRELOAD=/absolute/counter.so` and
+`CHAMPSIM_MALLOC_COUNTS=/absolute/new-file.json` for a single simulation. It counts
+malloc/calloc/realloc calls, including startup, and writes only a new output file.
+It uses glibc's internal allocation entry points, so it is not portable and is
+never loaded for reported KIPS measurements. Check phase parity with the
+uninstrumented run. The running optimization log records code revisions and each
+incremental before/after result.

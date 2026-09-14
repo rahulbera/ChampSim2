@@ -46,6 +46,8 @@ def command(args, variant, trace, run_dir):
     argv = [str(binary)]
     for config in args.config:
         argv += ["--config", str(config)]
+    for setting in getattr(args, "settings", []):
+        argv += ["--set", setting]
     argv += ["--set", "dram-model=legacy"]
     if variant != "baseline":
         argv += ["--set", f"ptw.cpu0_ptw.model={'fixed' if variant == 'fixed' else 'detailed'}"]
