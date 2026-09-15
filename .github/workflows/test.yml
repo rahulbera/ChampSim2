@@ -611,7 +611,8 @@ jobs:
         ./config.sh
         env -u CXXFLAGS -u CPPFLAGS -u LDFLAGS -u CFLAGS make -j6 all test/bin/000-test-main
 
-    # Suppressions cover only vendored ITTAGE; see test/ramulator2/README.md.
+    # Suppressions cover only vendored ITTAGE (the last step's file covers only
+    # the known native RITAddrMapper leak); see test/ramulator2/README.md.
     # Tests are selected by file tag, without hidden cases: the driver (704),
     # adapter (705), differential oracle smoke (706), global clock (707) and
     # lifecycle (708) tests, each of which must exist. Cases tagged
@@ -661,20 +662,19 @@ jobs:
 
     # The pinned native RITAddrMapper never frees the nested mapper it creates
     # (rit_addr_mapper.cpp:55 calls Factory::create_implementation without
-    # add_child). These cases build four such controllers, so after every
-    # assertion passes LeakSanitizer fails this step at exit, reporting 2,028
-    # bytes in 20 allocations. That is deliberately not suppressed: this step,
-    # and so the job, stays red until the leak is resolved, and the steps above
-    # are the sanitizer gate for everything else. Catch2 exits non-zero if the
-    # tag matches no test case.
-    - name: Run RITAddrMapper test cases under sanitizers (known native leak)
+    # add_child). These cases build four such controllers, which LeakSanitizer
+    # reports as 2,028 bytes in 20 allocations. lsan-rit.supp suppresses only
+    # allocations under RITAddrMapper::create_base_mapper, so any other leak in
+    # these cases still fails the step. Catch2 exits non-zero if the tag matches
+    # no test case.
+    - name: Run RITAddrMapper test cases under sanitizers (known native leak suppressed)
       if: ${{ !cancelled() && steps.build.outcome == 'success' }}
       env:
         CHAMPSIM_EXPECT_RAMULATOR2: "1"
       run: |
         export ASAN_OPTIONS=halt_on_error=1:detect_leaks=1
         export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1:suppressions=$PWD/test/ramulator2/sanitizers/ubsan.supp"
-        export LSAN_OPTIONS="suppressions=$PWD/test/ramulator2/sanitizers/lsan.supp"
+        export LSAN_OPTIONS="suppressions=$PWD/test/ramulator2/sanitizers/lsan-rit.supp"
         test/bin/000-test-main --order rand "[rit-addr-mapper]~[.]"
 
     - uses: actions/upload-artifact@v7

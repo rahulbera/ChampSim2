@@ -224,9 +224,9 @@ the mode is in the compiler stamp, the manifest and `meta.ramulator2.build`, so 
 flip rebuilds everything. Give it its own checkout and native root, and run with the
 options and ITTAGE-only suppressions in `test/ramulator2/README.md`. Pinned native
 `RITAddrMapper` leaks its nested mapper (2,028 bytes in 20 allocations from 704's
-`[rit-addr-mapper]` cases); it is deliberately unsuppressed, so the
-`native_sanitize` job runs those cases in a last step that fails until someone
-chooses an upstream fix, an approved suppression or `detect_leaks=0`. Every new case
+`[rit-addr-mapper]` cases). The `native_sanitize` job runs those cases in a last
+step with `test/ramulator2/sanitizers/lsan-rit.supp`, which suppresses only
+allocations under `RITAddrMapper::create_base_mapper`. Every new case
 that constructs a `RITAddrMapper` controller must carry that tag. LeakSanitizer
 never runs on the no-progress `abort()`, SIGTERM or SIGINT. Shared objects first
 built for the test binary (after `make test`, or with `test` named before `all`)
@@ -294,8 +294,8 @@ traces and the pinned native root, preserving the legacy compiler matrix.
 
 The [integration writeup](docs/ramulator-integration/ramulator2-integration.md) documents the architecture,
 the review and pre-merge close-out evidence with its limits, the status of every
-known weak point, and what remains before mainline integration (among it hosted CI,
-a clean-host reproduction and the `RITAddrMapper` leak decision).
+known weak point, and what remains before mainline integration (among it hosted CI
+and a clean-host reproduction).
 
 ### Tests
 

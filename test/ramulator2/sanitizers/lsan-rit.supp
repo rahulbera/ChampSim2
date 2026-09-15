@@ -1,0 +1,12 @@
+# LeakSanitizer suppression for the [rit-addr-mapper] test cases only.
+#
+# The native_sanitize job's last step uses this file instead of lsan.supp.
+# Pinned Ramulator 2.1 (72427a1b) RITAddrMapper::create_base_mapper()
+# (src/ramulator/controller/addr_mapper/impl/rit_addr_mapper.cpp:55) creates its
+# nested mapper through Factory::create_implementation without add_child, so
+# the mapper is never freed: a fixed amount per controller, once at
+# construction. Test 704's two tagged cases construct four such controllers,
+# reported as 2,028 bytes in 20 allocations. Only allocations made under that
+# function are suppressed; any other leak in these cases still fails the step.
+# Delete this file when the pin moves to a revision that frees the mapper.
+leak:RITAddrMapper::create_base_mapper
