@@ -86,9 +86,17 @@ policy). The scenario covers warmup with traffic, two measured phases around a
 zero-length one, staggered per-CPU ROI ends, a later warmup that must retain
 partial heads, and a drain or a finalization with live work.
 
-A non-hidden smoke case runs in every enabled `make test` (under a second):
+Before its first seed, each campaign run also checks the requests that must
+stop the run instead: invalid cores, including out-of-range PREFETCHes from
+one, and out-of-range load, RFO, translation and write requests, in warmup and
+a measured phase and from every queue, 46 cases each on a fresh adapter over
+the run's YAML. Each must fail with its reason before any native attempt or
+upstream response. Test 705 checks the same rule against a fake driver.
+
+A non-hidden smoke case runs in every enabled `make test` (about 1.3 seconds):
 DDR4, LPDDR5 and tiny-buffer fixtures, two seeds of 400 parents, one tiny
-variant with two feeders, and four recovery cycles on each tiny variant. It
+variant with two feeders, four recovery cycles on each tiny variant, and the
+invalid-request cases on both fixtures. It
 asserts that rejections, partial heads, synchronous callbacks, out-of-range
 responses and drops in every queue, and overloaded recovery cycles are still
 reached. Disabled builds compile it and skip.
@@ -149,7 +157,9 @@ Each mutant must be detected, except those marked equivalent: M12 flushes
 completions before popping a fully accepted head, which cannot change
 behavior because `all_accepted` is captured first and the parent reference is
 not used afterwards; M19 (every fragment sent as core 0) is equivalent below
-two cores. A detected equivalent mutant is reported as a false positive. Every
+two cores. M20-M26 break the out-of-range prefetch policy, M27-M29 break
+recovery (M28 in the native driver) and M30-M32 the validation in front of the
+policy; the rest are the first-wave evaluator's. A detected equivalent mutant is reported as a false positive. Every
 mutant pattern must occur exactly once in the current source; `test_tools.py`
 fails when one goes stale.
 

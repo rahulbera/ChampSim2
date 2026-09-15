@@ -110,6 +110,18 @@ MUTANTS = (
              "        if (!queue.write && it->response_requested) {\n          queue.returned->emplace_back(*it);\n        }\n"
              "        ++counters.out_of_range_prefetches;\n        ++progress;\n        it = queue.requests->erase(it);\n"
              "      } else {\n        ++it;\n      }\n    }\n    while (!queue.requests->empty()) {\n"),)),
+    # The validation in front of that policy: invalid cores and out-of-range
+    # non-PREFETCH requests stop the run in either phase.
+    Mutant("M30-oor-demand-answered", "answer or drop out-of-range load, RFO, write and translation requests like prefetches",
+           (("      if (packet.type == access_type::PREFETCH) {\n", "      if (packet.type != access_type::NUM_TYPES) {\n"),)),
+    Mutant("M31-oor-prefetch-skips-core-check", "answer an out-of-range prefetch from an invalid core instead of stopping",
+           (("    if (packet.cpu >= champsim::defs::num_cpus) {\n",
+             "    if (packet.cpu >= champsim::defs::num_cpus\n"
+             "        && !(packet.type == access_type::PREFETCH && packet.address.to<uint64_t>() >= static_cast<uint64_t>(capacity.count()))) {\n"),)),
+    Mutant("M32-warmup-skips-validation", "pop invalid requests in warmup instead of stopping",
+           (("        const auto block = validate(queue.requests->front());\n",
+             "        std::optional<uint64_t> block;\n        try {\n          block = validate(queue.requests->front());\n"
+             "        } catch (const std::runtime_error&) {\n          if (!warmup) {\n            throw;\n          }\n          block = 0;\n        }\n"),)),
     # Producer-pause recovery.
     Mutant("M27-stale-head-when-queue-empties", "keep a fully accepted head's id when its queue becomes empty",
            (("        queue.requests->pop_front();\n        queue.head.reset();\n",

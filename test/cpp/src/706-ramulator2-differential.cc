@@ -38,6 +38,10 @@
 // producer stops and the adapter operates until the model is quiescent (at
 // most DIFF_RECOVERY_LIMIT operates), for DIFF_CYCLES cycles (defaults 40, 48,
 // 4000000, 20). A new measured phase begins at every other quiescent point.
+//
+// Both campaigns first check, once per run, the requests that must stop the
+// run instead (check_invalid_requests): invalid cores and out-of-range
+// non-PREFETCH requests, in warmup and measured phases and every queue.
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -57,17 +61,20 @@
 #include <stdexcept>
 #include <string>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <fmt/core.h>
 
+#include "access_type.h"
 #include "channel.h"
 #include "defs.h"
 #include "operable.h"
 #include "ramulator2_driver.h"
 #include "ramulator2_memory_backend.h"
 #include "runtime_config.h"
+#include "util/to_underlying.h"
 
 namespace oracle706
 {
@@ -272,6 +279,7 @@ struct totals {
   uint64_t boundary_partial_heads = 0, boundary_rejected_heads = 0, boundary_live_parents = 0, warmup_partial_head_visits = 0, teardown_live_parents = 0;
   uint64_t requested_reads = 0; // response-requested packets outside WQ
   uint64_t recovery_cycles = 0, overloaded_cycles = 0, recovery_ops = 0, max_recovery_ops = 0, max_backlog_at_pause = 0, max_live_at_pause = 0;
+  uint64_t invalid_request_cases = 0;
   std::vector<uint64_t> accepted_by_cpu = std::vector<uint64_t>(champsim::defs::num_cpus, 0);
 };
 
@@ -891,6 +899,43 @@ public:
     require(log->callbacks_after_finalize == 0, [] { return std::string{"native callback after finalize"}; });
   }
 
+  // The documented validation in front of every queue policy: a packet from an
+  // invalid core, or a non-PREFETCH packet whose cache block is not wholly
+  // inside capacity, stops the run with an error in warmup and measured phases
+  // and from any queue. It is never submitted natively, never answered, and
+  // never handled as an out-of-range prefetch: an invalid core stops even a
+  // PREFETCH. The operate that throws is left unfinished, so this runs on a
+  // quiescent adapter that is only finalized or destroyed afterwards.
+  void expect_stopped(std::size_t queue, access_type type, uint64_t address, uint32_t cpu)
+  {
+    require(backlog() == 0 && parents.empty(), [] { return std::string{"an invalid request must be checked on a quiescent adapter"}; });
+    request_type r;
+    r.address = champsim::address{address};
+    r.v_address = champsim::address{address};
+    r.type = type;
+    r.cpu = cpu;
+    r.response_requested = true;
+    const bool ok = queue == 0 ? feeders[0].add_rq(r) : (queue == 1 ? feeders[0].add_pq(r) : feeders[0].add_wq(r));
+    require(ok, [] { return std::string{"unbounded feeder rejected a packet"}; });
+    const auto what = [&] {
+      return fmt::format("{} request in queue {} at {:#x} from core {}", access_type_names.at(champsim::to_underlying(type)), queue, address, cpu);
+    };
+    const auto start = log->events.size();
+    std::string message;
+    try {
+      memory()._operate();
+    } catch (const std::exception& error) {
+      message = error.what();
+    }
+    require(!message.empty(), [&] { return fmt::format("{} did not stop the run", what()); });
+    const std::string reason = cpu >= champsim::defs::num_cpus ? "core id" : "out of range";
+    require(message.find(reason) != std::string::npos, [&] { return fmt::format("{} stopped the run for another reason: {}", what(), message); });
+    for (auto i = start; i < log->events.size(); ++i)
+      require(log->events[i].what != kind::attempt_begin,
+              [&] { return fmt::format("{} reached the native driver as attempt {} before stopping: {}", what(), log->events[i].attempt, message); });
+    require(feeders[0].returned.empty(), [&] { return fmt::format("{} was answered before stopping: {}", what(), message); });
+  }
+
   // The differential scenario: warmup with traffic, two measured phases around
   // a zero-length phase, staggered per-CPU ROI ends, a later warmup that must
   // retain partial heads, then a drain (or finalization with live work).
@@ -1084,8 +1129,10 @@ public:
                        tot.boundary_rejected_heads, tot.boundary_live_parents, tot.teardown_live_parents, joined(tot.accepted_by_cpu), tot.max_backlog,
                        tot.max_outstanding, tot.max_stall_ops_with_work * static_cast<uint64_t>(period), tot.stats_checks, tot.oor_packets, tot.oor_responses,
                        tot.oor_dropped, tot.oor_in_warmup, joined(tot.oor_by_queue))
-           + fmt::format(" recovery_cycles={} overloaded_cycles={} recovery_ops={} max_recovery_ops={} max_backlog_at_pause={} max_live_at_pause={}",
-                         tot.recovery_cycles, tot.overloaded_cycles, tot.recovery_ops, tot.max_recovery_ops, tot.max_backlog_at_pause, tot.max_live_at_pause);
+           + fmt::format(" recovery_cycles={} overloaded_cycles={} recovery_ops={} max_recovery_ops={} max_backlog_at_pause={} max_live_at_pause={}"
+                         " invalid_request_cases={}",
+                         tot.recovery_cycles, tot.overloaded_cycles, tot.recovery_ops, tot.max_recovery_ops, tot.max_backlog_at_pause, tot.max_live_at_pause,
+                         tot.invalid_request_cases);
   }
 };
 
@@ -1109,6 +1156,52 @@ config from_env()
   c.burst_size = env_u64("DIFF_BURST_SIZE", 48);
   c.recovery_limit = env_u64("DIFF_RECOVERY_LIMIT", 4000000);
   return c;
+}
+
+// Every invalid request that must stop the run, in warmup and in a measured
+// phase, each on a fresh adapter over cfg's native YAML: out-of-range load,
+// RFO, translation and write requests at the first byte past capacity, 256
+// blocks past it and the top of the address space; and invalid cores sending
+// in-range demand requests and in-range or out-of-range prefetches. Throws
+// failure on the first discrepancy; returns the number of cases.
+uint64_t check_invalid_requests(config cfg)
+{
+  cfg.feeders = 1;
+  struct request_case {
+    std::size_t queue;
+    access_type type;
+    int address_class; // 0 top in-range block; 1 first byte past capacity; 2 256 blocks past; 3 top of the address space
+    uint32_t cpu;
+  };
+  std::vector<request_case> cases;
+  const uint32_t valid_core = static_cast<uint32_t>(champsim::defs::num_cpus - 1);
+  for (const auto& [queue, type] : std::vector<std::pair<std::size_t, access_type>>{
+           {0, access_type::LOAD}, {0, access_type::RFO}, {0, access_type::TRANSLATION}, {1, access_type::LOAD}, {2, access_type::WRITE}}) {
+    for (int address_class = 1; address_class <= 3; ++address_class)
+      cases.push_back({queue, type, address_class, valid_core});
+  }
+  for (const uint32_t cpu : {static_cast<uint32_t>(champsim::defs::num_cpus), std::numeric_limits<uint32_t>::max()}) {
+    cases.push_back({0, access_type::LOAD, 0, cpu});
+    cases.push_back({1, access_type::PREFETCH, 0, cpu});
+    cases.push_back({1, access_type::PREFETCH, 1, cpu});
+    cases.push_back({2, access_type::PREFETCH, 3, cpu});
+  }
+  uint64_t checked = 0;
+  for (const bool warmup : {true, false}) {
+    for (const auto& c : cases) {
+      harness h{cfg, ++checked};
+      try {
+        h.begin(warmup, warmup ? "warmup" : "measured");
+        const uint64_t addresses[] = {h.capacity - BLOCK_SIZE, h.capacity + 17, h.capacity + 256 * BLOCK_SIZE + BLOCK_SIZE - 1,
+                                      std::numeric_limits<uint64_t>::max()};
+        h.expect_stopped(c.queue, c.type, addresses[c.address_class], c.cpu);
+      } catch (const failure& error) {
+        // The harness names the case number where it would name a seed.
+        throw failure(fmt::format("invalid-request case {} of {}: {}", checked, 2 * cases.size(), error.what()));
+      }
+    }
+  }
+  return checked;
 }
 
 // A native fixture with its buffers shrunk, written to a unique temporary file.
@@ -1275,6 +1368,22 @@ TEST_CASE("The Ramulator2 adapter matches an independent model over the real nat
   CHECK(recovery.overloaded_cycles == 12);
   CHECK(recovery.max_backlog_at_pause > 100);
   CHECK(recovery.oor_packets > 0);
+
+  // Requests that must stop the run, over both fixtures' capacities.
+  for (const auto& v : variants) {
+    if (v.feeders != 1 || v.name.find("tiny") != std::string::npos)
+      continue;
+    CAPTURE(v.name);
+    oracle706::config cfg;
+    cfg.yaml = v.yaml;
+    cfg.tx = v.tx;
+    cfg.period = v.period;
+    try {
+      CHECK(oracle706::check_invalid_requests(cfg) == 46);
+    } catch (const oracle706::failure& error) {
+      FAIL(error.what());
+    }
+  }
 }
 
 namespace oracle706
@@ -1293,6 +1402,9 @@ unsigned campaign(const config& cfg, void (harness::*scenario)())
     try {
       harness h{cfg, seed};
       try {
+        // Once per run: the requests that must stop it, over the same YAML.
+        if (seed == seed0)
+          h.tot.invalid_request_cases = check_invalid_requests(cfg);
         (h.*scenario)();
       } catch (const failure& error) {
         verdict = std::string{"FAIL "} + error.what();
