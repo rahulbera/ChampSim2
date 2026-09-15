@@ -327,6 +327,32 @@ int main() {
                 self.assertNotEqual(result.returncode, 0, result.stdout)
                 self.assertIn('policy option', result.stderr)
 
+    def test_grouped_short_linker_options_are_rejected(self):
+        groups = {a + b for a in 'sSxX' for b in 'sSxX'}
+        groups |= {'s' + other for other in 'dEgMnNqritvV()'}
+        groups |= {other + 'S' for other in 'dEgMnNqritvV()'}
+        groups |= {'qSx', 'sSxX', 'sssss'}
+        for group in sorted(groups):
+            with self.subTest(group=group):
+                result = self.make('release', 'LDFLAGS=-Wl,-' + group, ok=False)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn('grouped short linker policy option', result.stderr)
+        (self.root / 'grouped-inner.options').write_text('-Wl,-qSx\n')
+        (self.root / 'grouped-outer.options').write_text('@grouped-inner.options\n')
+        result = self.make('release', 'LDFLAGS=@grouped-outer.options', ok=False)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn('grouped short linker policy option', result.stderr)
+
+    def test_single_dash_long_linker_options_remain_supported(self):
+        flags = 'LDFLAGS=-Wl,-rpath,/tmp/fixture-xs,-soname,champsim-fixture,-init,_init,-discard-none,-no-strip-discarded'
+        self.make('release', flags)
+        binary = self.paths(flags)['binary']
+        self.assertIn('assertions=1', self.execute(binary))
+        if shutil.which('readelf'):
+            sections = subprocess.check_output(['readelf', '-SW', binary], text=True)
+            self.assertIn('.debug_info', sections)
+            self.assertIn('.symtab', sections)
+
     def test_empty_macro_definitions_cannot_swallow_following_values(self):
         wrapper = self.root / 'empty-macro-driver'
         wrapper.write_text('''#!/usr/bin/env python3

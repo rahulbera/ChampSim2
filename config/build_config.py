@@ -78,6 +78,10 @@ def validate_flags(tokens):
         # preserving --discard-none and --no-strip-discarded.
         strip_short = ('-s', '-S', '-x', '-X') if forwarded else ('-s', '-S')
         for word in linker_words:
+            # GNU ld accepts deprecated groups of argumentless short options.
+            # Recognize that grammar, not arbitrary single-dash long names.
+            if forwarded and re.fullmatch(r'-[dEgMnNqrisStvVxX()]{2,}', word) and any(c in word[1:] for c in 'sSxX'):
+                raise ValueError(f'unsupported grouped short linker policy option: {token}')
             name = word.lstrip('-').partition('=')[0] if word.startswith('-') else ''
             strip_long = ('strip-all', 'strip-debug', 'strip-discarded', 'discard-all', 'discard-locals', 'retain-symbols-file')
             if word in strip_short or (len(name) >= 3 and any(option.startswith(name) for option in strip_long)) or name.startswith('non_global_symbols_'):
