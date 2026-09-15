@@ -8,6 +8,26 @@
 TEST_CASE("A DRAM controller rejects capacity outside its signed byte representation")
 {
   if constexpr (std::numeric_limits<std::size_t>::digits == 64) {
+    const auto largest_representable = [] {
+      return MEMORY_CONTROLLER{champsim::chrono::picoseconds{3200},
+                               champsim::chrono::picoseconds{6400},
+                               18,
+                               18,
+                               18,
+                               38,
+                               champsim::chrono::microseconds{64000},
+                               {},
+                               64,
+                               64,
+                               1,
+                               champsim::data::bytes{8},
+                               std::size_t{1} << 44,
+                               1024,
+                               1,
+                               8,
+                               4,
+                               8192};
+    };
     const auto construct = [] {
       return MEMORY_CONTROLLER{champsim::chrono::picoseconds{3200},
                                champsim::chrono::picoseconds{6400},
@@ -21,13 +41,14 @@ TEST_CASE("A DRAM controller rejects capacity outside its signed byte representa
                                64,
                                1,
                                champsim::data::bytes{8},
-                               1ul << 45,
+                               std::size_t{1} << 45,
                                1024,
                                1,
                                8,
                                4,
                                8192};
     };
+    CHECK_NOTHROW(largest_representable());
     CHECK_THROWS_WITH(construct(), "DRAM address mapping capacity is not representable");
   }
 }

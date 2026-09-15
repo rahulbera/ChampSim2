@@ -343,11 +343,12 @@ struct zstd_tag_t {
     // limit to whatever this build of zstd allows. ZSTD_WINDOWLOG_MAX itself is
     // behind ZSTD_STATIC_LINKING_ONLY, so query the bound instead.
     const auto bounds = ::ZSTD_dParam_getBounds(ZSTD_d_windowLogMax);
-    if (::ZSTD_isError(bounds.error) == 0U) {
-      const auto ret = ::ZSTD_DCtx_setParameter(state->dctx, ZSTD_d_windowLogMax, bounds.upperBound);
-      if (::ZSTD_isError(ret) != 0U) {
-        throw std::runtime_error{"zstd decompression initialization failed: " + std::string{::ZSTD_getErrorName(ret)}};
-      }
+    if (::ZSTD_isError(bounds.error) != 0U) {
+      throw std::runtime_error{"zstd decompression initialization failed while querying the window bound: " + std::string{::ZSTD_getErrorName(bounds.error)}};
+    }
+    const auto ret = ::ZSTD_DCtx_setParameter(state->dctx, ZSTD_d_windowLogMax, bounds.upperBound);
+    if (::ZSTD_isError(ret) != 0U) {
+      throw std::runtime_error{"zstd decompression initialization failed: " + std::string{::ZSTD_getErrorName(ret)}};
     }
     return state;
   }
@@ -370,14 +371,23 @@ struct inf_istream {
 
     std::array<strm_in_buf_type, CHUNK> in_buf;
     std::array<char_type, CHUNK> out_buf;
-    typename Tag::inflate_state_type strm = Tag::new_inflate_state();
     typename std::add_pointer<IStrm>::type src;
     std::string source_label;
+    typename Tag::inflate_state_type strm;
     bool physical_eof = false;
     bool clean_end = false;
 
+    static typename Tag::inflate_state_type make_inflate_state(const std::string& label)
+    {
+      try {
+        return Tag::new_inflate_state();
+      } catch (const std::exception& err) {
+        throw std::runtime_error{"trace '" + label + "': " + Tag::name + " decompression initialization failed: " + err.what()};
+      }
+    }
+
   public:
-    explicit inf_streambuf(IStrm* in, std::string label) : src(in), source_label(std::move(label)) {}
+    explicit inf_streambuf(IStrm* in, std::string label) : src(in), source_label(std::move(label)), strm(make_inflate_state(source_label)) {}
     explicit inf_streambuf(Tag /*tag*/, IStrm* in, std::string label) : inf_streambuf(in, std::move(label)) {}
 
     [[nodiscard]] std::size_t bytes_read() const { return strm->total_out - (this->egptr() - this->gptr()); }

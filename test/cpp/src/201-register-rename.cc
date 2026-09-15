@@ -312,6 +312,7 @@ TEST_CASE("Register allocator construction rejects unusable physical-file sizes"
 {
   REQUIRE_THROWS_WITH(RegisterAllocator{0}, Catch::Matchers::ContainsSubstring("between 1"));
   REQUIRE_THROWS_WITH(RegisterAllocator{32768}, Catch::Matchers::ContainsSubstring("32767"));
+  REQUIRE_NOTHROW(RegisterAllocator{32767});
 }
 
 SCENARIO("The register allocator public queries preserve mapping and physical-file state.")

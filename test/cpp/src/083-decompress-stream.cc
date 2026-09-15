@@ -91,6 +91,25 @@ const std::string empty_xz{{'\xfd', '\x37', '\x7a', '\x58', '\x5a', '\x00', '\x0
                             '\x1c', '\xdf', '\x44', '\x21', '\x1f', '\xb6', '\xf3', '\x7d', '\x01', '\x00', '\x00', '\x00', '\x00', '\x04', '\x59', '\x5a'}};
 const std::string empty_zstd{{'\x28', '\xb5', '\x2f', '\xfd', '\x24', '\x00', '\x01', '\x00', '\x00', '\x99', '\xe9', '\xd8', '\x51'}};
 
+struct failing_init_tag {
+  using in_char_type = unsigned char;
+  using out_char_type = unsigned char;
+  struct state_type {
+    const in_char_type* next_in = nullptr;
+    std::size_t avail_in = 0;
+    out_char_type* next_out = nullptr;
+    std::size_t avail_out = 0;
+    std::size_t total_out = 0;
+  };
+  using inflate_state_type = std::unique_ptr<state_type>;
+  using status_type = champsim::decomp_tags::status_t;
+  static constexpr const char* name = "test-codec";
+  static constexpr bool supports_concatenation = false;
+
+  static champsim::decomp_tags::inflate_result inflate(inflate_state_type&) { return {status_type::ERROR, "unused"}; }
+  static inflate_state_type new_inflate_state() { throw std::runtime_error{"injected initialization failure"}; }
+};
+
 std::string compress_gzip(const std::string& plain)
 {
   z_stream state{};
@@ -179,6 +198,15 @@ TEST_CASE("Compressed streams validate their clean end and accept an empty conta
     REQUIRE(inflate_past_end<champsim::decomp_tags::zstd_tag_t>(zstd_cyphertext, "zstd-valid") == plaintext);
     REQUIRE(inflate_past_end<champsim::decomp_tags::zstd_tag_t>(empty_zstd, "zstd-empty").empty());
   }
+}
+
+TEST_CASE("Decoder initialization failures retain their source and codec")
+{
+  const auto construct = [] {
+    return champsim::inf_istream<failing_init_tag, std::istringstream>{std::istringstream{}, "named-input"};
+  };
+  REQUIRE_THROWS_WITH(construct(), Catch::Matchers::ContainsSubstring("named-input") && Catch::Matchers::ContainsSubstring("test-codec")
+                                       && Catch::Matchers::ContainsSubstring("injected initialization failure"));
 }
 
 TEST_CASE("Compressed streams decode across output-buffer boundaries")

@@ -275,7 +275,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
                  "remove sim.deadlock_cycle from a converted configuration, or raise it.\n",
                  sim_knobs.deadlock_cycle, (native_allowance->second * sim_knobs.deadlock_cycle).count(), deadlock_default);
     }
-  } catch (const std::runtime_error& err) {
+  } catch (const std::exception& err) {
     fmt::print(stderr, "ERROR: {}\n", err.what());
     return 1;
   }
