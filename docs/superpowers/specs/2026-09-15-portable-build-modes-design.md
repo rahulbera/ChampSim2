@@ -176,8 +176,14 @@ Validate in stages, preserving a build of the pre-change source and its flags:
 Retain commands, compiler and library identities, CPU/OS details, binary hashes,
 traces, configuration, results, and timing data. Log implementation sections,
 files, commit hashes, parity verdicts, and before/after KIPS in
-`docs/research-log/Performance/2026-09-14-performance-optimization.md` as requested.
+`docs/research-log/Performance/2026-09-15-build-optimization.md` as requested for
+the new campaign. The preceding source-optimization log remains unchanged.
 That log must distinguish prospective validation from completed evidence.
+
+The user authorized starting the campaign with v2, followed by progressive v3
+and resolved ETH-headnode-native experiments. Each candidate must pass the same
+regression and performance gate before adoption. Record native expansion and
+destination-node compatibility explicitly; the portable default remains v2.
 
 ## Cluster reconnaissance: 2026-09-15
 
