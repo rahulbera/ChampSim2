@@ -879,10 +879,9 @@ remain unknown without separate provenance. The existing GCC 13 test 183
 `-Wnonnull` diagnostic and GCC 11 `-O3 -g3` compile cost remain documented
 investigations, not suppressed or solved issues.
 
-The 26 campaign decisions and tradeoffs are indexed by `final-rulings.md` at the
-evidence root. Final whole-campaign code/evidence review and SDD archival remain
-controller-owned and intentionally open in the plan. The local branch and raw
-evidence are retained; nothing was pushed, merged, or cleaned up.
+At this initial closeout, the 26 decisions were indexed by `final-rulings.md`
+at the evidence root and final review remained open. Section 8 records the
+subsequent correction and final approval. The original receipts remain intact.
 
 
 ## 8. Reject untracked explicit linker inputs
@@ -890,7 +889,7 @@ evidence are retained; nothing was pushed, merged, or cleaned up.
 **Issue.** Final whole-campaign review I1 found that bare filenames and `-Wl,`
 filenames bypassed the explicit-script guard. A script named like an object can
 introduce `INPUT` or `GROUP` children whose contents are absent from the policy
-fingerprint. Real Make fixtures retained `core=42` after recompiling only the
+fingerprint, consistent with [GNU ld’s documented implicit-script behavior](https://sourceware.org/binutils/docs/ld/Implicit-Linker-Scripts.html). Real Make fixtures retained `core=42` after recompiling only the
 child to return 43, with unchanged policy path, binary hash and timestamp. Direct
 forwarded objects had the same stale-input defect. This establishes stale reuse;
 silent debug-symbol stripping was not reproduced. Review M2 also identified an
@@ -915,10 +914,13 @@ native oracle and its log/manifest artifact paths.
 3. `CLAUDE.md`: document supported library, linker-operand and wrapper boundaries.
 4. This campaign log: correct M2, preserve initial closeout as historical and
    record this separate final-review correction.
+5. `docs/superpowers/plans/2026-09-15-build-optimization.md`: record completion of
+   the final review and its correction gate.
 
 **Commit hashes.** Correction follows review baseline
-`dc0c95e131a7b06d940714bd10682f77c1f92421`; the exact correction commit is recorded
-in `07-final-review/fix/final-fix-report.md`. The measured named candidates retain
+`dc0c95e131a7b06d940714bd10682f77c1f92421`; the correction is
+`97ed44d790caeef63c19e81d02fd95aa885df5e9`. The complete implementation report is
+`07-final-review/fix/final-fix-report.md`. The measured named candidates retain
 production source `d71de93c` and helper
 `3e2831c65498c7e8b3b96cdddc308ca246c8c49aec0bf013113dc97ba83a088c`.
 They have not been rebuilt or relabeled as products of the new helper.
@@ -949,11 +951,29 @@ library. Earlier incremental timing tables retain their original scope.
 `07-final-review/fix/`, especially `red-stale-input-proof.json`,
 `green-stale-input-proof.json`, `reconciliation.json`, and the final fix report.
 `07-final-review/final-rulings.md` records the follow-up ruling;
-`06-closeout/` and the original ledger receipts remain immutable. Final scoped
-re-review remains the controller's gate. Existing limits remain: unknown external
+`06-closeout/` and the original ledger receipts remain immutable. The final
+scoped re-review approves Task 6 specification compliance, quality and campaign
+readiness, with no open Critical or Important finding. Existing limits remain: unknown external
 library ISA and unresolved compiler/system library identity, unvalidated Darwin/
 Arm hardware, synthetic older-GCC fallback coverage, ETH codec rather than full
 SPEC/KIPS coverage, six cancelled node allocations, and native evidence from its
 preserved earlier helper reconciled through the recorded guard changes. M1's
 GCC 13 O3 test-183 diagnostic remains unsuppressed and nonblocking; the existing
 focused sanitizer result found no invalid memory access.
+
+
+**Final review and preservation.** The broad review is preserved as
+`task-6-final-review.md` at the evidence root; the approved scoped re-review is
+`task-6-final-rereview.md`. The latter independently checks all 28 complete policy
+comparisons, 60 pairs of actual macro outputs, 506 unchanged source files,
+21 log hashes, 11 artifact hashes, and the stale-input red/green behavior.
+The known test-183 diagnostic remains explicitly nonblocking; it is not reported
+as fixed. All plan stages are complete within the documented x64 scope.
+
+The final 27 execution decisions and their tradeoffs are preserved in
+`07-final-review/final-rulings.md`. Full working review records are archived under
+`sdd-archive/2026-09-15-build-optimization/`, with an independent SHA256 manifest
+in `sdd-archive/manifest.json`; only the verified temporary SDD workspace is
+removed. Simulator source, the local branch, raw experiments, frozen binaries,
+native roots, and the old baseline remain available. The local alias remains the
+exact accepted assertion-enabled v2 release. No push or merge was performed.
