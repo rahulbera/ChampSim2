@@ -927,3 +927,113 @@ and independent audits. The candidate SHA-256 is
 its immediate parent is the retained step-8 binary, SHA-256
 `daabf72fe90dcd67bbce71f2eda392ce7d0ea8fefcb1867a3a4bc4e349f634fe`.
 The rejected step-9 and step-10 source experiments are not part of this comparison.
+
+## Optimization 12 — reuse the completion scan's executed ROB prefix
+
+**Issue.** The fresh profile after cache guards attributes 21–32% of sampled
+cycles to ROB schedule/execute/complete paths. Execution alone accounts for
+4.7–13.2% exclusively, with mcf the largest case. Execution repeatedly inspects
+an already-executed prefix that the preceding completion scan just visited.
+
+**Fix tested.** The private completion helper returns progress and an ephemeral
+prefix length. Only when it completes no instruction does `operate()` begin
+execution after that prefix. With positive execution bandwidth and no completion,
+the completion scan reached the end without invoking a callback, so every skipped
+entry is still executed and cannot pass the original execution predicate. Zero
+or negative bandwidth executes nothing either way. Any completion takes the
+original head scan; the code does not even construct an iterator from the saved
+offset in that branch, because callbacks may reset earlier flags or remove the
+front entry. Public standalone stage methods retain their original head behavior.
+No frontier, iterator or address-derived state persists between calls. Scheduling,
+retirement order, readiness predicates and remaining pipeline stages are unchanged.
+
+**Outcome: deferred; production trial rejected.** All twelve fresh timing pairs
+slowed. Restore the original CPU scans and retain only the characterization
+tests. No further ROB variant is part of this pass.
+
+**Files touched.**
+
+1. `inc/ooo_cpu.h`: trial only, reverted: private completion-result type and helper declarations; no
+   instruction/CPU state fields or public API changes.
+2. `src/ooo_cpu.cc`: trial only, reverted: collect the transient prefix during completion and select
+   the safe execution starting point, with an unconditional head fallback after
+   any completion.
+3. `test/cpp/src/252-rob-execution-prefix.cc`: 12 characterization cases for
+   blocked prefixes, independent ready work, width limits, producer wakeup,
+   callbacks, direct mutations, retirement, warmup and LSQ timestamps.
+4. `docs/research-log/Performance/2026-09-14-performance-optimization.md`:
+   record the proof, tested scope, outcome and KIPS.
+
+**Commits.** `5640d18f` (retained tests); production experiment was never
+committed and its patch is archived; documentation follows.
+
+**Regression verdict.** **INERT over the observed scope.** All 32 standard short runs,
+8 supplemental backpressure runs, 15 long successor runs and 24 timing runs
+match their immediate-parent reference in complete exported phase statistics,
+effective configuration, and actual warmup/ROI instruction and cycle counts.
+The long gate uses 5M warmup / 50M ROI on one trace from every one of the 14
+SPEC26 workloads plus mcf. Both comparison and independent artifact audits pass.
+
+The initial characterization passed on the unchanged implementation (136
+assertions / 12 cases). The final expanded suite passes 164 assertions / 12 cases
+on both the candidate and an old-algorithm oracle with uniform candidate class
+declarations. The added private declarations contain no fields or inline
+behavior; the old method bodies never call the new private methods. A prior
+supplemental oracle mixed old and new class definitions across object files;
+review identified the formal ODR problem, so that run is preserved but excluded
+from validation. The corrected uniform-header oracle removes the caveat, and
+independent review has no open findings. Real simulator comparisons use the
+actual immutable parent executable, not this unit-test oracle.
+
+The focused cases include callback pop/no-pop × competitor/no-competitor, so they
+cover a saved old ROB length exceeding the size after a callback. They also check
+both warmup transitions, completion consuming its final width slot, direct clear/
+append/reset operations, and non-vacuous owner/non-owner LSQ timestamp assertions.
+Full normal C++: 896 passed / 7 native-backend skips / 32,909 assertions. Payload
+C++: 901 passed / 7 skips / 35,002 assertions. Python: 66 tests / 4 native skips.
+
+The standard 16-case matrix has 32 exact before/after matches. Four additional
+cases (8 runs) exercise SQLite v2 and mcf v1 in both PTW modes at 100k warmup / 1M
+ROI, ROB 1024, execute width 1, scheduler width 2, execution latency 5, LQ/SQ 16
+and register file 128. They match complete exported phase statistics, effective
+configuration, and actual instruction/cycle counts. The supplemental runner's
+valid control and 12 corruption cases pass offline under Python `-O`.
+
+**Fresh KIPS.** CPU 14, legacy DRAM, detailed PTW, 1M warmup / 3M ROI, three
+alternating pairs per trace. KIPS uses actual warmup plus ROI retirement over
+whole-process wall time. Medians (observed minimum–maximum):
+
+| Trace | Before KIPS | Trial KIPS | Change |
+|---|---:|---:|---:|
+| SQLite | 414.46 (410.01–418.71) | 401.50 (398.56–405.54) | -3.13% |
+| omnetpp | 468.44 (468.10–477.55) | 449.03 (448.25–456.48) | -4.14% |
+| GCC | 560.09 (553.98–570.00) | 535.76 (529.11–545.20) | -4.34% |
+| mcf | 147.91 (147.78–149.23) | 136.09 (135.96–137.29) | -7.99% |
+
+Every pair is negative: SQLite −2.79/−3.15/−3.13%, omnetpp
+−4.24/−4.14/−4.41%, GCC −4.34/−4.49/−4.35%, mcf
+−7.92/−8.08/−8.01%. No own builds, tests, profiles or long runs overlapped
+these timings. Other users’ jobs and boost remain uncontrolled; the consistent
+paired slowdown supports rejection without attributing it to one isolated cause.
+
+After restoration, both complete C++ suites pass again with the same counts
+above. The rebuilt release is byte-identical to the retained cache-guard parent
+(`restored/binary-verification.json`), so none of the trial slowdown remains.
+
+
+**Mechanism and limits.** Release disassembly confirms that the nonzero-completion
+branch bypasses iterator advancement. The compiler inlines the head wrapper into
+`operate`. The completion helper grows from 305 to 585 bytes and adds deque
+distance/advance and local iterator bookkeeping; these are real costs, not a
+speedup claim. This remains a single-core legacy-DRAM experiment. Long-window
+coverage is one selected trace per workload; broader simpoints, modules, shared
+multicore traffic and unexported warmup cache/DRAM counters remain outside its
+observed parity verdict.
+
+**Evidence.** `2026-09-15-optimizations/12-rob-prefix/` contains source patch,
+immutable release, original and corrected characterization evidence, full suites,
+review, assembly commands/output, standard and backpressure comparisons, long
+campaign/audits and fresh timings. Candidate SHA-256:
+`3fb647841c0abc86825cda32f675e9a27ae68767ece6007130e09f22d980efce`;
+immediate parent: `11-cache-guards/champsim`, SHA-256
+`fe657e62bb275213fda52348c18ef3f411c724e00d34d8243d962d38f5263e79`.
