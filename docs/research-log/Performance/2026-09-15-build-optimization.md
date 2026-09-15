@@ -352,6 +352,201 @@ its predecessor is `01-v2/champsim` and its candidate is
 `02-assertions/candidate-fix1-bin/champsim`. Initial and corrected review reports
 are preserved at the campaign evidence root.
 
+## 3. Isolate named build modes and record compiler provenance (in progress)
+
+**Issue.** The old Make rules share production/test objects, append `-Og` for
+unit tests, and do not give mode/ISA/compiler choices distinct artifact paths.
+This risks stale or mixed outputs and makes the effective build policy unclear.
+
+**Fix.** Introduce debug, release and fast modes with independent target/ISA
+selection, isolated object/dependency/generated-header/binary paths, and atomic
+compatibility aliases. Validate compiler options and expose standalone JSON
+build information without constructing the simulated machine or changing its
+configuration identity. Preserve the optional native backend's build checks.
+
+**Files touched.**
+
+1. `Makefile`: dispatch named and ordinary builds to isolated mode/flavor rules.
+2. `global.options`: remove unconditional optimization from shared options.
+3. `config/build_config.py`: resolve, validate and fingerprint build policy;
+   generate metadata, canonical paths and atomic compatibility aliases.
+4. `config/build_rules.mk`: build separate simulator/test artifacts with selected
+   flags, dependencies and native preparation.
+5. `config/makefile.py`: preserve configured registry/output roots in discovery.
+6. `config/filewrite.py`: pass discovery path metadata to the Make emitter.
+7. `config/ramulator2_build.py`: propagate architecture and enforce locked,
+   source-root ownership of the native library.
+8. `config/compile_commands/selected.py`: export the actual selected compiler argv.
+9. `config/compile_commands/src.py`: route source export through selected policy.
+10. `config/compile_commands/inc.py`: route header export through selected policy.
+11. `config/compile_commands/module.py`: preserve module options in selected export.
+12. `config/compile_commands/test.py`: preserve test mode/flavor in selected export.
+13. `inc/build_info.h`: declare the standalone build-provenance interface.
+14. `src/build_info.cc`: serialize generated compiler/build metadata as JSON.
+15. `src/main.cc`: handle standalone `--build-info` before model construction.
+16. `test/python/test_build_modes.py`: exercise actual Make/compiler behavior,
+    isolation, invalid flags, ELF symbols, and compiler macro parsing.
+17. `test/python/test_build_info.py`: test standalone and mixed CLI invocations.
+18. `test/python/test_ramulator2_build.py`: check native ownership and locking.
+19. `tools/perf/benchmark_ptw.py`: capture provenance outside measured execution.
+20. `tools/perf/compare_optimization.py`: retain provenance in comparison manifests.
+21. `tools/perf/test_build_info_provenance.py`: test available/unavailable metadata.
+22. `.github/workflows/test.yml`: pass selected test-binary identity to Python tests.
+23. `CLAUDE.md`: document modes, roots, overrides and compatibility boundaries.
+24. `tools/perf/README.md`: document reproducible build and measurement selection.
+25. `test/ramulator2/README.md`: document canonical native compatibility builds.
+26. This campaign log: record implementation, corrections, exact evidence and
+    incremental performance acceptance.
+27. `docs/superpowers/plans/2026-09-15-build-optimization.md`: mark completed
+    implementation and acceptance steps.
+
+**Commit hashes.** Initial implementation: `35877649`, based on `d7976387`;
+symbol-retention and compiler-parser corrections: `20fcec7e`; grouped linker
+switch correction: `d71de93c`; test-fixture isolation: `65fe18c3`. Scoped
+reviews approve specification compliance and quality. The subsequent
+documentation commit records the acceptance below.
+
+**Regression verdict.** Inert over the completed checks. The final named v2
+release passes all 16 short cases (32 runs) and all 15 long comparisons at
+5M/50M. Independent saved-output audits pass for both matrices, including full
+phase/configuration/build-id and retirement/cycle-count parity. Fresh normal
+and payload C++ suites pass 913 and 918 cases respectively (seven expected
+skips each; 81,840 and 83,933 assertions). Python passes 105 tests with five
+expected skips; fast and debug each pass eight CLI checks. Standalone and
+performance-tool checks also pass. Superseded intermediate binaries and any
+stopped runs remain preserved with their reasons; none supply final timing.
+The immediate accepted simulator predecessor
+is `02-assertions/candidate-fix1-bin/champsim` (SHA256 `36f57f4c…3621f`), with the
+long reference at `02-assertions/fix-1-validation/long-regression`.
+
+Separate deployment preparation has established a GCC 11 build of that source on
+ETH kratos6, using controlled v2 dependencies. Raw/gzip/bzip2/xz/zstd synthetic
+smokes all complete with matching statistics/configuration/counts; their different
+trace-path labels are checked explicitly before cross-codec comparison. A further
+65-run check passed on thirteen nodes, covering Xeon 5118, Xeon 6226R, EPYC 7742
+and EPYC 9554, with an independent saved-artifact audit. Six remaining node jobs
+never obtained resources and were cancelled; nineteen-node execution coverage is
+not claimed. A named GCC 11 release build also passed all five codec smokes, with
+the same complete fingerprint as the predecessor fleet. These cluster binaries
+precede the final build-policy corrections.
+
+Separate native compatibility checks pass: 919 enabled C++ cases (one expected
+disabled-backend-only skip), both exact transaction oracles, and all four native
+simulator/replay cases. Actual CMake/driver flags and shared sim/test library
+identity were independently checked; the library remained unchanged. An
+optimization-dependent GCC 13/libstdc++ warning in unchanged test 183 is retained
+with its focused sanitizer investigation; no invalid memory access was found.
+
+**KIPS before/after.** Three alternating pairs at 1M/3M on CPU 14; medians
+include actual warmup and ROI retirement. This is incremental over the accepted
+assertion-enabled predecessor (`36f57f4c…3621f`), not the initial source baseline.
+Both binaries retain assertions, `-O3`, v2/generic ISA and the same libraries.
+
+| Workload | Before KIPS | After KIPS | Change | Before range | After range |
+| --- | ---: | ---: | ---: | --- | --- |
+| sqlite | 432.48 | 447.83 | +3.55% | 430.20–432.63 | 447.38–448.99 |
+| omnetpp | 497.66 | 512.53 | +2.99% | 491.84–500.26 | 511.02–512.57 |
+| gcc | 583.69 | 605.40 | +3.72% | 580.78–588.59 | 602.41–608.96 |
+| mcf | 152.52 | 157.19 | +3.06% | 148.80–154.05 | 155.12–157.68 |
+
+All twelve individual pairs favor the candidate: sqlite +4.37/+3.51/+3.45%,
+omnetpp +2.46/+2.69/+4.21%, gcc +4.33/+2.35/+4.24%, and mcf
++2.04/+3.38/+4.24%. CPU/wall ratios are 0.999899–0.999936, with one-minute
+load 0.45–1.13. No own builds, tests, profilers or remote experiments overlapped.
+The independent artifact audit verifies all 24 runs, binary/trace/configuration
+hashes, full results, counts, pair ordering and recomputed KIPS.
+
+**Decision.** Retain the named-build implementation: observed behavior is inert,
+the build contract passes its tests, and this controlled comparison shows a
+repeatable gain on every protected workload. Attribute it to this combined build
+stage; the experiment does not isolate debug symbols or artifact layout as the
+cause. Fast assertion removal is evaluated separately next.
+
+**Evidence.** `03-build-modes/` and `eth-build-recon/` under the campaign root.
+
+**Corrections found during acceptance.** The first committed candidate
+(`c1d96880…a5780d`) passed the entire short and 15-workload long gate, including
+independent audits. Review nevertheless reproduced an invalid build-policy
+combination: user `LDFLAGS=-s` removed the promised debug and symbol sections.
+Likewise, `module.options=-g0` removed module debug information. The correction
+rejects those options across supported argument/response-file channels and
+checks actual ELF sections in every mode. A bounded GCC/Clang/linker-option audit
+also covers long and abbreviated debug options, selective symbol lists and
+explicit linker scripts. Preserving options remain accepted. The grouped-switch
+source Python suite passed 104 tests with five expected skips; the later fixture
+correction raises the final count to 105. A second review
+found grouped GNU ld switches such as `-Wl,-sx`; four validation lines now reject
+stripping combinations using the argumentless-short-option alphabet. Generated
+groups, repetitions and nested responses are tested, with supported long options
+preserved. Scoped re-review approves the fix.
+
+A real ETH Clang 14 build then exposed a separate portability bug: a regular
+expression consumed a newline after an empty preprocessor definition and lost
+the following assertion definition. Horizontal-whitespace parsing and a real
+compiler regression cover both assertion and payload definitions. The actual
+Clang output is preserved. The intermediate symbol-fix binary passed its short
+matrix; its long run was stopped and preserved when this parser fix superseded
+it. Final acceptance uses another distinct frozen binary, without overwriting
+either earlier result. Initial Clang invocation failure due to an absent
+unversioned executable is recorded separately as a setup error.
+
+The latest native compatibility run passes all 919 enabled C++ cases, both
+transaction oracles and four integration/replay cases, with independent actual
+flag/library-ownership checks. Its frozen policy helper is `e867b54e…c2607`.
+The final `d71de93c` helper changes only user-option validation from that version:
+an AST comparison and real compiler probes independently confirm identical
+standard simulator/test/native policies, apart from the recorded helper hash
+and resulting policy key. This is explicit source/policy reconciliation, not a
+claim that the preserved native binary was rebuilt from the final helper.
+
+Both actual ETH build nodes also pass final-helper policy and real compiler-macro
+reconciliation against their preserved GCC 11 and Clang 14 full builds. A first
+check on the headnode correctly failed compiler-identity equality: its GCC
+package is `11.3.0-1ubuntu1~22.04`, while kratos12 uses
+`11.3.0-1ubuntu1~22.04.1`, with different executable hashes. The check was rerun
+on kratos12/kratos13 and passed without relaxing identity validation. Thus even
+matching headline compiler versions do not establish identical toolchains.
+
+The approved-source local v2 release is frozen at
+`03-build-modes/candidate-release-v2-final/champsim`, SHA256
+`ebd0abafe640c83144c09b5579dce51846f46a9a9e41644dc474aaa3a33af1d8`.
+Its source commit is `d71de93c`; the complete fresh gate passed under
+`03-build-modes/release-validation-final/` against the accepted assertion-stage
+binary. The later `65fe18c3` changes only test-fixture isolation, so the frozen
+production binary and its historical source receipt remain unchanged.
+
+The final rooted `make pytest` invocation exposed a fixture defect: inherited
+`OBJ_ROOT`, `DEP_ROOT` and `BIN_ROOT` let temporary compiler fixtures write into
+the supplied project output roots. The test-only correction clears ambient
+roots while preserving explicit per-fixture overrides. A real Make regression
+fails before the fix; the exact formerly failing rooted invocation then passes
+105 tests, with all 10,879 output-tree entries unchanged. Scoped review approves
+the fix. The initial failure and the temporary unrooted workaround remain
+recorded; the workaround is not the accepted solution.
+
+**GCC 11 build-time limitation.** On ETH, the standard `-O3 -g3` release build
+took about 18 minutes with four compile jobs. Two large translation units,
+`generated_registry.cc` and `static_environment.cc`, dominated; an earlier
+20-minute allocation timed out. A ten-second Linux perf sample of the active
+compiler processes attributed 26.45% of sampled cycles to
+`drop_overlapping_mem_locs`, part of GCC's variable-tracking pass. This is
+compiler profiling, not simulator KIPS. The
+[GCC 11 debugging-option documentation](https://gcc.gnu.org/onlinedocs/gcc-11.5.0/gcc/Debugging-Options.html)
+describes variable-location and assignment tracking; the function is in
+[GCC 11's variable-tracking implementation](https://raw.githubusercontent.com/gcc-mirror/gcc/releases/gcc-11/gcc/var-tracking.c).
+
+An isolated recompilation of `static_environment.cc`, keeping the actual
+`-O3 -g3` and v2/generic flags, took 58.24 seconds with
+`-fno-var-tracking-assignments`, or 55.44 seconds when variable tracking was also
+disabled. Both objects retained `.debug_info` and `.symtab`; the former reported
+only 0.07 seconds of variable-tracking CPU time. This supports assignment
+tracking as the cause of the extreme compile cost. These are diagnostic
+one-off builds, not a controlled simulator throughput comparison or an accepted
+optimization. The standard policy remains unchanged: disabling tracking trades
+away optimized-variable debugging quality and needs its own evaluation before
+adoption. Raw perf data, compiler commands and time reports are preserved under
+`eth-build-recon/named-fix1-cluster-results/`.
+
 ## Later-profile reconnaissance
 
 The ETH headnode currently reports Xeon Gold 5118 and GCC 11.3.0. Its effective

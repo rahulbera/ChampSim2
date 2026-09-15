@@ -189,7 +189,7 @@ assertion mode, ISA, and dependency identity. `--build-info` provides machine-
 readable provenance without constructing a simulated machine. Existing runtime
 configuration `build_id` semantics stay unchanged.
 
-- [ ] Write real Make integration tests before production changes. Use a small
+- [x] Write real Make integration tests before production changes. Use a small
   temporary fixture with the real policy/Make path and an actual host compiler
   for enabled/disabled assertion and optimization macro probes; a controlled
   compiler-target query can cover unavailable foreign toolchains. Tests must fail
@@ -212,12 +212,12 @@ configuration `build_id` semantics stay unchanged.
   fast optimized/assertions=0. Verify v1/v2 feature macros independently. Retain
   distinct executables and repeat a mode switch without cleaning; changing flags
   must rebuild affected outputs while an unchanged repeat stays up to date.
-- [ ] Implement policy selection before object and generated-path resolution.
+- [x] Implement policy selection before object and generated-path resolution.
   Query the selected compiler target; choose the target's dependency triplet
   explicitly. Reject empty/unknown modes, unsupported targets, x86 options on
   Arm, conflicting optimization/assertion/ISA overrides, and ambiguous dependency
   selection. Preserve supported wrappers and quote arguments safely.
-- [ ] Separate all simulator/test objects, dependencies, generated build headers,
+- [x] Separate all simulator/test objects, dependencies, generated build headers,
   and binaries by incompatible policy. Module registry inputs may be shared when
   immutable; generated Make fragments must respect output overrides. Keep
   explicit `OBJ_ROOT`, `DEP_ROOT`, `BIN_ROOT`, and test-binary overrides usable
@@ -225,21 +225,21 @@ configuration `build_id` semantics stay unchanged.
   and separate concurrent mode builds. Preserve `make -n/-q` without build
   mutation and the existing `make -t` contract: it may touch requested targets
   but must not remake dependency files or prepare native libraries.
-- [ ] Remove unconditional `-O3` from the common options and the test target's
+- [x] Remove unconditional `-O3` from the common options and the test target's
   unconditional `-Og`; supply optimization from the selected mode. Keep test
   framework checks active. Include mode options in dependency preprocessing as
   well as compilation. Ensure compiler/link option fingerprints invalidate stale
   artifacts, and compile-command export represents the selected mode.
-- [ ] Add early `--build-info` handling, with JSON produced without runtime model
+- [x] Add early `--build-info` handling, with JSON produced without runtime model
   construction. Test that malformed simulation configuration cannot corrupt or
   substitute compiler provenance. Expose the same identity to benchmark manifests
   without changing simulated configuration hashes or the statistics comparator.
-- [ ] Propagate/fingerprint the architecture policy to the native helper and
+- [x] Propagate/fingerprint the architecture policy to the native helper and
   preserve explicit native Release scope, ABI checks, source/dependency revision
   checks, and shared-library replacement safeguards. Exercise disabled-mode tests
   and the existing native smoke tests on the verified toolchain using a separate
   native root. Do not use native simulations as campaign KIPS.
-- [ ] Run Python and C++ checks, separate normal/payload modes, standalone tools,
+- [x] Run Python and C++ checks, separate normal/payload modes, standalone tools,
   GCC/Clang builds where available, and the complete release parity gate. Preserve
   a v1 named release to separate symbol/build-layout effects from ISA changes.
   Review and log build hygiene with its own performance result.
