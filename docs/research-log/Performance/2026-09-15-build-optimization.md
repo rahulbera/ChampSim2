@@ -547,6 +547,68 @@ away optimized-variable debugging quality and needs its own evaluation before
 adoption. Raw perf data, compiler commands and time reports are preserved under
 `eth-build-recon/named-fix1-cluster-results/`.
 
+## 4. Disable ChampSim invariant checks in v2 fast
+
+**Issue.** Release checks internal invariants during simulation. Removing their
+runtime cost may improve throughput, but checks that perform required work or
+validate operational failures must not disappear.
+
+**Fix.** Select the already implemented fast mode. Its only intended compiler
+policy change from named release is `CHAMPSIM_ENABLE_ASSERTIONS=0`; keep
+`-O3 -g3`, x86-64-v2/generic, the compiler and libraries unchanged. Catch2 and
+operational diagnostics remain active. This stage validates removal separately
+from the earlier assertion migration and named-build changes.
+
+**Files touched.**
+
+1. This campaign log: record the fast policy comparison, gates and KIPS verdict.
+2. `docs/superpowers/plans/2026-09-15-build-optimization.md`: track the completed
+   fast-mode acceptance steps.
+
+**Commit hashes.** Validation starts at `052e93c3`, using production source
+`d71de93c`. Fast selection was implemented in `35877649` on top of the assertion
+policy from `99365e1e`/`8f0b0687`; this stage needs no additional source change.
+The subsequent documentation commit records acceptance.
+
+**Regression verdict.** Inert over the completed checks. Actual compiler/response-file
+and metadata audits confirm the intended policy difference. Normal C++ passes
+913 cases (7 skips, 81,840 assertions); payload passes 918 (7 skips, 83,933
+assertions). The three assertion probes and eight focused operational/CLI cases
+pass. All 16 short comparisons (32 runs) and the independent saved-output audit
+pass. Frozen release `ebd0abaf…af1d8` is compared with fast `467161d7…e5275`,
+using release's accepted 15-case long reference. All 15 long cases and both
+saved-output audits now pass at 5M/50M. Three standalone tools rebuild byte for
+byte and pass their operational checks. No production or test source fix was
+needed. Independent review approves specification compliance and task quality
+with no findings. Failed command/fixture-preparation attempts are preserved and
+explained in the report; no expected simulation statistics were changed.
+
+**KIPS before/after.** Three alternating pairs at 1M/3M on CPU 14, comparing
+named v2 release directly to named v2 fast. All 24 runs retain complete reported
+parity; the independent audit verifies hashes, counts, ordering and recomputed
+KIPS. These results are incremental over named release.
+
+| Workload | Release KIPS | Fast KIPS | Change | Release range | Fast range |
+| --- | ---: | ---: | ---: | --- | --- |
+| sqlite | 444.93 | 451.38 | +1.45% | 439.11–445.79 | 451.28–451.89 |
+| omnetpp | 506.32 | 512.39 | +1.20% | 504.19–506.63 | 511.63–515.67 |
+| gcc | 602.69 | 606.72 | +0.67% | 599.66–602.72 | 605.56–607.24 |
+| mcf | 156.09 | 158.53 | +1.56% | 155.71–156.36 | 156.78–160.21 |
+
+All twelve individual pairs favor fast: sqlite +2.77/+1.45/+1.37%, omnetpp
++0.99/+1.20/+2.28%, gcc +0.67/+1.27/+0.47%, and mcf +0.44/+1.81/+2.47%.
+CPU/wall ratios are 0.999892–0.999939; one-minute load is 0.25–1.18. All own
+builds, tests, profiles and remote experiments stopped before timing.
+
+**Decision.** Accept v2 fast as the optional assertion-disabled mode. The gain
+is modest but consistent across these pairs, with no observed behavior change.
+Plain `make` remains assertion-enabled release. These local results do not
+establish fast-mode KIPS on ETH or ARM, and they do not disable third-party
+assertions or promise this gain for every simulator configuration.
+
+**Evidence.** `04-fast/` under the campaign evidence root. The frozen inputs
+remain under `03-build-modes/candidate-{release,fast}-v2-final/`.
+
 ## Later-profile reconnaissance
 
 The ETH headnode currently reports Xeon Gold 5118 and GCC 11.3.0. Its effective

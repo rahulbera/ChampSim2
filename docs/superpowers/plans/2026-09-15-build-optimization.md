@@ -252,14 +252,14 @@ problem in Task 2/3, followed by their covering checks and review.
 **Interfaces:** consumes archived named v2 release and fast binaries and the
 unchanged comparison harness. Produces a fast-mode acceptance verdict.
 
-- [ ] Verify actual compile commands and `--build-info` differ only in intended
+- [x] Verify actual compile commands and `--build-info` differ only in intended
   assertion policy; both remain `-O3 -g3`, same v2 ISA/compiler/libraries.
-- [ ] Execute normal and memory-value tests in fast, including decoder failures
+- [x] Execute normal and memory-value tests in fast, including decoder failures
   and invalid runtime input. Check the new assertion probe removes evaluation
   while Catch2's own checks still run.
-- [ ] Run all short cases and 15 long 5M/50M comparisons against named v2 release.
+- [x] Run all short cases and 15 long 5M/50M comparisons against named v2 release.
   Audit complete outputs before allowing the timing campaign.
-- [ ] Run the 24 alternating timing runs, inspect each workload/pair, and review
+- [x] Run the 24 alternating timing runs, inspect each workload/pair, and review
   the result. Record inertness, before/after KIPS, and limitations. If a correctness
   issue remains, do not advertise fast as validated or hide it with new expected
   statistics. Fix the root cause before considering retention.
