@@ -149,6 +149,32 @@ no evaluation. The header adds no link or vcpkg dependency.
 
 ## Task 3: Implement isolated named builds and compiler provenance
 
+**Resolved compatibility decisions:** Public roots are containers with isolated
+policy/flavor leaves; `print-build-paths` exposes resolved paths. Named modes may
+be combined, but mixing named and ordinary targets is rejected; use
+`make BUILD_MODE=fast all test`. Ordinary builds publish compatibility aliases
+atomically; named targets retain canonical isolated binaries. Distinct policy
+builds may run concurrently; identical-selection concurrent writers are initially
+unsupported. `--build-info` is standalone only, with token-aware handling of
+mixed invocation and literal argument values.
+
+Preserve existing Linux and Darwin compiler-target routing and GCC9/10 CI.
+Where a compiler lacks named v2 support, use the equivalent explicit extension
+flags and verify effective macros; record actual expansion. This retains the
+existing compiler coverage: named ISA levels arrived in
+[GCC 11](https://gcc.gnu.org/gcc-11/changes.html); the older
+[GCC x86 options](https://gcc.gnu.org/onlinedocs/gcc-10.5.0/gcc/x86-Options.html)
+provide the individual extensions. Local GCC11/13/14 probes produce identical
+preprocessor macro sets for the named v2 flags and the explicit expansion. Real validation in
+this campaign focuses on Linux x64; ARM hardware was deferred by the user.
+Select installed dependencies explicitly and report unknown external ISA
+provenance honestly; do not rebuild package installations implicitly. Native
+libraries compiled by this build receive the direct architecture policy while
+retaining their existing Release/C++20 policy and source-root isolation.
+Transparent compiler argv wrappers remain supported for legacy; native keeps
+its existing single-compiler/executable-probe restrictions.
+
+
 **Files:** modify `Makefile`, `global.options`, `config/makefile.py`,
 `config/module_registry.py` where registry generation requires it, and
 `config/ramulator2_build.py`; create a focused `config/build_config.py` helper and

@@ -143,7 +143,7 @@ The trial uses separate objects and an archived binary outside production output
 It initially changes no simulator source or checked-in build flags.
 
 **Commit hashes.** Trial source: `a612bf2b` (plus documentation-only campaign
-setup). No production implementation commit yet.
+setup). Trial/acceptance record: `6b71dee0`. No production implementation commit yet.
 
 **Regression verdict so far.** The isolated candidate builds successfully. All
 16 short cases (32 runs) match complete phase statistics, effective configuration,
@@ -181,7 +181,9 @@ absence of external contention.
 user-approved platform policy, **not as a performance optimization**; keep the
 explicit v1 fallback. The later named-build implementation will encode that
 policy. Do not present a release-to-fast gain as recovery of this cost unless a
-separate cumulative comparison establishes it. Independent task review pending.
+separate cumulative comparison establishes it. Independent task review passed for both specification compliance and evidence
+quality; no actionable findings. Review is preserved as `task-1-review.md` in the
+campaign evidence.
 
 **Evidence.** `00-baseline/`, `baseline.json`, and `01-v2/` under the campaign
 evidence root. The preserved baseline exactly matches the binary of the archived
