@@ -656,3 +656,96 @@ normal/payload/Python and before/after characterization logs, assembly, review,
 `format-verification.json`, the original `timing/`, fresh `timing-repeat/`, paired
 deltas, `instruction-counters/`, and `audit.json`. Completed campaign paths were
 kept intact because saved commands contain their absolute working directories.
+
+## 9. Register-query inlining — deferred after measurement
+
+**Issue.** Linux perf attributed 3.2–4.5% of sampled cycles to `isValid`,
+`isAllocated` and `count_free_registers`. Each has a short out-of-line body, but
+inlining can also change the compiler's treatment of the surrounding ROB loops.
+
+**Experiment and disposition.** First move all three unchanged expressions into
+the class definition, preserving const signatures, checked physical-register
+access, exceptions and scheduler ordering. Then test a narrower variant that
+keeps only `isValid` and `isAllocated` inline. **Neither prototype is retained.**
+The three-query variant slows mcf in all three pairs; the narrower variant has
+no convincing overall benefit and its later measurements are badly affected by
+shared-host variation. Restore the original production definitions and retain
+the useful public-query characterizations.
+
+**Files touched.**
+
+1. `inc/register_allocator.h` — trial inline query definitions; restored to the
+   original declarations in the retained tree.
+2. `src/register_allocator.cc` — remove the trial definitions, then restore all
+   three original out-of-line bodies.
+3. `test/cpp/src/201-register-rename.cc` — retain const-query, bounds, exhaustion,
+   rename/validity/retirement and actual RAT reset restoration checks.
+4. `docs/research-log/Performance/2026-09-14-performance-optimization.md` — retain
+   both experiments and the decision to defer.
+
+**Commit.** Retained tests: `1d47029745a53c4ea2d03c7a6ed210b289c88243`. The rejected production
+patches are archived beside their immutable trial binaries; they have no retained
+implementation commit. Step 8's log commit is `3bcb0f7b`.
+
+**Regression verdict.** Both prototypes are **inert over their checked simulation
+scope**: each passes 32 short regression and 24 timing runs with complete reported
+phase/configuration/count parity, **112 runs total**, independently audited. The
+three-query prototype also passes the full normal and payload suites. Initial
+focused tests pass on original and inline definitions; additional nonempty-bound
+and real-reset cases pass against the original source in a separate small oracle.
+After restoring production code, the normal suite passes **32,714 assertions /
+876 cases** and the payload suite passes **34,807 assertions / 881 cases**, with
+7 native skips each. The restored release is **byte-identical to step 8's binary**
+(SHA-256 `daabf72fe90dcd67bbce71f2eda392ce7d0ea8fefcb1867a3a4bc4e349f634fe`).
+The prior Python result applies to that identical release: 66 tests, 4 native
+skips. Scoped review and re-review found no correctness blocker.
+
+**KIPS before/after: all three queries.** Three alternating CPU-14 pairs, legacy
+DRAM, detailed PTW, 1M/3M. Medians (min–max):
+
+| Trace | Before | Trial | Change |
+|---|---:|---:|---:|
+| sqlite | 301.38 (299.40–303.16) | 307.27 (302.14–312.51) | +1.95% |
+| omnetpp | 335.11 (333.89–337.14) | 341.35 (338.26–344.04) | +1.86% |
+| gcc | 413.58 (411.28–419.19) | 419.88 (418.18–424.73) | +1.52% |
+| mcf | 118.60 (115.62–118.66) | 115.38 (114.88–117.40) | -2.71% |
+
+All nine v2 pairs favor the first candidate, while mcf's pair changes are
+**−0.64%, −2.71%, −1.06%**. Removing call instructions alone is insufficient
+evidence of an improvement: the release schedule function grows from 135 to
+275 disassembly lines and its execution function also changes substantially.
+That is a code-generation observation, not a demonstrated cause of mcf's loss.
+
+**Narrower variant: noisy measurements, excluded from any speedup claim.** Same
+method, keeping the free-count query out of line:
+
+| Trace | Before | Trial | Change |
+|---|---:|---:|---:|
+| sqlite | 289.97 (243.41–305.38) | 304.54 (301.91–304.72) | +5.02% |
+| omnetpp | 334.59 (286.53–335.09) | 334.09 (257.58–335.44) | -0.15% |
+| gcc | 411.04 (307.53–413.93) | 407.60 (348.40–411.03) | -0.84% |
+| mcf | 98.56 (93.55–118.43) | 100.87 (71.41–117.52) | +2.34% |
+
+The unchanged baseline itself varies from 413.93 to 307.53 KIPS on GCC and
+118.43 to 93.55 KIPS on mcf. Its first, steadier pair is slightly negative on
+all four traces. These results do not establish a useful retained optimization.
+**Production KIPS improvement from step 9: none claimed; production code is
+restored.** Revisit individual query/call-site choices on a quieter host if a
+later profile still justifies them.
+
+**Evidence.** `09-register/` preserves the three-query snapshot, patch, full-suite
+logs, review, assembly, short matrix, timing and audit. `two-queries/` preserves
+its separate snapshot/patch/campaign/audit; `restored/` contains final-suite logs
+and binary identity verification. `old-query-oracle/` checks the additional
+characterizations against original source without changing the measured binaries.
+
+### Long regression reference status
+
+The initial 14 SPEC26 workloads plus mcf have completed 5M/50M on the
+second-pass baseline. `long-reference/reference-audit.json` validates complete
+captures and their hashes; this is a reference capture, not a candidate-parity
+verdict. A successor campaign for the retained trace changes is now running in
+`08-raw-trace/long-regression/`. It compares every full reported fingerprint
+against those references and excludes its concurrent runs from KIPS. The
+reviewed successor helper also checks the exact required trace set, configuration
+hashes and binary hashes.
