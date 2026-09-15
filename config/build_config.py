@@ -64,10 +64,28 @@ def validate_flags(tokens):
     # Policy ownership is deliberately strict: matching user assignments are also
     # rejected, making every option channel follow the same rule.
     # GCC's -Wl comma transport is argv for ld. Validate its words using the
-    # same static/exact-library policy, including split option arguments.
+    # same symbol/library policy, including split option arguments.
     for index, token in enumerate(tokens):
+        # GCC accepts unambiguous long-option abbreviations; both GCC and
+        # Clang also expose --debug= and --for-linker= driver aliases.
+        long_name = token.partition('=')[0]
+        if token.startswith('--') and any(alias.startswith(long_name) for alias in ('--debug', '--for-linker', '--for-assembler')):
+            raise ValueError(f'conflicting or unsupported policy option: {token}')
         forwarded = token[4:].split(',') if token.startswith('-Wl,') else []
         linker_words = forwarded or [token]
+        # Linker stripping would silently defeat the mode's profiling/debug
+        # symbols. Match ld's single/double-dash forms and abbreviations, while
+        # preserving --discard-none and --no-strip-discarded.
+        strip_short = ('-s', '-S', '-x', '-X') if forwarded else ('-s', '-S')
+        for word in linker_words:
+            name = word.lstrip('-').partition('=')[0] if word.startswith('-') else ''
+            strip_long = ('strip-all', 'strip-debug', 'strip-discarded', 'discard-all', 'discard-locals', 'retain-symbols-file')
+            if word in strip_short or (len(name) >= 3 and any(option.startswith(name) for option in strip_long)) or name.startswith('non_global_symbols_'):
+                raise ValueError(f'conflicting symbol-retention policy option: {token}')
+            # Custom linker layouts can discard required debug sections; do
+            # not attempt to interpret scripts inside the policy helper.
+            if word.startswith(('-T', '-dT')) or (len(name) >= 3 and any(option.startswith(name) for option in ('script', 'default-script'))):
+                raise ValueError(f'unsupported linker-script policy option: {token}')
         static_prefixes = ('-static', '--static', '-Bstatic', '-Bdynamic', '-dn', '-dy', '-non_shared', '-call_shared')
         if any(word.startswith(static_prefixes + ('--library', '-l:')) for word in linker_words):
             raise ValueError(f'unsupported linker library selection: {token}')
@@ -82,7 +100,7 @@ def validate_flags(tokens):
             raise ValueError(f'policy-owned assertion/flavor macro: {token} {macro}')
         if (token.startswith('-m') and token not in ('-m64', '-mlittle-endian')) or token.startswith(('-o', '-MF', '-MT', '-MQ', '-MJ', '-save-temps', '-Xlinker', '-B', '-fprofile-use', '-fprofile-generate', '-fprofile-instr')):
             raise ValueError(f'conflicting or unsupported policy option: {token}')
-        if token.startswith(('-O', '-Xclang', '-Xpreprocessor', '-Xassembler', '-Wa,', '-Wp,',
+        if token.startswith(('-O', '-g', '-Xclang', '-Xpreprocessor', '-Xassembler', '-Wa,', '-Wp,',
                              '-specs', '--specs', '-fplugin', '-fomit-frame-pointer')):
             raise ValueError(f'conflicting or unsupported policy option: {token}')
         if any(c in token for c in '\n\r\0'):
@@ -248,7 +266,9 @@ def verify(policy, includes):
     flags = policy['compile_options'] + includes
     source = '#include "champsim_assert.h"\n#include "trace_instruction.h"\n'
     macros = run(policy['compiler']['command'] + flags, '-dM', '-E', '-x', 'c++', '-', input=source)
-    values = dict(re.findall(r'^#define (\w+)\s+(.*)$', macros, re.M))
+    # Empty definitions are common in Clang's sorted output. Horizontal space
+    # must not consume the next definition's line (or hide its policy value).
+    values = {name: value.strip() for name, value in re.findall(r'^#define[ \t]+(\w+)[ \t]*(.*)$', macros, re.M)}
     if ('__OPTIMIZE__' in values) != (policy['mode'] != 'debug'):
         raise ValueError('effective compiler optimization conflicts with BUILD_MODE')
     if values.get('CHAMPSIM_ENABLE_ASSERTIONS') != str(policy['assertions']) or 'NDEBUG' in values:

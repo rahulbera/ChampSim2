@@ -175,7 +175,7 @@ int main() {
         self.make('release', *args)
         self.assertGreater(obj.stat().st_mtime_ns, before)
         self.assertIn('core=23', self.execute(paths['binary']))
-        self.assertNotEqual(paths['obj'], self.paths(*args, 'LDFLAGS=-Wl,--as-needed')['obj'])
+        self.assertNotEqual(paths['obj'], self.paths(*args, 'LDFLAGS=-Wl,--as-needed,--discard-none,--no-strip-discarded')['obj'])
 
     def test_target_routing_and_unsupported_target(self):
         wrapper = self.root / 'target-wrapper'
@@ -287,6 +287,124 @@ int main() {
         self.assertIn('core=7', self.execute(paths['binary']))
         policy = json.loads((Path(paths['obj']) / 'build-policy.json').read_text())
         self.assertEqual(policy['dependencies']['linked_libraries']['-lfixture'], str(alternate / 'libfixture.a'))
+
+    def test_symbol_stripping_is_rejected_across_option_channels(self):
+        (self.root / 'keep-symbols.list').write_text('main\n')
+        flags = ['-s', '-S', '-Wl,-s', '-Wl,-S', '-Wl,--strip-all',
+                 '-Wl,--strip-debug', '-Wl,-strip-all', '-Wl,-strip-debug',
+                 '-Wl,--strip-a', '-Wl,--strip-d', '-Wl,-x', '-Wl,-X',
+                 '-Wl,--discard-all', '-Wl,--discard-locals', '-Wl,--discard-a',
+                 '-Wl,--retain-symbols-file=keep-symbols.list', '-Wl,-retain-symbols-file,keep-symbols.list',
+                 '-Wl,--ret=keep-symbols.list', '-Wl,-non_global_symbols_strip_list,keep-symbols.list',
+                 '-Wl,-non_global_symbols_no_strip_list,keep-symbols.list',
+                 '-Xlinker -s', '--for-linker=-s', '--for-linker=-S', '--for-l -s',
+                 '--for-assembler=--strip-local-absolute']
+        for flag in flags:
+            with self.subTest(flag=flag):
+                result = self.make('release', 'LDFLAGS=' + flag, ok=False)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn('policy option', result.stderr)
+        for channel in ['CXX', 'CPPFLAGS', 'CXXFLAGS', 'LDFLAGS', 'LDLIBS',
+                        'LOADLIBES', 'CHAMPSIM_LIBRARIES', 'CHAMPSIM_TEST_LIBRARIES',
+                        'global.options', 'module.options']:
+            with self.subTest(channel=channel):
+                (self.root / 'strip-inner.options').write_text('-Wl,--strip-debug\n')
+                (self.root / 'strip-outer.options').write_text('@strip-inner.options\n')
+                args = ['test']
+                if channel.endswith('.options'):
+                    path = self.root / channel
+                    original = path.read_text()
+                    path.write_text(original + '\n@strip-outer.options\n')
+                    self.addCleanup(path.write_text, original)
+                else:
+                    value = '@strip-outer.options'
+                    if channel == 'CXX':
+                        value = self.compiler + ' ' + value
+                    args.append(channel + '=' + value)
+                result = self.make(*args, ok=False)
+                if channel.endswith('.options'):
+                    path.write_text(original)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn('policy option', result.stderr)
+
+    def test_empty_macro_definitions_cannot_swallow_following_values(self):
+        wrapper = self.root / 'empty-macro-driver'
+        wrapper.write_text('''#!/usr/bin/env python3
+import re, subprocess, sys
+result = subprocess.run(['/usr/bin/g++', *sys.argv[1:]], capture_output=True, text=True)
+output = result.stdout
+if '-dM' in sys.argv:
+    output = re.sub(r'^(#define CHAMPSIM_ENABLE_ASSERTIONS .*)$',
+                    r'#define EMPTY_ASSERT \\n\\1', output, flags=re.M)
+    output = re.sub(r'^(#define CHAMPSIM_TRACE_MEMORY_VALUES .*)$',
+                    r'#define EMPTY_PAYLOAD\\n\\1', output, flags=re.M)
+sys.stdout.write(output)
+sys.stderr.write(result.stderr)
+sys.exit(result.returncode)
+''')
+        wrapper.chmod(0o755)
+        self.compiler = str(wrapper)
+        args = ['CPPFLAGS=-DCHAMPSIM_TRACE_MEMORY_VALUES=1']
+        self.make('-j4', 'debug', 'release', 'fast', *args)
+        for mode in ['debug', 'release', 'fast']:
+            paths = self.paths('BUILD_MODE=' + mode, *args)
+            policy = json.loads((Path(paths['obj']) / 'build-policy.json').read_text())
+            self.assertEqual(policy['trace_memory_values'], 1)
+            self.assertIn('assertions=' + str(int(mode != 'fast')), self.execute(paths['binary']))
+
+    def test_debug_level_is_owned_by_the_mode(self):
+        for flag in ['-g0', '-g1', '-ggdb0', '-gdwarf-2', '-gsplit-dwarf', '-gtoggle',
+                     '-gline-tables-only', '-gline-directives-only', '-gmlt',
+                     '--debug=0', '--debug=1', '--debug=toggle', '--debug', '--deb', '--debu']:
+            with self.subTest(flag=flag):
+                (self.root / 'module.options').write_text(flag + '\n')
+                result = self.make('release', ok=False)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn('policy option', result.stderr)
+        (self.root / 'module.options').write_text('')
+        for channel in ['CXX', 'CPPFLAGS', 'CXXFLAGS', 'LDFLAGS', 'LDLIBS',
+                        'LOADLIBES', 'CHAMPSIM_LIBRARIES', 'CHAMPSIM_TEST_LIBRARIES']:
+            with self.subTest(channel=channel):
+                (self.root / 'debug-inner.options').write_text('--debug=0\n')
+                (self.root / 'debug-outer.options').write_text('@debug-inner.options\n')
+                value = '@debug-outer.options'
+                if channel == 'CXX':
+                    value = self.compiler + ' ' + value
+                result = self.make('test', channel + '=' + value, ok=False)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn('policy option', result.stderr)
+
+    def test_opaque_linker_scripts_are_rejected(self):
+        (self.root / 'strip-debug.ld').write_text(
+            'SECTIONS { /DISCARD/ : { *(.debug*) } } INSERT AFTER .text;\n')
+        for flags in ['-Tstrip-debug.ld', '-T strip-debug.ld', '-dTstrip-debug.ld',
+                      '--script=strip-debug.ld', '--script strip-debug.ld',
+                      '--default-script=strip-debug.ld', '--default-script strip-debug.ld',
+                      '-Wl,-T,strip-debug.ld', '-Wl,-Tstrip-debug.ld', '-Wl,-dT,strip-debug.ld',
+                      '-Wl,--script=strip-debug.ld', '-Wl,-script,strip-debug.ld',
+                      '-Wl,--scr=strip-debug.ld', '-Wl,--default-sc=strip-debug.ld',
+                      '--for-linker=-Tstrip-debug.ld']:
+            with self.subTest(flags=flags):
+                (self.root / 'script-inner.options').write_text(flags + '\n')
+                (self.root / 'script-outer.options').write_text('@script-inner.options\n')
+                result = self.make('release', 'LDFLAGS=@script-outer.options', ok=False)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn('policy option', result.stderr)
+
+    def test_named_modes_retain_debug_and_symbol_sections(self):
+        if not shutil.which('readelf'):
+            self.skipTest('readelf required for ELF symbol inspection')
+        for mode in ['debug', 'release', 'fast']:
+            with self.subTest(mode=mode):
+                args = ['BUILD_MODE=' + mode, 'LDFLAGS=-Wl,--as-needed,--discard-none,--no-strip-discarded']
+                self.make(mode, *args)
+                binary = self.paths(*args)['binary']
+                sections = subprocess.check_output(['readelf', '-SW', binary], text=True)
+                self.assertIn('.debug_info', sections)
+                self.assertIn('.symtab', sections)
+                module = Path(self.paths(*args)['obj']) / 'modules/branch/probe/probe.o'
+                sections = subprocess.check_output(['readelf', '-SW', module], text=True)
+                self.assertIn('.debug_info', sections)
 
     def test_unsupported_link_selection_is_rejected(self):
         for flags in ['-static', '-Wl,-Bstatic', '-Wl,-Bdynamic', '-Wl,--push-state',
