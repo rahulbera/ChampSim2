@@ -165,9 +165,9 @@ fails when one goes stale.
 
 Limits: traffic is synthetic and enters a channel directly, not through a real
 LLC; native accept/reject decisions and timing are trusted rather than checked;
-and the adapter's gauges and diagnostics count only parents with accepted
-fragments, so a leaked parent entry that no longer reports any would not be
-observed.
+and the adapter's gauges and diagnostics count a parent only once a fragment
+is accepted, so a parent entry leaked before any acceptance, with no queue head
+still naming it, would not be observed.
 `[.differential-latency]` prints adapter read latency beside native
 `read_latency` for an isolated and a write-forwarded read; it characterizes
 the definitions and asserts nothing about them.
