@@ -611,11 +611,12 @@ jobs:
         env -u CXXFLAGS -u CPPFLAGS -u LDFLAGS -u CFLAGS make -j6 all test/bin/000-test-main
 
     # Suppressions cover only vendored ITTAGE; see test/ramulator2/README.md.
-    # Tests are selected by file tag, without hidden cases, so a differential
-    # oracle test (706) contributes its smoke cases when it is present. The
-    # pinned native RITAddrMapper leaks its nested mapper, which test 704
-    # constructs, so LeakSanitizer fails this step at exit until that is
-    # resolved; it is deliberately not suppressed.
+    # Tests are selected by file tag, without hidden cases: the driver (704),
+    # adapter (705), differential oracle smoke (706), global clock (707) and
+    # lifecycle (708) tests, each of which must exist. The pinned native
+    # RITAddrMapper leaks its nested mapper, which test 704 constructs, so
+    # LeakSanitizer fails this step at exit until that is resolved; it is
+    # deliberately not suppressed.
     - name: Run native C++ tests under sanitizers
       env:
         CHAMPSIM_EXPECT_RAMULATOR2: "1"
@@ -623,11 +624,11 @@ jobs:
         export ASAN_OPTIONS=halt_on_error=1:detect_leaks=1
         export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1:suppressions=$PWD/test/ramulator2/sanitizers/ubsan.supp"
         export LSAN_OPTIONS="suppressions=$PWD/test/ramulator2/sanitizers/lsan.supp"
-        for required in 704 705 708; do
+        for required in 704 705 706 707 708; do
           ls test/cpp/src/"$required"-*.cc > /dev/null
         done
         spec=""
-        for file in test/cpp/src/70[4568]-*.cc; do
+        for file in test/cpp/src/70[4-8]-*.cc; do
           spec="$spec${spec:+,}[#$(basename "$file" .cc)]~[.]"
         done
         test/bin/000-test-main -# --order rand "$spec"
