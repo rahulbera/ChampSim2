@@ -683,15 +683,30 @@ TEST_CASE("A partially submitted head keeps its latency origin through a later w
                             return address != block + 32 || seen.resets.size() >= 4;
                           });
                         }};
-  machine.llc.plan = [](feeder_probe& probe) {
+  // What the backend reports during the later warmup, at its first and last probe operation.
+  std::optional<champsim::memory_statistics> first_in_again, last_in_again;
+  machine.llc.plan = [&](feeder_probe& probe) {
     if (probe.phase == 2 && probe.requests.empty()) {
       probe.queue(false, true);
+    }
+    if (probe.phase == 3) {
+      last_in_again = machine.memory->statistics();
+      if (!first_in_again) {
+        first_in_again = last_in_again;
+      }
     }
   };
   const auto results = machine.run({{"warmup", true, 16, {}, {}}, {"first", false, 64, {}, {}}, {"again", true, 64, {}, {}}, {"second", false, 64, {}, {}}});
 
   REQUIRE(results.size() == 2);
   require_phase_bounds(machine.counter, 4);
+  // The first measured phase's ROI snapshot stays frozen through the next
+  // phase, while the live counters it was taken from have been reset.
+  REQUIRE(first_in_again.has_value());
+  for (const auto& seen : {*first_in_again, *last_in_again}) {
+    REQUIRE(same_statistics(seen.roi_ramulator2.value(), results[0].roi_ramulator2.value()));
+    REQUIRE_FALSE(same_statistics(seen.sim_ramulator2.value(), results[0].roi_ramulator2.value()));
+  }
   require_schedule(machine);
   REQUIRE(machine.llc.requests.size() == 1);
   const auto& request = machine.llc.requests.front();
