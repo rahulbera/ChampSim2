@@ -741,11 +741,132 @@ characterizations against original source without changing the measured binaries
 
 ### Long regression reference status
 
-The initial 14 SPEC26 workloads plus mcf have completed 5M/50M on the
-second-pass baseline. `long-reference/reference-audit.json` validates complete
-captures and their hashes; this is a reference capture, not a candidate-parity
-verdict. A successor campaign for the retained trace changes is now running in
-`08-raw-trace/long-regression/`. It compares every full reported fingerprint
-against those references and excludes its concurrent runs from KIPS. The
-reviewed successor helper also checks the exact required trace set, configuration
-hashes and binary hashes.
+The initial 14 SPEC26 workloads plus mcf completed 5M/50M on the second-pass
+baseline. `long-reference/reference-audit.json` validates complete reference
+captures and their hashes. The retained trace changes have now also completed
+all 15 comparisons in `08-raw-trace/long-regression/`: complete reported phase
+statistics, effective configuration and warmup/ROI counts match the references.
+`successor-audit.json` independently confirms those comparisons and their hashes.
+These concurrent regression runs are excluded from KIPS. They supply the validated
+immediate-parent references for subsequent changes; the required SPEC26 workload
+set was checked against the current source directory and still covers all 14.
+
+## 10. Extent-query inlining — deferred after measuring workload tradeoffs
+
+**Issue.** Address slicing and legacy DRAM mapping repeatedly call tiny
+out-of-line extent-size wrappers. They only subtract two bounds, but their call
+boundaries prevent some caller simplifications. Linux perf identified repeated
+dynamic slicing in mcf's nonzero DRAM swizzle path.
+
+**Experiment and disposition.** First inline all five runtime size overloads with
+the exact original expression. Preserve by-value signatures, std::size_t results,
+and the absence of constexpr/noexcept. Derived types must continue reading their
+publicly mutable bounds. This removes 174 release call sites, but all nine v2
+pairs slow down while mcf improves. Then isolate dynamic_extent inlining, restoring
+the four derived wrappers and original helper; 16 derived call sites remain.
+The narrower experiment's timing is badly contended and cannot establish its
+benefit. **Neither production prototype is retained.** Restore all original
+query definitions, retain the characterization tests, and defer a more targeted
+DRAM experiment or a quiet-host repetition.
+
+**Files touched.**
+
+1. `inc/extent.h` — trial inline definitions, then restore all original declarations.
+2. `src/extent.cc` — trial removal/restoration of wrappers and the anonymous helper;
+   the retained production file matches its predecessor.
+3. `test/cpp/src/034-extent.cc` — retain checks for widths 0, 1, 32, 64, zero-width
+   extents at nonzero offsets, and mutations of all four derived types.
+4. `docs/research-log/Performance/2026-09-14-performance-optimization.md` — record
+   both experiments, the long comparisons, and the disposition.
+
+**Commit.** Retained characterizations: `3c1646dc35c6b75ee75224791251021695e6adbb`. Rejected production patches
+are saved alongside their immutable binaries and have no retained implementation
+commit. Step 9's log commit is `f8d7e932`.
+
+**Regression verdict.** Both prototypes match the retained step-8 production
+binary in each of the **32 short regression and 24 timing runs**: **112 runs**
+with exact full reported phase/configuration/retirement/cycle parity, independently
+audited. The broad prototype additionally matches its immediate parent on **all
+14 SPEC26 workloads plus mcf at 5M/50M**; independent checks verify the required
+workload set, successful completion, counts, output and input hashes. The
+narrower rejected prototype did not receive its own long campaign or full payload
+suite; no such result is claimed for it.
+
+Focused extent tests pass on the original source and on both prototypes:
+**491 assertions / 89 cases**. The broad prototype's full normal suite passes
+**32,727 assertions / 881 cases**, and its payload suite passes **34,820 assertions /
+886 cases**, with 7 native skips each. Python passes 66 tests with 4 native skips.
+Scoped reviews found no source blocker. After restoring production, both full suites pass with the same counts. The
+release is byte-identical to the retained step-8 binary (SHA-256
+`daabf72fe90dcd67bbce71f2eda392ce7d0ea8fefcb1867a3a4bc4e349f634fe`), whose
+Python suite was already validated. This closes the issue with no production
+behavior or speed change retained.
+
+**KIPS before/after: broad inlining.** Three alternating CPU-14 pairs, legacy DRAM,
+detailed PTW, 1M/3M. Medians (min–max):
+
+| Trace | Before | Trial | Change |
+|---|---:|---:|---:|
+| sqlite | 287.32 (284.20–287.82) | 282.98 (281.42–287.39) | -1.51% |
+| omnetpp | 317.91 (315.78–318.52) | 314.77 (313.12–315.63) | -0.99% |
+| gcc | 391.66 (390.58–393.21) | 387.22 (383.91–389.76) | -1.13% |
+| mcf | 110.01 (107.31–111.20) | 117.78 (117.20–121.06) | +7.06% |
+
+All three mcf pairs improve (+8.87%, +9.75%, +6.53%); all nine v2 pairs slow down.
+The mcf benefit does not justify applying these helpers globally without examining
+the v2 cost. Call elimination is an assembly observation, not a cause-of-speedup
+proof. These measurements still share a host with other simulations.
+
+**Narrower dynamic-only trial: excluded from speed claims.** Same method:
+
+| Trace | Before | Trial | Raw change |
+|---|---:|---:|---:|
+| sqlite | 221.52 (183.63–276.06) | 214.11 (184.52–270.93) | -3.34% |
+| omnetpp | 237.46 (198.82–306.67) | 204.70 (204.50–272.61) | -13.79% |
+| gcc | 249.45 (244.70–282.95) | 253.35 (245.61–303.39) | +1.56% |
+| mcf | 69.98 (68.15–102.15) | 73.90 (73.03–110.09) | +5.61% |
+
+The unchanged baseline alone spans 183.63–276.06 KIPS on SQLite and
+68.15–102.15 on mcf. A host observation records 25 busy processes, including
+compiler work on CPU 30, the timing CPU's SMT sibling. Our builds/tests/long runs
+had finished before timing. Keep the whole batch as parity evidence; neither its
+positive nor negative raw median changes establish a reliable speed effect.
+**Retained production KIPS gain from step 10: none claimed.**
+
+**Evidence.** `10-extent/` saves the broad binary (SHA-256
+`62ebdd72891e32903ef1e505d60283197a9f533bd79c014c5d896ed3657df48c`), patch,
+focused/full-suite logs, review, disassembly, both paired campaigns, long campaign,
+and audits. `dynamic-only/` saves the separate binary (SHA-256
+`daa174a1e46849cdd6c1ec9d79de26ba93efca23eeb53dc1d8224ff546cf760c`), patch,
+focused test, review, short/timing campaigns, host observation and audit.
+`restored/` records final checks. Completed campaign directories and snapshots
+remain intact. The long harnesses now explicitly refuse Python -O/PYTHONOPTIMIZE;
+prior executed sources are preserved, and the final long audit was repeated with
+assertions enabled.
+
+### Independent finding: oversized physical register files
+
+A separate diagnostic confirmed a **pre-existing scheduler array-bound violation**
+in the pre-performance baseline `b1fb06b9`. With
+`ooo_cpu.cpu0.register_file_size=512`, SQLite v2 reaches
+`RegisterAllocator::isAllocated(short)` with argument **256** from
+`O3_CPU::schedule_instruction()`. The architectural frontend RAT has only 256
+entries, indexed 0–255. The scheduler counts source allocations before checking
+`scheduled`, although scheduling replaces those source names with physical IDs.
+An already-renamed physical source can therefore be outside the architectural
+RAT's bounds.
+
+A GDB breakpoint at the function entry, its backtrace, and disassembly confirm the
+argument and pending lookup in the unmodified old release; independent review
+confirms the interpretation. The diagnostic deliberately stops before the read;
+it is not a completed simulation or a measured result discrepancy. No scheduler
+fix is included in this behavior-neutral pass. The benchmark configs retain 128
+physical registers, and no effect on those measurements is inferred. A correctness
+fix needs separate scheduler-policy and regression review.
+
+`preexisting-register-rat/` preserves the exact command, GDB script/output,
+original source, binary hash and review. To reproduce on the archived old binary,
+use the ordinary two benchmark configs, legacy DRAM, the original SQLite v2 trace,
+10k warmup/10k ROI, and the 512-register override. The breakpoint is
+`break *'RegisterAllocator::isAllocated(short) const' if (short)$rsi > 255` on
+this Linux x86-64 build; the saved script records the argument and backtrace.
