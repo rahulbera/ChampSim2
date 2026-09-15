@@ -520,6 +520,24 @@ TEST_CASE("Native plugins with a never-reset signed tick counter stop the memory
     REQUIRE_THROWS_WITH(driver->tick(), Catch::Matchers::ContainsSubstring("native controller plugin " + name));
     REQUIRE(counter(driver->statistics(), {"memory_system", "controller", "channel0", "cycles"}) == 0);
   }
+  // Controllers need not list the same plugins, so the one that does can be
+  // any of them. Hydra over DDR4_VRR, not a RITAddrMapper plugin, because the
+  // pinned RITAddrMapper leaks under LeakSanitizer.
+  const auto vrr_channel = vrr();
+  const auto vrr_controller = vrr_channel.substr(vrr_channel.find("    - impl: GenericDDR"));
+  const std::string hydra = "        - impl: Hydra\n          hydra_tracking_threshold: 1000\n          hydra_group_threshold: 800\n";
+  for (const auto& [where, yaml] : std::vector<std::pair<std::string, std::string>>{{"first", with_plugin(vrr_channel, hydra) + vrr_controller},
+                                                                                    {"second", vrr_channel + with_plugin(vrr_controller, hydra)}}) {
+    CAPTURE(where);
+    temporary_yaml file(changed(yaml, "interleave_bits: 0", "interleave_bits: 27"));
+    auto driver = champsim::make_ramulator2_driver(file.config(), limits);
+    for (int i = 0; i < 3; ++i)
+      driver->tick();
+    REQUIRE_THROWS_WITH(driver->tick(),
+                        Catch::Matchers::ContainsSubstring("native controller plugin Hydra") && Catch::Matchers::ContainsSubstring("limit of 3 ticks"));
+    for (const auto* channel : {"channel0", "channel1"})
+      REQUIRE(counter(driver->statistics(), {"memory_system", "controller", channel, "cycles"}) == 3);
+  }
   // A plugin whose counters are 64-bit, or no plugin, leaves the memory clock unlimited.
   for (const auto& yaml :
        {original, with_plugin(original, "        - impl: CommandCounter\n          commands_to_count: [ACT, RD]\n          path: unused.csv\n")}) {
