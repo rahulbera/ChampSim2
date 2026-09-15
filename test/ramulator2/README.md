@@ -261,9 +261,11 @@ The pinned native revision has one such report of its own. With a controller
 whose `addr_mapper` is `RITAddrMapper`, `RITAddrMapper::create_base_mapper()`
 creates the nested mapper through `Factory::create_implementation` and never
 adds it as a child, so LeakSanitizer reports it (about 500 bytes in five
-allocations per controller) at exit. Test 704's case for admitted row-indirection
-mappers constructs two, so an instrumented `test/bin/000-test-main` exits
-non-zero after every test has passed. It is deliberately not suppressed.
+allocations per controller) at exit. Test 704 constructs four: two in its case
+for admitted row-indirection mappers and two (AQUA and RRS over
+`RITAddrMapper`) in its case for plugin tick limits, so an instrumented
+`test/bin/000-test-main` exits non-zero after every test has passed, reporting
+2,028 bytes in 20 allocations. It is deliberately not suppressed.
 
 C++ test 708 exercises repeated driver and adapter construction, and teardown
 with live native requests, parent contexts and callbacks, with and without
