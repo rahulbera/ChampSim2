@@ -904,7 +904,7 @@ C++: 884 passed / 7 native-backend skips / 32,745 assertions. Payload C++: 889
 passed / 7 skips / 34,838 assertions. Python: 66 tests / 4 native-backend skips.
 The 16-case short matrix has 32 successful runs and exact before/after equality
 of every exported phase statistic, effective configuration, and warmup/ROI
-instruction and cycle count. Independent review found no blocker. The 24 longer timing runs (1M warmup / 3M ROI) also match exactly. Independent saved-artifact audits pass for both campaigns. A separate all-workload 5M/50M comparison will establish the immediate-parent reference before any ROB change is retained.
+instruction and cycle count. Independent review found no blocker. The 24 longer timing runs (1M warmup / 3M ROI) also match exactly. Independent saved-artifact audits pass for both campaigns. The separate 5M/50M comparison now also passes on all 14 SPEC26 workloads plus mcf: 15 new runs match the immediate step-8 parent in complete reported statistics, configuration, and instruction/cycle counts. Both the campaign and independent saved-artifact successor audits pass (`11-cache-guards/long-regression/audit.json` and `successor-audit.json`). These concurrent correctness runs are excluded from KIPS.
 
 **KIPS: retained.** Three alternating pairs per workload, pinned to CPU 14, legacy DRAM and detailed PTW; actual warmup+ROI retired instructions divided by whole-process elapsed time. No own build, test, long campaign or profiling overlapped these timings.
 

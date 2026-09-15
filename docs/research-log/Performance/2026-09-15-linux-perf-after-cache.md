@@ -87,9 +87,9 @@ recovery commands are saved separately.
 
 ## Next regression gate and limits
 
-The cache binary's 5M/50M successor runs are establishing the immediate-parent
+The cache binary's 5M/50M successor runs have established the immediate-parent
 reference on one trace from every one of the 14 SPEC26 workloads, plus the mcf v1
-control. Any ROB candidate must match all 15 references, pass both C++ suites and
+control: all 15 match, with an independent saved-artifact audit. Any ROB candidate must match all 15 references, pass both C++ suites and
 the 16-case short matrix, and match additional narrow-bandwidth/backpressure
 cases in both PTW modes before its fresh serial KIPS can justify retention.
 
