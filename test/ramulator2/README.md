@@ -261,11 +261,12 @@ The pinned native revision has one such report of its own. With a controller
 whose `addr_mapper` is `RITAddrMapper`, `RITAddrMapper::create_base_mapper()`
 creates the nested mapper through `Factory::create_implementation` and never
 adds it as a child, so LeakSanitizer reports it (about 500 bytes in five
-allocations per controller) at exit. Test 704 constructs four: two in its case
-for admitted row-indirection mappers and two (AQUA and RRS over
-`RITAddrMapper`) in its case for plugin tick limits, so an instrumented
-`test/bin/000-test-main` exits non-zero after every test has passed, reporting
-2,028 bytes in 20 allocations. It is deliberately not suppressed.
+allocations per controller) at exit. Test 704 constructs four: two in "Native
+driver serves every admitted row-indirection address mapper" and two (AQUA and
+RRS) in "Native plugins over RITAddrMapper with a never-reset signed tick counter
+stop the memory clock at its limit", so an instrumented `test/bin/000-test-main`
+exits non-zero after every test has passed, reporting 2,028 bytes in 20
+allocations. It is deliberately not suppressed.
 
 Those two cases carry the tag `[rit-addr-mapper]`, and every case that
 constructs a `RITAddrMapper` controller must. The `native_sanitize` CI job
@@ -314,4 +315,7 @@ independent scheduling reference predicts the tick and time of every operation,
 native tick, submission, completion and response under dividing, non-dividing,
 equal and extreme core/cache/native period ratios, across empty,
 one-instruction and later warmup phases, with a fake driver and with the real
-DDR4 and LPDDR5 drivers.
+DDR4 and LPDDR5 drivers. It also requires ROI snapshots to stay frozen through
+a later phase and finalization to run once without a native tick. Its machines
+have six operables; it does not cover the equal-time operate order of machines
+with 17 or more, where `std::sort` does not keep environment order.

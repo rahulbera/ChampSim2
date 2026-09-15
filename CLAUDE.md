@@ -195,6 +195,53 @@ gauges and full latency spans survive resets; carry-over completions can exceed
 new acceptances. Each finishing CPU updates an owned shared-memory ROI snapshot.
 Finalize once after all phases, without a measured drain or additional ticks.
 
+The driver refuses, with a runtime error, the native send that would take
+GenericDRAM's signed `total_num_read_requests`/`total_num_write_requests` past
+2,147,483,647 (per statistics phase, counting native transactions, not cache blocks)
+and, when any controller lists AQUA, Graphene, Hydra or RRS, the memory tick that
+would take their never-reset `int m_clk` past 2,147,483,647 (1.79 s simulated at 833
+ps, warmup included). `champsim::ramulator2_native_limits` is the test seam that
+lowers them in 704; there is no CLI knob. Per-row and per-bank signed counters in
+other native components were audited and left unenforced; the integration writeup
+lists them.
+
+Tests 704-708 are what the `native_sanitize` job runs. 706 checks the production
+adapter over the real driver against an independent model of its contract: a
+non-hidden smoke case runs in every enabled `make test`, and the hidden
+`[.differential]` and `[.differential-recovery]` campaigns are run through
+`test/ramulator2/oracle_variants.py` and `run_differential.py`
+(`--require-all-cores` in a multi-core checkout). `run_mutants.py`, in its own
+scratch copy and private native root, must detect every mutant in
+`oracle_mutants.py` not marked equivalent. Each mutant's pattern must occur exactly
+once, so editing `src/ramulator2_memory_backend.cc` or the driver can fail
+`test_tools.py` until the mutant is updated. 707 pins global-clock scheduling
+against a closed-form reference; 708 tears down drivers and adapters with live
+requests.
+
+`RAMULATOR2_SANITIZE=1` (only with `WITH_RAMULATOR2=1`) builds the native library
+`RelWithDebInfo` with ASan and UBSan and instruments every host compile and link;
+the mode is in the compiler stamp, the manifest and `meta.ramulator2.build`, so a
+flip rebuilds everything. Give it its own checkout and native root, and run with the
+options and ITTAGE-only suppressions in `test/ramulator2/README.md`. Pinned native
+`RITAddrMapper` leaks its nested mapper (2,028 bytes in 20 allocations from 704's
+`[rit-addr-mapper]` cases); it is deliberately unsuppressed, so the
+`native_sanitize` job runs those cases in a last step that fails until someone
+chooses an upstream fix, an approved suppression or `detect_leaks=0`. Every new case
+that constructs a `RITAddrMapper` controller must carry that tag. LeakSanitizer
+never runs on the no-progress `abort()`, SIGTERM or SIGINT. When one `make`
+invocation builds both `bin/champsim` and the test binary, shared objects can take
+the test target's `-g3 -Og` (about 2.3x slower, same results), so build the
+simulator on its own before timing it.
+
+To model DRAM bandwidth natively, override `nBL` on DDR4_2400R (bandwidth about
+76,831 x A / nBL MB/s, A 0.95-1.00) and read "Modelling memory bandwidth with the
+native backend" in the integration writeup first: low-bandwidth runs need
+`sim.livelock_period` raised and, at very low bandwidth (the default aborted at
+about 13 MB/s), `sim.deadlock_cycle`; tCK scaling, smaller payloads and extra
+32-byte-transaction controllers are the wrong knobs; a DDR5 `nBL` override needs
+`nRTW` too; and a single core at B/N matches N cores sharing B only on a saturated
+channel with identical workloads.
+
 Native TOML uses schema 2 and `phase.<name>.<roi|sim>.ramulator2.adapter`/`.native`,
 plus owned raw `native_yaml`. Counters are separate 64-bit fields, including
 `out_of_range_prefetches` beside `rejected_submissions`; read latency is summed
@@ -244,8 +291,9 @@ regressions live in `test/ramulator2`; the enabled CI job uses generated local
 traces and the pinned native root, preserving the legacy compiler matrix.
 
 The [integration writeup](docs/ramulator2-integration.md) documents the architecture,
-the limits of the completed evidence, and the proposed stress campaign before
-mainline integration.
+the review and pre-merge close-out evidence with its limits, the status of every
+known weak point, and what remains before mainline integration (hosted CI, a
+clean-host reproduction, the `RITAddrMapper` leak decision).
 
 ### Tests
 
