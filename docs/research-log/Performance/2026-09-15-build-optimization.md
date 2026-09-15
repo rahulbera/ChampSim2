@@ -739,3 +739,142 @@ simulator statistics failure or an observed illegal-instruction crash.
 Retain v2 as default; the separate v3 trial was rejected on throughput. A future native build needs an
 explicitly restricted destination set and its own validation; it is not a
 portable fleet profile in this campaign.
+
+## 7. Close out retained artifacts and publish the local release alias
+
+**Issue.** The accepted implementations and their evidence span several source
+commits and immutable binaries. The local `bin/champsim` alias still contained
+the preserved pre-campaign binary, so it did not expose the accepted standalone
+build-information interface. Closeout must connect each retained stage to its
+actual predecessor and evidence without treating later documentation or test-only
+commits as fresh simulator builds.
+
+**Fix.** Reconcile the accepted source, frozen binaries, adjacent policy receipts,
+saved test logs, short/long parity audits, and timing audits. Keep release as the
+plain-`make` default, x86-64-v2/generic as the x64 default, and fast as the
+optional assertion-disabled mode. The rejected v3 selection and unrestricted
+head-native profile remain absent from production commands and policy. After the
+reconciliation passed, atomically replace only the local `bin/champsim` alias
+with the exact accepted release-v2 bytes, using a temporary file in `bin/` and a
+same-directory rename.
+
+**Files touched.**
+
+1. This campaign log: add the final source, artifact, gate, result, publication,
+   and limitation reconciliation.
+2. `docs/superpowers/specs/2026-09-15-portable-build-modes-design.md`: replace the
+   stale pre-implementation introduction and link this completed campaign record.
+3. `docs/superpowers/plans/2026-09-15-build-optimization.md`: mark receipt and
+   documentation work complete while leaving whole-campaign review open.
+
+`bin/champsim` is a local ignored build artifact rather than a committed source
+file. Its replacement and all closeout receipts are preserved under
+`06-closeout/` in the external evidence root.
+
+**Commit hashes.** Task 6 starts from
+`18ce2dd05e9e9875c4134b90dcca778652f4eb81`. Retained production behavior is
+from `d71de93c688243283ae2cb2e05ec4b6fcc5dcfb2`; the later
+`65fe18c3dac03c80eb5c8c4b8f51f7c2a4c31991` changes only test-fixture isolation.
+Accepted documentation source is `084f7a1db5274b60c1aa3a1ae27f78121a3bbd02`.
+The rejected v3 trial is preserved in history at `6b7e1641` and `1f093c02`, and
+`7cf069933df9614c38ea676d7fff1267c4308055` restores its three production/test
+files exactly to `084f7a1d`. This closeout adds no simulator, build, test,
+dependency, or native source change.
+
+**Regression verdict.** The read-only reconciliation passes; no build, test,
+simulation, profiler, or remote job was rerun for closeout. Each accepted or
+evaluated candidate's saved gate contains 16 short cases / 32 runs with complete
+reported parity, 15 long cases / 15 predecessor plus 15 candidate runs at 5M
+warmup and 50M simulation with exact parity, and 24 timing runs / 12 alternating
+pairs across four protected traces. The long set is the 14 SPEC26 workloads plus
+the existing v1 mcf control. Stage 1's actual short audit is
+`01-v2/short-regression/independent-audit.json`; its timing audit is likewise
+under `01-v2/timing/`, while later stages use their saved validation roots.
+
+The retained and reference identities are:
+
+| Role | Source | SHA256 | Policy or disposition |
+| --- | --- | --- | --- |
+| Campaign baseline / v1 predecessor | `a612bf2b` | `fe657e62bb275213fda52348c18ef3f411c724e00d34d8243d962d38f5263e79` | Preserved at `00-baseline/champsim` |
+| Isolated v2 policy trial | `a612bf2b` | `22d757ff9ec50182219d434a666e7e21e904bebe9e55e2b32c84086c525f81e7` | Accepted as platform policy, not as a speed gain |
+| Assertion/error-handling stage | `99365e1e` + `8f0b0687` | `36f57f4c12aa13223c28aebe000c3b17dbe3c2753c02cf075c55fa0e7ba3621f` | Accepted assertion-enabled predecessor |
+| Named release v2 | `d71de93c` | `ebd0abafe640c83144c09b5579dce51846f46a9a9e41644dc474aaa3a33af1d8` | release, `-O3 -g3`, v2/generic, assertions 1, native 0 |
+| Named fast v2 | `d71de93c` | `467161d7aaef15cf2fb70eae0b0a4fbc1c446538eda318af1f7f33c7c7ee5275` | fast, `-O3 -g3`, v2/generic, assertions 0, native 0 |
+| Named debug v2 | `d71de93c` | `f0a7b40529c998640748d05069c9b66e0e319bbd88d6c7b419d767109bf0e13c` | debug, `-O0 -g3`, frame pointers, assertions 1, native 0 |
+| Named release v1 fallback | `d71de93c` | `533355738c2c06eb24f1612eb2cedc1ac3750f695a85689923f93606d4df8e2a` | release, `-O3 -g3`, original x86-64/generic, assertions 1, native 0 |
+| Rejected fast v3 trial | `6b7e1641` | `3be0bedddee5673b35ca4c69081df26ce91e70c254be63fa87e5769643b36f06` | Frozen for audit; absent from retained production policy |
+
+The four retained named candidates' adjacent receipts all identify helper SHA256
+`3e2831c65498c7e8b3b96cdddc308ca246c8c49aec0bf013113dc97ba83a088c`
+and production source `d71de93c`; release, fast, debug, and v1 policy keys are
+respectively `1d264c7c13a56cfb2ef15e36`, `13827087e0e486083ad30810`,
+`21dfb5663f09db1031488f09`, and `cb0b65743e5b358691515f6d`.
+The later accepted commit changes tests only, and the current production tree
+equals accepted `084f7a1d` outside documentation. The v1 hash above is the
+artifact-and-receipt value; an initial Task 6 handoff transposed its final bytes,
+and the correction is retained explicitly in the closeout verification receipt.
+
+Saved local test receipts report the actual totals rather than collapsing skips
+into passes. The v2 trial ran 906 normal cases (899 passed, 7 skipped; 81,745
+assertions), 911 payload cases (904 passed, 7 skipped; 83,838 assertions), and
+66 Python tests with four skips. The assertion replacement, named release, fast,
+and v3 candidates each ran the later 920 normal cases (913 passed, 7 skipped;
+81,840 assertions) and 925 payload cases (918 passed, 7 skipped; 83,933
+assertions). Their recorded Python totals are 74 with four skips for the
+assertion replacement, 105 with five skips for named release, and 108 with five
+skips for the v3 trial. The restoration then passed 27 build-policy tests with
+one skip and 105 Python tests with five skips. The seven C++ skips in each later
+normal/payload suite are the expected native-disabled cases.
+
+**KIPS before/after.** These are the previously recorded incremental medians
+against each stage's immediate accepted predecessor. They are repeated here
+without adding percentages or combining measurements from different windows:
+
+| Incremental comparison | sqlite | omnetpp | gcc | mcf | Decision |
+| --- | --- | --- | --- | --- | --- |
+| Preserved v1 → isolated v2 | 448.72 → 428.17 (−4.58%) | 514.08 → 491.03 (−4.48%) | 607.53 → 580.89 (−4.39%) | 157.01 → 148.79 (−5.23%) | Retain v2 as the approved platform floor only |
+| v2 → assertion/error handling | 428.96 → 436.30 (+1.71%) | 487.13 → 493.01 (+1.21%) | 576.30 → 587.16 (+1.88%) | 148.01 → 151.86 (+2.60%) | Accept |
+| Assertion stage → named release | 432.48 → 447.83 (+3.55%) | 497.66 → 512.53 (+2.99%) | 583.69 → 605.40 (+3.72%) | 152.52 → 157.19 (+3.06%) | Accept combined build stage |
+| Named release → named fast | 444.93 → 451.38 (+1.45%) | 506.32 → 512.39 (+1.20%) | 602.69 → 606.72 (+0.67%) | 156.09 → 158.53 (+1.56%) | Accept optional fast |
+| Named v2 fast → v3 fast | 450.20 → 431.62 (−4.13%) | 514.48 → 487.07 (−5.33%) | 611.31 → 578.26 (−5.41%) | 159.39 → 151.11 (−5.19%) | Reject v3 |
+
+No cumulative baseline-to-final comparison was measured. The incremental
+percentages are therefore not added and no cumulative speedup is claimed.
+
+**Evidence and decision.** `06-closeout/prepublication-verification.json` binds
+the accepted source, artifact, policy, test, parity, timing, native and rejection
+receipts before publication. `06-closeout/publication.json` records the old
+alias and preserved baseline at
+`fe657e62bb275213fda52348c18ef3f411c724e00d34d8243d962d38f5263e79`,
+the atomic publication command, and the new local alias at the accepted release
+SHA256 `ebd0abafe640c83144c09b5579dce51846f46a9a9e41644dc474aaa3a33af1d8`.
+The published `--build-info` exactly matches the adjacent accepted receipt:
+release, x86-64-v2/generic, assertions enabled, `-O3 -g3`, and native disabled.
+This publishes already accepted bytes; it is not a fresh build from the closeout
+documentation commit. Future ordinary `make` invocations retain their normal
+canonical-build and atomic-alias behavior. No other alias was changed.
+
+Full SPEC correctness, normal/payload C++, Python, and protected timing evidence
+is actual local GCC 13 x64 evidence. ETH evidence consists of actual GCC 11 and
+Clang 14 builds, real policy/macro checks, and five codec smokes per preserved
+named-release build; it is not an ETH full-SPEC or KIPS claim. The rejected-v3
+stage separately includes actual Clang 14 v2-fast/v3-fast builds and synthetic
+codec smokes on representative CPU families. GCC 9/10 coverage is a synthetic
+compiler-capability/fallback check rather than an actual local runtime.
+
+Native compatibility evidence preserves the binary built with helper
+`e867b54e5625e83012a9d41ef56f22d6daca288e614fd4a07ab577b05c3c2607`.
+The final denial-only helper change is reconciled to `d71de93c` by AST, effective
+policy, and real compiler-macro proof in
+`03-build-modes/native-validation-review-fix2/d71de93c-source-policy-reconciliation.json`;
+the native binary was not rebuilt from `d71de93c`. Native full SPEC, native fast
+or v3, native KIPS, ARM hardware, and Darwin hardware are unvalidated. ARM
+hardware was explicitly deferred. External installed-library ISA requirements
+remain unknown without separate provenance. The existing GCC 13 test 183
+`-Wnonnull` diagnostic and GCC 11 `-O3 -g3` compile cost remain documented
+investigations, not suppressed or solved issues.
+
+The 26 campaign decisions and tradeoffs are indexed by `final-rulings.md` at the
+evidence root. Final whole-campaign code/evidence review and SDD archival remain
+controller-owned and intentionally open in the plan. The local branch and raw
+evidence are retained; nothing was pushed, merged, or cleaned up.

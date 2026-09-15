@@ -10,9 +10,10 @@ the documented minimum ISA is a requirement for every standard build mode,
 including fast. The user subsequently requested x86-64-v2 as the x86 minimum;
 the compute-node audit below supports that choice for the current ETH CPU fleet.
 
-This document records the design and validation requirements; build-system and
-assertion changes have not been implemented. Work belongs in
-`/home/rbera/work/alakazam/champsim-perf-fix`, branch `feat/perf-fix`.
+The build-system and assertion changes described here are implemented on
+`feat/perf-fix`. The [build-optimization campaign](../../research-log/Performance/2026-09-15-build-optimization.md)
+records the accepted x64 policies, rejected profile trials, exact artifacts,
+validation evidence, and remaining platform limits.
 
 There will be separate native Linux x86-64 and little-endian AArch64 binaries.
 One native executable cannot serve both instruction sets. Building against

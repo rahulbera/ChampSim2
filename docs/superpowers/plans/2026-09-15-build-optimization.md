@@ -291,11 +291,11 @@ kept separate from the v2 default, with a declared destination fleet.
 
 **Files:** campaign log, build documentation, evidence verification report.
 
-- [ ] Reconcile every retained implementation with its exact binary, source,
+- [x] Reconcile every retained implementation with its exact binary, source,
   tests, parity audit, and measured predecessor. Verify rejected trials are absent
   from the retained production paths and standard defaults match the spec.
 - [ ] Obtain whole-campaign code/evidence review, resolve material findings with
   focused tests and a scoped re-review, and preserve the reports.
-- [ ] Record any untested platform or dependency scope accurately. Provide final
+- [x] Record any untested platform or dependency scope accurately. Provide final
   incremental results and, if measured, a separately labelled cumulative result.
   Keep the local branch and evidence for the user; do not push or merge.
