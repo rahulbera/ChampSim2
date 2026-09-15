@@ -42,6 +42,8 @@ def main():
     args.config = [p.resolve(strict=True) for p in args.config]
     binaries = {label: p.resolve(strict=True) for label, p in (('before', args.before), ('after', args.after))}
     traces = json.loads(args.traces.read_text())
+    if not isinstance(traces, list) or not traces:
+        parser.error('trace manifest must contain a non-empty list of traces')
     for trace in traces:
         trace['path'] = str(Path(trace['path']).resolve(strict=True))
         if sha256(trace['path']) != trace['sha256']:
