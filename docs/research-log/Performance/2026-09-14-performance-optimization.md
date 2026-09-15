@@ -870,3 +870,60 @@ use the ordinary two benchmark configs, legacy DRAM, the original SQLite v2 trac
 10k warmup/10k ROI, and the 512-register override. The breakpoint is
 `break *'RegisterAllocator::isAllocated(short) const' if (short)$rsi > 255` on
 this Linux x86-64 build; the saved script records the argument and backtrace.
+
+## Optimization 11 — skip cache helper calls when no work is possible
+
+**Issue.** Every cache tick called span, transformation, extraction and stable
+partition helpers even for empty queues or exhausted bandwidth. Linux perf
+attributed a large share of host cycles to those helper call paths.
+
+**Fix.** Guard the fill and tag-check blocks, translation-stash and input-queue
+transforms, and empty tag extraction. Preserve the nonempty algorithms and
+predicate order. Bandwidth construction and assertions, zero-consumption
+accounting, translation-capacity capture, upstream rotation and the prefetcher
+cycle hook retain their original placement and behavior. There is no early
+return from the whole cache tick.
+
+**Files touched.**
+
+1. `src/cache.cc`: skip helper blocks for empty queues or zero bandwidth in
+   `CACHE::operate`, retaining all per-cycle side effects.
+2. `test/cpp/src/427-cache-idle-work.cc`: characterize idle upstream fairness
+   and cycle hooks, queued and admitted work held by zero tag bandwidth, and
+   ready fills held until fill bandwidth is restored.
+3. `docs/research-log/Performance/2026-09-14-performance-optimization.md`:
+   record the change, validation, measurements and limits.
+
+**Commits.** `461e16d0` (source and tests); the following documentation
+commit records this entry.
+
+**Regression verdict: INERT within the tested configurations.** The new tests
+pass on the original and optimized code (3 cases / 18 assertions), and the
+existing dirty-writeback retry test passes (1 case / 8 assertions). Full normal
+C++: 884 passed / 7 native-backend skips / 32,745 assertions. Payload C++: 889
+passed / 7 skips / 34,838 assertions. Python: 66 tests / 4 native-backend skips.
+The 16-case short matrix has 32 successful runs and exact before/after equality
+of every exported phase statistic, effective configuration, and warmup/ROI
+instruction and cycle count. Independent review found no blocker. The 24 longer timing runs (1M warmup / 3M ROI) also match exactly. Independent saved-artifact audits pass for both campaigns. A separate all-workload 5M/50M comparison will establish the immediate-parent reference before any ROB change is retained.
+
+**KIPS: retained.** Three alternating pairs per workload, pinned to CPU 14, legacy DRAM and detailed PTW; actual warmup+ROI retired instructions divided by whole-process elapsed time. No own build, test, long campaign or profiling overlapped these timings.
+
+| Workload | Before median (range) | After median (range) | Median change |
+|---|---:|---:|---:|
+| sqlite | 282.27 (180.01–294.55) | 403.81 (245.81–416.65) | +43.06% |
+| omnetpp | 313.85 (225.43–322.75) | 463.75 (282.19–476.36) | +47.76% |
+| gcc | 391.75 (379.28–399.18) | 552.97 (534.99–562.61) | +41.15% |
+| mcf | 114.94 (110.17–115.04) | 145.43 (137.14–146.62) | +26.53% |
+
+All twelve paired changes are positive: SQLite +36.55/+43.06/+41.45%, omnetpp +25.18/+47.76/+47.59%, GCC +41.05/+41.15/+40.94%, and mcf +24.49/+27.56/+26.41%. Unrelated jobs shared the host, and SQLite/omnetpp absolute rates rose markedly after the first repetition. The gain is supported by every local pair, including the slower interval; the exact percentage is not an isolated-host estimate. Do not compare these absolute KIPS with earlier campaigns or add the percentage to earlier improvements.
+
+The short matrix covers both PTW modes, clock ratios, VM randomization, multiple memory channels/ranks/bank groups/banks and next-line prefetching. C++ tests cover payloads and cache-specific side effects. This does not prove neutrality for every module, topology or instruction window; exported TOML also omits some warmup cache/DRAM counters.
+
+**Evidence.** `2026-09-15-optimizations/11-cache-guards/` under the external
+results root contains the immutable candidate, source patch, focused/full-suite
+logs, implementation and review reports, both paired campaigns, host observations
+and independent audits. The candidate SHA-256 is
+`fe657e62bb275213fda52348c18ef3f411c724e00d34d8243d962d38f5263e79`;
+its immediate parent is the retained step-8 binary, SHA-256
+`daabf72fe90dcd67bbce71f2eda392ce7d0ea8fefcb1867a3a4bc4e349f634fe`.
+The rejected step-9 and step-10 source experiments are not part of this comparison.
