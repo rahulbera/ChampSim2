@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import yaml
 
@@ -271,6 +272,15 @@ class MutantCatalogueTests(unittest.TestCase):
 
 
 class ScratchCopyTests(unittest.TestCase):
+    def test_mutant_build_does_not_inherit_parent_build_overrides(self):
+        with patch.dict(os.environ, {'MAKEFLAGS': 'OBJ_ROOT=/parent/objects BUILD_MODE=fast',
+                                     'OBJ_ROOT': '/parent/objects', 'DEP_ROOT': '/parent/dependencies',
+                                     'BIN_ROOT': '/parent/bin', 'RAMULATOR2_SANITIZE': '1',
+                                     'BUILD_FLAVOR': 'sim', 'CXX': '/parent/compiler',
+                                     'VCPKG_INSTALLED_DIR': '/shared/dependencies'}, clear=True):
+            env = run_mutants.build_environment('/chosen/compiler')
+        self.assertEqual(env, {'CXX': '/chosen/compiler', 'VCPKG_INSTALLED_DIR': '/shared/dependencies'})
+
     def test_copy_takes_tracked_and_untracked_files_and_leaves_the_source_alone(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo, copy_dir = Path(tmp) / "repo", Path(tmp) / "copy"

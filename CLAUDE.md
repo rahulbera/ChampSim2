@@ -203,8 +203,9 @@ interface, adapter, legacy mode and standalone harnesses remain C++17.
 revisions, compiler/options and library fingerprint. Its host/native ABI probe
 includes public base/spec/request/config layouts and type identities; response
 files and forced includes participate. Incompatible ABI flags fail clearly.
-The native product retains its explicit Release/C++20 policy and receives the
-selected architecture flags. A source-root `.champsim-native/manifest.json` and
+The native product uses Release/C++20 by default, or RelWithDebInfo/C++20 with
+`RAMULATOR2_SANITIZE=1`, and receives the selected architecture flags. A
+source-root `.champsim-native/manifest.json` and
 lock allow production/test flavors to reuse exactly the same verified library.
 An occupied root with changed policy, missing provenance, or a replaced library
 is rejected; use a fresh isolated clone. No build option authorizes replacement.
@@ -282,18 +283,20 @@ requests.
 
 `RAMULATOR2_SANITIZE=1` (only with `WITH_RAMULATOR2=1`) builds the native library
 `RelWithDebInfo` with ASan and UBSan and instruments every host compile and link;
-the mode is in the compiler stamp, the manifest and `meta.ramulator2.build`, so a
-flip rebuilds everything. Give it its own checkout and native root, and run with the
+the mode is in the build policy, compiler stamp, manifest and
+`meta.ramulator2.build`. Changing it selects separate host objects; the native
+root's ownership check requires a separate fresh root for a different mode.
+Give it its own native root, and run with the
 options and ITTAGE-only suppressions in `test/ramulator2/README.md`. Pinned native
 `RITAddrMapper` leaks its nested mapper (2,028 bytes in 20 allocations from 704's
 `[rit-addr-mapper]` cases). The `native_sanitize` job runs those cases in a last
 step with `test/ramulator2/sanitizers/lsan-rit.supp`, which suppresses only
 allocations under `RITAddrMapper::create_base_mapper`. Every new case
 that constructs a `RITAddrMapper` controller must carry that tag. LeakSanitizer
-never runs on the no-progress `abort()`, SIGTERM or SIGINT. Shared objects first
-built for the test binary (after `make test`, or with `test` named before `all`)
-keep its `-g3 -Og` and are linked into `bin/champsim` (about 2.3x slower, same
-results), so build the simulator on its own before timing it.
+never runs on the no-progress `abort()`, SIGTERM or SIGINT. Simulator and test
+objects use separate policy directories, so building tests first does not change
+the simulator's optimization level. Use the canonical paths from
+`make print-build-paths` to retain different modes without sharing an alias.
 
 To model DRAM bandwidth natively, override `nBL` on DDR4_2400R (bandwidth about
 76,831 x A / nBL MB/s, A 0.95-1.00): export points with

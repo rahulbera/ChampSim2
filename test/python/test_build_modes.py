@@ -58,7 +58,7 @@ int main() {
             (self.root / name).write_text(f'int {function}() {{\n#ifdef CHAMPSIM_TEST_BUILD\nreturn 1;\n#else\nreturn 0;\n#endif\n}}\n')
         self.env = {k: v for k, v in os.environ.items() if k not in (
             'CFLAGS', 'CXXFLAGS', 'CPPFLAGS', 'LDFLAGS', 'LDLIBS', 'LOADLIBES', 'MAKEFLAGS', 'MFLAGS', 'BUILD_MODE', 'X86_ISA',
-            'WITH_RAMULATOR2', 'RAMULATOR2_ROOT', 'OBJ_ROOT', 'DEP_ROOT', 'BIN_ROOT')}
+            'WITH_RAMULATOR2', 'RAMULATOR2_ROOT', 'RAMULATOR2_SANITIZE', 'OBJ_ROOT', 'DEP_ROOT', 'BIN_ROOT')}
 
     def make(self, *args, ok=True):
         result = subprocess.run(['make', '--no-print-directory', f'CXX={self.compiler}',

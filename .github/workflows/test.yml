@@ -543,8 +543,8 @@ jobs:
 
     # Non-PIE code takes a native function's address through a PLT stub in the
     # executable, which once made the provenance check fingerprint the program.
-    # Separate object/binary roots leave the main build alone; the helper builds
-    # the native library again for the new object root, so this runs last.
+    # Separate object/binary roots leave the main build alone and reuse the
+    # same verified native library owned by its source root.
     - name: Check library provenance from a non-PIE executable
       run: |
         obj="$RUNNER_TEMP/nopie-obj"
@@ -684,9 +684,12 @@ jobs:
       if: always()
       with:
         name: native-sanitize-validation
+        include-hidden-files: true
         path: |
           ${{ runner.temp }}/sanitized.toml
-          .csconfig/ramulator2-native/build.log
+          .csconfig/**/ramulator2-native/build.log
+          native-source/.champsim-native/build.log
+          native-source/.champsim-native/manifest.json
 
   upload_coveralls:
     runs-on: ubuntu-latest

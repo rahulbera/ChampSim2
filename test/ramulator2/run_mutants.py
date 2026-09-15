@@ -11,10 +11,10 @@ applied to the copy's source (normally src/ramulator2_memory_backend.cc) and
 removed again afterwards. A mutant is
 detected when any campaign run reports a discrepancy (see run_differential.py).
 
-Native builds: a new OBJ_ROOT makes the build helper rebuild libramulator.so
-inside --native-root unless --seed-native-obj names an object root whose
-ramulator2-native/manifest.json already matches that root. Use a private
-native checkout that no other build or run is using.
+Native builds reuse the verified library owned by --native-root when its
+compiler and native policy match. Otherwise use a fresh pinned source checkout;
+existing libraries are never replaced. Do not relocate a populated native root.
+The deprecated --seed-native-obj option is accepted but has no effect.
 """
 import argparse
 import hashlib
@@ -33,7 +33,9 @@ import oracle_variants
 import run_differential
 
 REPO = Path(__file__).resolve().parents[2]
-INHERITED_BUILD_VARIABLES = ("CXX", "CC", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "CFLAGS")
+INHERITED_BUILD_VARIABLES = ("CXX", "CC", "CXXFLAGS", "CPPFLAGS", "LDFLAGS", "CFLAGS", "LDLIBS", "LOADLIBES",
+                             "MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES", "MAKELEVEL", "BUILD_MODE", "BUILD_FLAVOR", "X86_ISA",
+                             "OBJ_ROOT", "DEP_ROOT", "BIN_ROOT", "WITH_RAMULATOR2", "RAMULATOR2_ROOT", "RAMULATOR2_SANITIZE")
 DEFAULT_RUNS = "ddr4,lpddr5,lpddr5-tiny,lpddr5-2ch-asym,ddr4-tiny-2feeders"
 DEFAULT_RECOVERY_RUNS = "ddr4-tiny,lpddr5-tiny,lpddr5-2ch-tiny-2feeders"
 
@@ -103,10 +105,6 @@ def prepare(args, out):
     obj.mkdir()
     for name in ("registry.inc", "registry.cc.inc"):
         shutil.copy2(scratch / ".csconfig" / name, obj / name)
-    if args.seed_native_obj:
-        manifest = Path(args.seed_native_obj) / "ramulator2-native" / "manifest.json"
-        (obj / "ramulator2-native").mkdir()
-        shutil.copy2(manifest, obj / "ramulator2-native" / "manifest.json")
     return SimpleNamespace(scratch=scratch, obj=obj, bin=bin_dir, env=env, copied=copied)
 
 
@@ -150,7 +148,7 @@ def judge(mutant, cores, detected):
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--native-root", required=True, help="private pinned Ramulator 2.1 checkout")
+    p.add_argument("--native-root", required=True, help="verified matching native root or fresh pinned Ramulator 2.1 checkout")
     p.add_argument("--output-dir", required=True, help="new directory for the scratch copy, builds, logs and summary.json")
     p.add_argument("--repo", default=str(REPO), help="repository to copy (default: this checkout)")
     p.add_argument("--cxx", default="/usr/bin/g++")
@@ -165,13 +163,15 @@ def parser():
     p.add_argument("--jobs", type=int, default=6, help="concurrent campaign subprocesses")
     p.add_argument("--make-jobs", type=int, default=6)
     p.add_argument("--timeout", type=float, default=600)
-    p.add_argument("--seed-native-obj", default="", help="object root whose native manifest matches --native-root (avoids a rebuild)")
+    p.add_argument("--seed-native-obj", default="", help="deprecated, ignored: matching native roots are reused automatically")
     p.add_argument("--keep-scratch", action="store_true", help="keep the scratch copy, objects and binary")
     return p
 
 
 def main(argv=None):
     args = parser().parse_args(argv)
+    if args.seed_native_obj:
+        print("--seed-native-obj is deprecated and ignored; native ownership is verified at --native-root", file=sys.stderr)
     args.repo = Path(args.repo).resolve()
     out = Path(args.output_dir).resolve()
     out.mkdir(parents=True, exist_ok=False)

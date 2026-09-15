@@ -1,8 +1,10 @@
 """Behavioral checks for dependency-free mode and build identity invalidation."""
+import hashlib
 import importlib.util
 import json
 import os
 import re
+import shlex
 import time
 from pathlib import Path
 import shutil
@@ -29,7 +31,8 @@ def nested_make_environment():
     variables a dry run is meant to control.
     """
     hidden = {'MAKEFLAGS', 'MFLAGS', 'MAKELEVEL', 'MAKEOVERRIDES', 'WITH_RAMULATOR2', 'RAMULATOR2_ROOT',
-              'RAMULATOR2_SANITIZE', 'CPPFLAGS', 'CXXFLAGS', 'LDFLAGS'}
+              'RAMULATOR2_SANITIZE', 'CPPFLAGS', 'CXXFLAGS', 'LDFLAGS', 'CFLAGS',
+              'LDLIBS', 'LOADLIBES', 'BUILD_MODE', 'X86_ISA', 'OBJ_ROOT', 'DEP_ROOT', 'BIN_ROOT'}
     return {name: value for name, value in os.environ.items() if name not in hidden}
 
 
@@ -45,10 +48,17 @@ class RamulatorBuildTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.env = {k: v for k, v in os.environ.items() if k not in ('CFLAGS', 'CXXFLAGS', 'CPPFLAGS', 'LDFLAGS')}
+        self.env = nested_make_environment()
         self.compiler = shutil.which('g++') or shutil.which('clang++')
         if not self.compiler:
             self.skipTest('a C++ compiler is required for build stamp checks')
+
+    def stub_dependencies(self, workspace):
+        target = subprocess.check_output([self.compiler, '-dumpmachine'], text=True)
+        arch = 'arm64' if target.startswith(('aarch64-', 'arm64-')) else 'x64'
+        triplet = arch + ('-osx' if 'darwin' in target or 'apple' in target else '-linux')
+        for directory in ('include', 'lib'):
+            (workspace / 'vcpkg_installed' / triplet / directory).mkdir(parents=True)
 
     def run_helper(self, *args):
         return subprocess.run([sys.executable, str(HELPER), '--obj', str(self.root / 'objects'),
@@ -83,18 +93,19 @@ class RamulatorBuildTests(unittest.TestCase):
         shutil.copyfile(HELPER.parent.parent / 'Makefile', workspace / 'Makefile')
         (workspace / 'config').symlink_to(HELPER.parent, target_is_directory=True)
         for name, content in {'_configuration.mk': 'executable_name := bin/champsim\n',
-                              'global.options': '', 'src/ramulator2_driver.cc': ''}.items():
+                              'global.options': '', 'module.options': '', 'src/ramulator2_driver.cc': ''}.items():
             (workspace / name).write_text(content)
+        self.stub_dependencies(workspace)
         before = tree(workspace)
         native = self.root / 'missing-native'
         objects = self.root / 'enabled-dry-run'
         result = subprocess.run(['make', '-n', 'all', 'WITH_RAMULATOR2=1', f'RAMULATOR2_ROOT={native}',
-                                 f'OBJ_ROOT={objects}', f'CXX={self.compiler}'],
+                                 f'OBJ_ROOT={objects}', f'CXX={self.compiler}', 'CHAMPSIM_LIBRARIES=', 'CHAMPSIM_TEST_LIBRARIES='],
                                 cwd=workspace, env=self.env, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f"{HELPER.name} --mode='1' --root='{native}'", result.stdout)
-        self.assertIn('--check-abi', result.stdout)
-        self.assertIn(f'-std=c++20 -c -o {objects / "ramulator2_driver.o"}', result.stdout)
+        self.assertIn('--abi-flags=', result.stdout)
+        self.assertRegex(result.stdout, rf'-std=c\+\+20 -c -o {re.escape(str(objects))}/[^\s]+/ramulator2_driver.o')
         self.assertIn(str(native / 'libramulator.so'), result.stdout)
         self.assertFalse(objects.exists())
         self.assertFalse(native.exists())
@@ -173,19 +184,23 @@ with native_lock(root):
     def sanitizer_workspace(self):
         """The real Makefile and helper beside stub simulator and test sources."""
         workspace = self.root / 'stub-checkout'
-        for directory in ('src', 'test/cpp/src'):
+        for directory in ('src', 'test/cpp/src', 'inc', '.csconfig'):
             (workspace / directory).mkdir(parents=True)
         shutil.copyfile(HELPER.parent.parent / 'Makefile', workspace / 'Makefile')
         (workspace / 'config').symlink_to(HELPER.parent, target_is_directory=True)
         for name in ('src/ramulator2_driver.cc', 'src/probe.cc', 'test/cpp/src/000-test-main.cc',
-                     'test/cpp/src/001-probe.cc', 'global.options'):
+                     'test/cpp/src/001-probe.cc', 'global.options', 'module.options'):
             (workspace / name).write_text('')
+        for name in ('champsim_assert.h', 'trace_instruction.h'):
+            shutil.copyfile(HELPER.parent.parent / 'inc' / name, workspace / 'inc' / name)
+        shutil.copytree(HELPER.parent.parent / 'inc/util', workspace / 'inc/util')
+        self.stub_dependencies(workspace)
         (workspace / '_configuration.mk').write_text('executable_name := bin/champsim\n')
         return workspace
 
     def dry_run(self, workspace, *variables):
         return subprocess.run(['make', '-n', 'all', 'test/bin/000-test-main', f'OBJ_ROOT={self.root / "dry-objects"}',
-                               f'CXX={self.compiler}', *variables], cwd=workspace, text=True, capture_output=True,
+                               f'CXX={self.compiler}', 'CHAMPSIM_LIBRARIES=', 'CHAMPSIM_TEST_LIBRARIES=', *variables], cwd=workspace, text=True, capture_output=True,
                               env=nested_make_environment())
 
     def test_release_native_build_commands_and_mode_are_unchanged(self):
@@ -225,28 +240,45 @@ with native_lock(root):
                                             'sanitizers': 'address,undefined',
                                             'shared_linker_flags': SANITIZER_OPTIONS})
 
-    def test_flipping_sanitizers_invalidates_the_native_library_and_host_objects(self):
+    def test_sanitized_native_commands_preserve_the_architecture_floor(self):
         helper = load_helper()
-        release, sanitized = helper.native_settings(sanitize=False), helper.native_settings(sanitize=True)
-        plain = helper.compiler_identity([self.compiler], '  ', sanitize=False)
-        instrumented = helper.compiler_identity([self.compiler], f' {SANITIZER_OPTIONS} -g  {SANITIZER_OPTIONS}',
-                                                sanitize=True)
-        # Every host object depends on the stamp holding this identity, and the
-        # mode alone changes it even if the host flags were spelled identically.
-        self.assertNotEqual(plain, instrumented)
-        self.assertNotEqual(plain, helper.compiler_identity([self.compiler], '  ', sanitize=True))
-        before = helper.manifest_inputs(Path('/native'), helper.REVISION, plain, release)
-        after = helper.manifest_inputs(Path('/native'), helper.REVISION, instrumented, sanitized)
-        for prior, current in ((before, after), (after, before)):
+        configure, _ = helper.cmake_commands(Path('/native'), Path('/build'), self.compiler,
+                                             helper.native_settings(True), ['-march=x86-64-v2'])
+        for name in ('CXX_FLAGS', 'SHARED_LINKER_FLAGS', 'EXE_LINKER_FLAGS'):
+            flags = next(word.split('=', 1)[1] for word in configure if word.startswith('-DCMAKE_' + name + '='))
+            self.assertEqual(shlex.split(flags), ['-march=x86-64-v2', *shlex.split(SANITIZER_OPTIONS)])
+
+    def test_flipping_sanitizers_refuses_native_replacement_and_isolates_host_objects(self):
+        helper = load_helper()
+        library, manifest = self.root / 'libramulator.so', self.root / 'manifest.json'
+        library.write_bytes(b'known library')
+        inputs = [{'native': helper.native_settings(sanitize)} for sanitize in (False, True)]
+        for prior, current in (inputs, inputs[::-1]):
             with self.subTest(prior=prior['native']['build_type']):
-                self.assertTrue(helper.manifest_matches({'inputs': prior, 'sha256': 'digest'}, prior, 'digest'))
-                self.assertFalse(helper.manifest_matches({'inputs': prior, 'sha256': 'digest'}, current, 'digest'))
-        # Native settings invalidate the library on their own, even with identical host flags.
-        self.assertFalse(helper.manifest_matches(
-            {'inputs': helper.manifest_inputs(Path('/native'), helper.REVISION, plain, release), 'sha256': 'digest'},
-            helper.manifest_inputs(Path('/native'), helper.REVISION, plain, sanitized), 'digest'))
-        native = Path('/objects/ramulator2-native')
-        self.assertNotEqual(helper.build_directory(native, before), helper.build_directory(native, after))
+                record = {'inputs': prior, 'sha256': hashlib.sha256(library.read_bytes()).hexdigest(),
+                          'dependencies': helper.DEPENDENCIES, 'fingerprint': helper.fingerprint(library.read_bytes())}
+                manifest.write_text(json.dumps(record))
+                self.assertEqual(helper.verify_native_product(manifest, library, prior), record)
+                with self.assertRaisesRegex(RuntimeError, 'fresh isolated'):
+                    helper.verify_native_product(manifest, library, current)
+                self.assertEqual(library.read_bytes(), b'known library')
+                self.assertEqual(json.loads(manifest.read_text()), record)
+
+        # Exercise the actual Make policy selector, including sanitizer injection.
+        workspace = self.sanitizer_workspace()
+        def paths(sanitize):
+            result = subprocess.run(['make', '-s', 'print-build-paths', f'CXX={self.compiler}',
+                                     'CHAMPSIM_LIBRARIES=', 'CHAMPSIM_TEST_LIBRARIES=',
+                                     'WITH_RAMULATOR2=1', f'RAMULATOR2_ROOT={self.root / "native"}',
+                                     'RAMULATOR2_SANITIZE=' + str(int(sanitize))],
+                                    cwd=workspace, env=self.env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+        plain, instrumented = paths(False), paths(True)
+        for key in ('obj', 'dep', 'binary'):
+            self.assertNotEqual(plain[key], instrumented[key])
+        self.assertEqual(paths(False), plain)
+        self.assertFalse((self.root / 'native').exists())
 
     def test_make_instruments_every_host_compile_and_link_with_the_native_library(self):
         workspace = self.sanitizer_workspace()
@@ -255,13 +287,33 @@ with native_lock(root):
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = result.stdout.splitlines()
         compiles = [line for line in lines if ' -c -o ' in line]
-        links = [line for line in lines if re.search(r' -o (bin/champsim|test/bin/000-test-main) ', line)]
-        self.assertEqual(len(compiles), 4, result.stdout)  # shared probe and driver objects, two test sources
+        links = [line for line in lines if ' -o ' in line and ' -c -o ' not in line and line.startswith(self.compiler)]
+        # Probe/driver objects are isolated for sim and test, plus two test sources.
+        self.assertEqual(len(compiles), 6, result.stdout)
         self.assertEqual(len(links), 2, result.stdout)
-        for line in compiles:
-            self.assertIn(f'{SANITIZER_OPTIONS} -g', line)
-        for line in links:
-            self.assertIn(SANITIZER_OPTIONS, line)
+        prepares = {line for line in lines if 'build_config.py prepare ' in line}
+        self.assertTrue(prepares)
+        for line in prepares:
+            subprocess.run(shlex.split(line), cwd=workspace, env=nested_make_environment(), check=True,
+                           capture_output=True, text=True)
+        policies = list((self.root / 'dry-objects').rglob('build-policy.json'))
+        self.assertEqual(len(policies), 2)
+        for path in policies:
+            policy = json.loads(path.read_text())
+            self.assertEqual(policy['native']['mode'], 'RelWithDebInfo C++20 Python=OFF Sanitizers=address,undefined')
+            self.assertEqual(policy['assertions'], 1)
+        def expanded(line):
+            words = shlex.split(line)
+            return [word for token in words for word in
+                    (shlex.split(Path(token[1:]).read_text()) if token.startswith('@') else [token])]
+        for line in compiles + links:
+            words = expanded(line)
+            self.assertIn('-fsanitize=address,undefined', words)
+            self.assertIn('-fno-omit-frame-pointer', words)
+            if line in compiles:
+                self.assertIn('-g3', words)
+                self.assertIn('-DCHAMPSIM_ENABLE_ASSERTIONS=1', words)
+                self.assertNotIn('-DNDEBUG', words)
         helper_lines = [line for line in lines if HELPER.name in line]
         self.assertTrue(helper_lines)
         for line in helper_lines:

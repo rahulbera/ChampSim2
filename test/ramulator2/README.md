@@ -169,14 +169,18 @@ reruns and restores. It never writes to the checkout and fails if the adapter,
 driver or `inc/defs.h` bytes there change during the run.
 
 ```sh
-cp -a /path/to/ramulator2 /tmp/ramulator2-mutants   # private native root
-python3 test/ramulator2/run_mutants.py --native-root /tmp/ramulator2-mutants \
+# Reuse a native root already verified with the same compiler and ISA policy.
+python3 test/ramulator2/run_mutants.py --native-root /path/to/verified/ramulator2 \
   --output-dir /tmp/oracle-mutants
 ```
 
-A new object root makes the build helper rebuild `libramulator.so` in the
-native root (pass `--seed-native-obj` with an object root already built against
-that root to skip it), so never point it at a root another build or run uses.
+Native ownership is recorded in the source root and checked under a lock, so
+a new host object root reuses a matching library. If its compiler or native
+policy differs, use a fresh checkout at the pinned revision (see the build
+instructions above). Do not copy a populated native root to a new path: its
+manifest records the original absolute root, and the helper refuses to replace
+an existing library. `--seed-native-obj` is deprecated and ignored; a host
+object manifest cannot authorize a native library.
 Each mutant must be detected, except those marked equivalent: M12 flushes
 completions before popping a fully accepted head, which cannot change
 behavior because `all_accepted` is captured first and the parent reference is
@@ -242,7 +246,7 @@ The build helper configures the pinned native checkout as `RelWithDebInfo`
 with `-fsanitize=address,undefined -fno-omit-frame-pointer` for compilation
 and the shared-library link; fmt and yaml-cpp inherit those flags through
 FetchContent. The Makefile adds the same options to every host compile and
-link, and `-g` to every host compile, for both `bin/champsim` and the test
+link, retaining the named build mode's `-g3` for every host compile, for both `bin/champsim` and the test
 binary. Release builds
 are unaffected when the variable is unset or 0. It is rejected without
 `WITH_RAMULATOR2=1`: an instrumented host with an uninstrumented native library
@@ -255,16 +259,16 @@ build string in `meta.ramulator2.build` names the mode, for example
 `Release C++20 Python=OFF`. The runtime library check fingerprints whichever
 library the helper built, so no manual step is involved.
 
-Changing the variable in either direction changes the compiler stamp and the
-manifest inputs, so the next build rebuilds the native library, every host
-object and both executables; one object root never mixes instrumented and
-uninstrumented objects. Switching back to a release build rebuilds the
-byte-identical release library. `make -n`/`-q`/`-t` still execute nothing, and,
-as for any change of flags, mode, compiler or root, they do not refresh the
-stamps and so do not show that rebuild. Because the library is written into the
-native source root, a sanitized build and a release build that must both exist
-at once need separate native roots, and separate checkouts: the test binary's
-path does not follow `OBJ_ROOT` or `BIN_ROOT`.
+Changing the variable changes the policy identity and selects separate host
+objects and canonical binaries. Simulator and test objects are also separate.
+The native library and manifest belong to the source root: a different mode in
+an occupied root is rejected, so use separate fresh native roots for sanitized
+and release builds. An existing verified library is never rebuilt in place.
+`make -n`/`-q`/`-t` do not prepare metadata or native libraries. Resolve retained
+binary and object paths with `make print-build-paths`, supplying the same mode,
+sanitizer and root variables (plus `BUILD_FLAVOR=test` for the test binary).
+The ordinary `all` and `test` targets publish convenience aliases; use canonical
+paths or separate alias overrides when retaining multiple selections.
 
 Run instrumented binaries with these options, using absolute suppression paths
 so that subprocesses started elsewhere find them:

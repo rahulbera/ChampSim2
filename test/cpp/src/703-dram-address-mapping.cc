@@ -24,12 +24,9 @@ TEST_CASE("Legacy DRAM hashing matches coordinate-level XOR across geometries")
 {
   const auto channels = GENERATE(1ul, 2ul, 4ul);
   const auto groups = GENERATE(1ul, 2ul, 4ul);
-  const auto banks = GENERATE(1ul, 2ul, 4ul, 8ul);
-  // The legacy zero-step swizzle for a single bank AND group does not terminate.
+  // The coordinate oracle requires a nonzero bank/group width for its fold loop.
   // This performance test covers the terminating mapping contract.
-  if (groups == 1 && banks == 1) {
-    return;
-  }
+  const auto banks = GENERATE_COPY(filter([groups](unsigned long value) { return groups != 1 || value != 1; }, values<unsigned long>({1, 2, 4, 8})));
   const auto ranks = GENERATE(1ul, 2ul);
   const auto rows = GENERATE(256ul, 1024ul, 65536ul);
   CAPTURE(channels, groups, banks, ranks, rows);

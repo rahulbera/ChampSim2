@@ -327,13 +327,17 @@ def resolve(args):
                   'build_mode': 'Release', 'vcpkg_revision': vcpkg_revision, 'packages': packages, 'isa_provenance': 'unknown (external installation)',
                   'assertions': 'external dependency policy', 'inputs': dependency_inputs, 'linked_libraries': linked},
               'native': {'enabled': args.native == '1', 'root': str(Path(args.native_root).resolve()) if args.native == '1' else None,
-                         'mode': 'Release C++20 Python=OFF', 'architecture_options': architecture,
+                         'mode': ('RelWithDebInfo C++20 Python=OFF Sanitizers=address,undefined'
+                                  if args.native_sanitize == '1' else 'Release C++20 Python=OFF'),
+                         'sanitizers': 'address,undefined' if args.native_sanitize == '1' else '', 'architecture_options': architecture,
                          'driver_options': ['-isystem', str(Path(args.native_root).resolve() / 'src'), '-std=c++20'] if args.native == '1' else [],
                          'link_options': ['-Wl,-rpath,' + str(Path(args.native_root).resolve()), '-ldl'] if args.native == '1' else []},
               'registry_directory': str(Path(args.registry).resolve()),
               'build_inputs': {str(p): digest(p) for p in (Path(__file__), Path('Makefile'), Path('config/build_rules.mk'), Path('config/ramulator2_build.py')) if p.is_file()}}
     if args.native not in ('0', '1'):
         raise ValueError('WITH_RAMULATOR2 must be 0 or 1')
+    if args.native_sanitize not in ('0', '1') or (args.native_sanitize == '1' and args.native != '1'):
+        raise ValueError('RAMULATOR2_SANITIZE must be 0 or 1; enabling it requires WITH_RAMULATOR2=1')
     policy['policy_key'] = hashlib.sha256(json.dumps(policy, sort_keys=True).encode()).hexdigest()[:24]
     return policy
 
@@ -370,7 +374,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('inspect', 'prepare', 'paths', 'publish'))
     for name, default in [('cxx', 'g++'), ('mode', 'release'), ('flavor', 'sim'), ('isa', ''), ('triplet', ''),
-                          ('installed', 'vcpkg_installed'), ('native', '0'), ('native-root', ''),
+                          ('installed', 'vcpkg_installed'), ('native', '0'), ('native-root', ''), ('native-sanitize', '0'),
                           ('libraries', '-lCLI11 -llzma -lz -lbz2 -lzstd -lfmt'), ('test-libraries', '-lCatch2Main -lCatch2'),
                           ('obj', ''), ('dep', ''), ('binary', ''), ('registry', '.csconfig'), ('alias', '')]:
         parser.add_argument('--' + name, default=default)

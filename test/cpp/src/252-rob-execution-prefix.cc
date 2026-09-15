@@ -235,20 +235,31 @@ TEST_CASE_METHOD(rob_fixture, "ROB execution has no state surviving direct mutat
 {
   cpu.ROB = {blocked_memory_instruction(1), blocked_memory_instruction(2)};
   CHECK(cpu.operate() == 0);
-  SECTION("Reset the head") { cpu.ROB.front() = ready_instruction(1); }
+  const auto check_execution = [&] {
+    CHECK(cpu.operate() == 1);
+    if (cpu.ROB.front().instr_id == 1 && cpu.ROB.size() == 3) {
+      CHECK(cpu.ROB.back().executed);
+      CHECK(cpu.ROB.back().ready_time == cpu.current_time + cpu.EXEC_LATENCY);
+    } else {
+      CHECK(cpu.ROB.front().executed);
+      CHECK(cpu.ROB.front().ready_time == cpu.current_time + cpu.EXEC_LATENCY);
+    }
+  };
+  SECTION("Reset the head")
+  {
+    cpu.ROB.front() = ready_instruction(1);
+    check_execution();
+  }
   SECTION("Clear and repopulate")
   {
     cpu.ROB.clear();
     cpu.ROB.push_back(ready_instruction(3));
+    check_execution();
   }
-  SECTION("Append") { cpu.ROB.push_back(ready_instruction(3)); }
-  CHECK(cpu.operate() == 1);
-  if (cpu.ROB.front().instr_id == 1 && cpu.ROB.size() == 3) {
-    CHECK(cpu.ROB.back().executed);
-    CHECK(cpu.ROB.back().ready_time == cpu.current_time + cpu.EXEC_LATENCY);
-  } else {
-    CHECK(cpu.ROB.front().executed);
-    CHECK(cpu.ROB.front().ready_time == cpu.current_time + cpu.EXEC_LATENCY);
+  SECTION("Append")
+  {
+    cpu.ROB.push_back(ready_instruction(3));
+    check_execution();
   }
 }
 
