@@ -149,7 +149,8 @@ no evaluation. The header adds no link or vcpkg dependency.
 
 ## Task 3: Implement isolated named builds and compiler provenance
 
-**Files:** modify `Makefile`, `global.options`, `config/module_registry.py` and
+**Files:** modify `Makefile`, `global.options`, `config/makefile.py`,
+`config/module_registry.py` where registry generation requires it, and
 `config/ramulator2_build.py`; create a focused `config/build_config.py` helper and
 `test/python/test_build_modes.py`; update `config/compile_commands/` consumers,
 `src/main.cc`, public metadata declarations/writer as needed, `CLAUDE.md`, and
@@ -195,7 +196,9 @@ configuration `build_id` semantics stay unchanged.
   immutable; generated Make fragments must respect output overrides. Keep
   explicit `OBJ_ROOT`, `DEP_ROOT`, `BIN_ROOT`, and test-binary overrides usable
   without accidental production/test sharing. Test combined target invocations
-  and separate concurrent mode builds. Preserve side-effect-free `make -n/-q/-t`.
+  and separate concurrent mode builds. Preserve `make -n/-q` without build
+  mutation and the existing `make -t` contract: it may touch requested targets
+  but must not remake dependency files or prepare native libraries.
 - [ ] Remove unconditional `-O3` from the common options and the test target's
   unconditional `-Og`; supply optimization from the selected mode. Keep test
   framework checks active. Include mode options in dependency preprocessing as

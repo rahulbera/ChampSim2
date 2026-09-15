@@ -67,7 +67,8 @@ v3 support (Slurm job `14547781`). The user's successful experience with
 headnode `-march=native` motivates a later experiment; record the exact compiler
 and expanded native features before treating that as a reproducible profile.
 Do not silently introduce an instruction requirement unsupported by a fleet
-member. AWS hardware validation remains dependent on an available ARM host.
+member. The user deferred ARM hardware validation on 2026-09-15; this campaign now focuses
+on x64. Preserve the ARM design, but do not claim real ARM validation.
 
 Raw campaign evidence is stored outside Git under:
 
@@ -112,7 +113,7 @@ their identities. Establish this log and the stage-by-stage acceptance rules.
    campaign at the new log and record authorization for later v3/native trials.
 
 **Commit hashes.** Campaign source baseline: `a612bf2b`; preceding production
-closeout: `4bc0f045`. Campaign setup commit will be recorded after creation.
+closeout: `4bc0f045`. Campaign setup: `e07f6ed8`.
 
 **Regression verdict.** No simulator change in setup. Existing release binary
 SHA256: `fe657e62bb275213fda52348c18ef3f411c724e00d34d8243d962d38f5263e79`.
@@ -144,9 +145,58 @@ It initially changes no simulator source or checked-in build flags.
 **Commit hashes.** Trial source: `a612bf2b` (plus documentation-only campaign
 setup). No production implementation commit yet.
 
-**Regression verdict.** Pending: candidate build, short matrix, long gate, and
-test verification have not completed.
+**Regression verdict so far.** The isolated candidate builds successfully. All
+16 short cases (32 runs) match complete phase statistics, effective configuration,
+and warmup/ROI retirement and cycle counts; an independent saved-output audit
+also passes. Normal C++ tests pass 899 cases / 81,745 assertions, with seven
+native skips; memory-value C++ tests pass 904 cases / 83,838 assertions, with seven
+native skips. Python passes 66 tests with four skips; performance-tool tests pass
+seven tests. These historical C++ test targets append `-Og`; they validate the
+v2 code paths but are not optimized-simulator timing evidence. All 15 long
+5M/50M comparisons also pass with exact reported parity, including the independent
+saved-output audit. The 24 protected timing runs also match exactly. A separate audit re-read stdout
+counts, complete phase/configuration data, input and binary hashes, and recomputed
+KIPS. No own build, profiler, or regression simulation overlapped the timings.
 
-**KIPS before/after.** Pending fresh paired measurements. No gain claimed.
+**KIPS before/after.** Three alternating pairs per workload, 1M/3M, CPU 14;
+medians and observed ranges below. These are incremental changes from the
+preserved, already optimized v1 binary, measured together on this host.
 
-**Status.** Trial preparation in progress; not yet accepted into production.
+| Workload | v1 KIPS (range) | v2 KIPS (range) | Change |
+| --- | --- | --- | --- |
+| sqlite | 448.72 (440.48–451.19) | 428.17 (427.16–431.60) | −4.58% |
+| omnetpp | 514.08 (508.96–515.33) | 491.03 (486.89–491.79) | −4.48% |
+| gcc | 607.53 (606.32–608.80) | 580.89 (573.72–583.79) | −4.39% |
+| mcf | 157.01 (156.96–157.89) | 148.79 (147.97–149.35) | −5.23% |
+
+All twelve individual pairs favor v1. Individual results and host-load records
+are retained in `01-v2/timing/runs.json` and `independent-audit.json`. This trial
+provides no speedup evidence for raising the ISA floor; the cost is repeatable
+on the local host and should be remeasured on the destination CPUs. Recorded
+one-minute host load spans 1.02–1.65; process CPU/wall ratios span
+0.999893–0.999928. The host is shared; these observations do not guarantee
+absence of external contention.
+
+**Status.** Observationally inert over the stated checks. Retain v2 as the
+user-approved platform policy, **not as a performance optimization**; keep the
+explicit v1 fallback. The later named-build implementation will encode that
+policy. Do not present a release-to-fast gain as recovery of this cost unless a
+separate cumulative comparison establishes it. Independent task review pending.
+
+**Evidence.** `00-baseline/`, `baseline.json`, and `01-v2/` under the campaign
+evidence root. The preserved baseline exactly matches the binary of the archived
+`11-cache-guards/long-regression` reference from the preceding campaign; no
+assumption of source-only equivalence is needed for that reference.
+
+## Later-profile reconnaissance
+
+The ETH headnode currently reports Xeon Gold 5118 and GCC 11.3.0. Its effective
+`-march=native` and `-mtune=native` query resolves to `skylake-avx512`. Kratos10's
+EPYC 7742 reports loader support through v3, so unrestricted headnode-native
+compilation permits instructions beyond this fleet member's capabilities.
+Historical successful native binaries do not establish that every newly compiled
+code path will remain compatible. v3 is still supported across the audited CPU
+partition. Save this distinction for the later profile acceptance decision;
+no native-ISA performance or failure claim is made from this inspection.
+
+The exact headnode query and output are preserved under `eth-headnode-native/`.
