@@ -606,6 +606,7 @@ jobs:
       run: sudo sysctl -w vm.mmap_rnd_bits=28
 
     - name: Build instrumented simulator and tests
+      id: build
       run: |
         ./config.sh
         env -u CXXFLAGS -u CPPFLAGS -u LDFLAGS -u CFLAGS make -j6 all test/bin/000-test-main
@@ -613,11 +614,12 @@ jobs:
     # Suppressions cover only vendored ITTAGE; see test/ramulator2/README.md.
     # Tests are selected by file tag, without hidden cases: the driver (704),
     # adapter (705), differential oracle smoke (706), global clock (707) and
-    # lifecycle (708) tests, each of which must exist. The pinned native
-    # RITAddrMapper leaks its nested mapper, which test 704 constructs, so
-    # LeakSanitizer fails this step at exit until that is resolved; it is
-    # deliberately not suppressed.
+    # lifecycle (708) tests, each of which must exist. Cases tagged
+    # [rit-addr-mapper] run in the last step instead, so the native leak they
+    # report cannot hide a new one here. Each step after the build runs
+    # whatever the others' outcomes, so every one is reported.
     - name: Run native C++ tests under sanitizers
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
       env:
         CHAMPSIM_EXPECT_RAMULATOR2: "1"
       run: |
@@ -629,11 +631,12 @@ jobs:
         done
         spec=""
         for file in test/cpp/src/70[4-8]-*.cc; do
-          spec="$spec${spec:+,}[#$(basename "$file" .cc)]~[.]"
+          spec="$spec${spec:+,}[#$(basename "$file" .cc)]~[.]~[rit-addr-mapper]"
         done
         test/bin/000-test-main -# --order rand "$spec"
 
     - name: Simulate a generated trace with the instrumented binary
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
       run: |
         export ASAN_OPTIONS=halt_on_error=1:detect_leaks=1
         export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1:suppressions=$PWD/test/ramulator2/sanitizers/ubsan.supp"
@@ -655,6 +658,24 @@ jobs:
         assert adapter["accepted_reads"] > 0 and adapter["accepted_writes"] > 0, adapter
         print("instrumented native simulation validated:", mode)
         PY
+
+    # The pinned native RITAddrMapper never frees the nested mapper it creates
+    # (rit_addr_mapper.cpp:55 calls Factory::create_implementation without
+    # add_child). These cases build four such controllers, so after every
+    # assertion passes LeakSanitizer fails this step at exit, reporting 2,028
+    # bytes in 20 allocations. That is deliberately not suppressed: this step,
+    # and so the job, stays red until the leak is resolved, and the steps above
+    # are the sanitizer gate for everything else. Catch2 exits non-zero if the
+    # tag matches no test case.
+    - name: Run RITAddrMapper test cases under sanitizers (known native leak)
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      env:
+        CHAMPSIM_EXPECT_RAMULATOR2: "1"
+      run: |
+        export ASAN_OPTIONS=halt_on_error=1:detect_leaks=1
+        export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1:suppressions=$PWD/test/ramulator2/sanitizers/ubsan.supp"
+        export LSAN_OPTIONS="suppressions=$PWD/test/ramulator2/sanitizers/lsan.supp"
+        test/bin/000-test-main --order rand "[rit-addr-mapper]~[.]"
 
     - uses: actions/upload-artifact@v7
       if: always()

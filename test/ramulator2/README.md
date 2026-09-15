@@ -267,6 +267,14 @@ for admitted row-indirection mappers and two (AQUA and RRS over
 `test/bin/000-test-main` exits non-zero after every test has passed, reporting
 2,028 bytes in 20 allocations. It is deliberately not suppressed.
 
+Those two cases carry the tag `[rit-addr-mapper]`, and every case that
+constructs a `RITAddrMapper` controller must. The `native_sanitize` CI job
+excludes the tag from its main test step, which must exit 0, and runs
+`"[rit-addr-mapper]~[.]"` in a separate last step, which fails on this leak
+until it is resolved. The known leak therefore cannot hide a new report
+elsewhere. Every step after the build runs whatever the others' outcomes, so
+the instrumented simulation is still checked.
+
 C++ test 708 exercises repeated driver and adapter construction, and teardown
 with live native requests, parent contexts and callbacks, with and without
 `finalize()`; it runs in every enabled build and is meant to be run
