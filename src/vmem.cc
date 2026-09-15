@@ -16,25 +16,42 @@
 
 #include "vmem.h"
 
-#include <cassert>
+#include <stdexcept>
 #include <fmt/core.h>
 
 #include "champsim.h"
+#include "champsim_assert.h"
 #include "dram_controller.h"
 #include "util/bits.h"
 
 using namespace champsim::data::data_literals;
 
+namespace
+{
+champsim::data::bytes validated_pte_page_size(champsim::data::bytes value)
+{
+  if (value <= 1_kiB || value > champsim::data::bytes{PAGE_SIZE} || !champsim::is_power_of_2(value.count())) {
+    throw std::invalid_argument{"virtual memory PTE page size must be a power of two greater than 1 KiB and no larger than PAGE_SIZE"};
+  }
+  return value;
+}
+
+champsim::data::bytes validated_physical_capacity(champsim::data::bytes value)
+{
+  if (value <= 1_MiB || ((value - 1_MiB) / PAGE_SIZE).count() == 0) {
+    throw std::invalid_argument{"virtual memory physical capacity must leave at least one allocatable page above 1 MiB"};
+  }
+  return value;
+}
+} // namespace
+
 VirtualMemory::VirtualMemory(champsim::data::bytes page_table_page_size, std::size_t page_table_levels, champsim::chrono::clock::duration minor_penalty,
                              champsim::data::bytes physical_capacity_, std::optional<uint64_t> randomization_seed_)
-    : randomization_seed(randomization_seed_), physical_capacity(physical_capacity_), minor_fault_penalty(minor_penalty), pt_levels(page_table_levels),
-      pte_page_size(page_table_page_size),
+    : randomization_seed(randomization_seed_), physical_capacity(validated_physical_capacity(physical_capacity_)), minor_fault_penalty(minor_penalty),
+      pt_levels(page_table_levels), pte_page_size(validated_pte_page_size(page_table_page_size)),
       next_pte_page(
           champsim::dynamic_extent{champsim::data::bits{LOG2_PAGE_SIZE}, champsim::data::bits{champsim::lg2(champsim::data::bytes{pte_page_size}.count())}}, 0)
 {
-  assert(pte_page_size > 1_kiB);
-  assert(champsim::is_power_of_2(pte_page_size.count()));
-
   champsim::page_number last_vpage{
       champsim::lowest_address_for_size(champsim::data::bytes{PAGE_SIZE + champsim::ipow(pte_page_size.count(), static_cast<unsigned>(pt_levels))})};
   champsim::data::bits required_bits{LOG2_PAGE_SIZE + champsim::lg2(last_vpage.to<uint64_t>())};
@@ -68,9 +85,7 @@ VirtualMemory::VirtualMemory(champsim::data::bytes page_table_page_size, std::si
 
 void VirtualMemory::populate_pages()
 {
-  assert(physical_capacity > 1_MiB);
   ppage_free_list.resize(((physical_capacity - 1_MiB) / PAGE_SIZE).count());
-  assert(ppage_free_list.size() != 0);
   champsim::page_number base_address =
       champsim::page_number{champsim::lowest_address_for_size(std::max<champsim::data::mebibytes>(champsim::data::bytes{PAGE_SIZE}, 1_MiB))};
   for (auto it = ppage_free_list.begin(); it != ppage_free_list.end(); it++) {
@@ -100,7 +115,7 @@ uint64_t VirtualMemory::get_offset(champsim::page_number vaddr, std::size_t leve
 
 champsim::page_number VirtualMemory::ppage_front() const
 {
-  assert(available_ppages() > 0);
+  CHAMPSIM_ASSERT(available_ppages() > 0);
   return ppage_free_list.front();
 }
 

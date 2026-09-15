@@ -1,5 +1,4 @@
 #include <catch.hpp>
-
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -99,11 +98,25 @@ TEST_CASE("get_tracereader rejects the cloudsuite/v2 combination")
 
 TEST_CASE("get_tracereader refuses to read a champsim2-named trace as v1")
 {
+  const std::string path{"champsim-test-naming.champsim2.zst"};
+  {
+    std::ofstream out{path, std::ios::binary};
+    const auto compressed = zstd_compress(raw_bytes(sample_program()));
+    out.write(std::data(compressed), static_cast<std::streamsize>(std::size(compressed)));
+  }
+
   // The trace format is headerless, so a v2 file read as v1 does not error --
   // it yields plausible-looking but entirely wrong statistics. Catch the
   // likely mistake via the naming convention rather than letting it through.
-  REQUIRE_THROWS_AS(get_tracereader("somewhere/723.llvm_r.champsim2.zst", 0, false, false, 1), std::invalid_argument);
-  REQUIRE_NOTHROW(get_tracereader("somewhere/723.llvm_r.champsim2.zst", 0, false, false, 2));
+  REQUIRE_THROWS_AS(get_tracereader(path, 0, false, false, 1), std::invalid_argument);
+  REQUIRE_NOTHROW(get_tracereader(path, 0, false, false, 2));
+  std::remove(path.c_str());
+}
+
+TEST_CASE("get_tracereader reports a missing compressed v2 input")
+{
+  REQUIRE_THROWS_WITH(get_tracereader("missing.champsim2.zst", 0, false, false, 2),
+                      Catch::Matchers::ContainsSubstring("missing.champsim2.zst") && Catch::Matchers::ContainsSubstring("input read failed"));
 }
 
 TEST_CASE("get_tracereader still defaults to the v1 record format")

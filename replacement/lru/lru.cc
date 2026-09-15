@@ -1,7 +1,8 @@
 #include "lru.h"
 
 #include <algorithm>
-#include <cassert>
+
+#include "champsim_assert.h"
 
 lru::lru(CACHE* cache) : lru(cache, cache->NUM_SET, cache->NUM_WAY) {}
 
@@ -15,8 +16,8 @@ long lru::find_victim(uint32_t triggering_cpu, uint64_t instr_id, long set, cons
 
   // Find the way whose last use cycle is most distant
   auto victim = std::min_element(begin, end);
-  assert(begin <= victim);
-  assert(victim < end);
+  CHAMPSIM_ASSERT(begin <= victim);
+  CHAMPSIM_ASSERT(victim < end);
   return std::distance(begin, victim);
 }
 

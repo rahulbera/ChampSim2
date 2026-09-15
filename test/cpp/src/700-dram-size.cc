@@ -1,8 +1,36 @@
 #include <catch.hpp>
+#include <limits>
 
 #include "defaults.hpp"
 #include "dram_controller.h"
 #include "mocks.hpp"
+
+TEST_CASE("A DRAM controller rejects capacity outside its signed byte representation")
+{
+  if constexpr (std::numeric_limits<std::size_t>::digits == 64) {
+    const auto construct = [] {
+      return MEMORY_CONTROLLER{champsim::chrono::picoseconds{3200},
+                               champsim::chrono::picoseconds{6400},
+                               18,
+                               18,
+                               18,
+                               38,
+                               champsim::chrono::microseconds{64000},
+                               {},
+                               64,
+                               64,
+                               1,
+                               champsim::data::bytes{8},
+                               1ul << 45,
+                               1024,
+                               1,
+                               8,
+                               4,
+                               8192};
+    };
+    CHECK_THROWS_WITH(construct(), "DRAM address mapping capacity is not representable");
+  }
+}
 
 SCENARIO("A dram controller reports its size accurately")
 {

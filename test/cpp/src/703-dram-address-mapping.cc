@@ -207,3 +207,13 @@ TEST_CASE("DRAM getters and public swizzle preserve checked row upper-bound erro
     }
   }
 }
+
+TEST_CASE("Direct DRAM mapping rejects overflowing transfer geometry")
+{
+  if constexpr (std::numeric_limits<unsigned long>::digits == 64) {
+    const auto overflowing_transfer = [] {
+      return DRAM_ADDRESS_MAPPING{champsim::data::bytes{std::numeric_limits<champsim::data::bytes::rep>::max()}, 3, 1, 1, 1, 1, 1, 1};
+    };
+    CHECK_THROWS_WITH(overflowing_transfer(), "invalid DRAM address mapping geometry");
+  }
+}

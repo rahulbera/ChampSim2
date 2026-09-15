@@ -1,10 +1,15 @@
 #include "register_allocator.h"
 
-#include <cassert>
+#include <stdexcept>
+
+#include "champsim_assert.h"
 
 RegisterAllocator::RegisterAllocator(size_t num_physical_registers)
 {
-  assert(num_physical_registers <= std::numeric_limits<PHYSICAL_REGISTER_ID>::max());
+  constexpr auto maximum = static_cast<size_t>(std::numeric_limits<PHYSICAL_REGISTER_ID>::max());
+  if (num_physical_registers == 0 || num_physical_registers > maximum) {
+    throw std::invalid_argument{"register file size must be between 1 and 32767"};
+  }
   for (size_t i = 0; i < num_physical_registers; ++i) {
     free_registers.push(static_cast<PHYSICAL_REGISTER_ID>(i));
   }
@@ -15,7 +20,7 @@ RegisterAllocator::RegisterAllocator(size_t num_physical_registers)
 
 PHYSICAL_REGISTER_ID RegisterAllocator::rename_dest_register(int16_t reg, champsim::program_ordered<ooo_model_instr>::id_type producer_id)
 {
-  assert(!free_registers.empty());
+  CHAMPSIM_ASSERT(!free_registers.empty());
 
   PHYSICAL_REGISTER_ID phys_reg = free_registers.front();
   free_registers.pop();

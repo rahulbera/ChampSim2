@@ -308,27 +308,14 @@ TEST_CASE("Counting register dependencies does not throw for an instruction that
   REQUIRE(dependencies == 1);
 }
 
+TEST_CASE("Register allocator construction rejects unusable physical-file sizes")
+{
+  REQUIRE_THROWS_WITH(RegisterAllocator{0}, Catch::Matchers::ContainsSubstring("between 1"));
+  REQUIRE_THROWS_WITH(RegisterAllocator{32768}, Catch::Matchers::ContainsSubstring("32767"));
+}
+
 SCENARIO("The register allocator public queries preserve mapping and physical-file state.")
 {
-  GIVEN("A zero-sized physical register file")
-  {
-    RegisterAllocator empty{0};
-    const auto& allocator = std::as_const(empty);
-
-    THEN("its public queries report no mappings or free registers")
-    {
-      REQUIRE(allocator.count_free_registers() == 0);
-      REQUIRE_FALSE(allocator.isAllocated(0));
-    }
-
-    THEN("every physical-register query remains bounds-checked")
-    {
-      REQUIRE_THROWS_AS(allocator.isValid(static_cast<PHYSICAL_REGISTER_ID>(-1)), std::out_of_range);
-      REQUIRE_THROWS_AS(allocator.isValid(0), std::out_of_range);
-      REQUIRE_THROWS_AS(allocator.isValid(std::numeric_limits<PHYSICAL_REGISTER_ID>::max()), std::out_of_range);
-    }
-  }
-
   GIVEN("A small physical register file")
   {
     RegisterAllocator registers{2};

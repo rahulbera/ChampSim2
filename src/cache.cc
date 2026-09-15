@@ -17,7 +17,6 @@
 #include "cache.h"
 
 #include <algorithm>
-#include <cassert>
 #include <cmath>
 #include <iomanip>
 #include <numeric>
@@ -25,6 +24,7 @@
 
 #include "bandwidth.h"
 #include "champsim.h"
+#include "champsim_assert.h"
 #include "chrono.h"
 #include "deadlock.h"
 #include "instruction.h"
@@ -177,10 +177,10 @@ bool CACHE::handle_fill(const fill_type& fill)
   if (way == set_end) {
     way = std::next(set_begin, impl_find_victim(fill.cpu, fill.instr_id, get_set_index(fill.address), &*set_begin, fill.ip, fill.address, fill.type));
   }
-  assert(set_begin <= way);
-  assert(way <= set_end);
-  assert(way != set_end || fill.type != access_type::WRITE); // Writes may not bypass
-  const auto way_idx = std::distance(set_begin, way);        // cast protected by earlier assertion
+  CHAMPSIM_ASSERT(set_begin <= way);
+  CHAMPSIM_ASSERT(way <= set_end);
+  CHAMPSIM_ASSERT(way != set_end || fill.type != access_type::WRITE); // Writes may not bypass
+  const auto way_idx = std::distance(set_begin, way);                 // cast protected by earlier assertion
 
   if constexpr (champsim::debug_print) {
     fmt::print("[{}] {} instr_id: {} address: {} v_address: {} set: {} way: {} type: {} prefetch_metadata: {} cycle_enqueued: {} cycle: {}\n", NAME, __func__,
@@ -470,7 +470,7 @@ long CACHE::operate()
 
   // Perform fills
   champsim::bandwidth fill_bw{MAX_FILL};
-  assert(fill_bw.amount_remaining() >= 0);
+  CHAMPSIM_ASSERT(fill_bw.amount_remaining() >= 0);
   if (!inflight_fills.empty() && fill_bw.amount_remaining() > 0) {
     auto [fill_begin, fill_end] = champsim::get_span_p(std::cbegin(inflight_fills), std::cend(inflight_fills), fill_bw,
                                                        [time = current_time](const auto& x) { return x.data_promise.is_ready_at(time); });
@@ -483,7 +483,7 @@ long CACHE::operate()
   const champsim::bandwidth::maximum_type bandwidth_from_tag_checks{champsim::to_underlying(MAX_TAG) * (long)(HIT_LATENCY / clock_period)
                                                                     - (long)std::size(inflight_tag_check)};
   champsim::bandwidth initiate_tag_bw{std::clamp(bandwidth_from_tag_checks, champsim::bandwidth::maximum_type{0}, MAX_TAG)};
-  assert(initiate_tag_bw.amount_remaining() >= 0);
+  CHAMPSIM_ASSERT(initiate_tag_bw.amount_remaining() >= 0);
   auto can_translate = [avail = (std::size(translation_stash) < static_cast<std::size_t>(MSHR_SIZE))](const auto& entry) {
     return avail || entry.is_translated;
   };
@@ -510,7 +510,7 @@ long CACHE::operate()
       // this needs to be in this loop, we need to ensure that for cases where bandwidth doesn't divide nicely across upstreams,
       // we don't accidentally consume more bandwidth than expected
       champsim::bandwidth per_upper_tag_bw{std::min(per_upper_bandwidth, champsim::bandwidth::maximum_type{initiate_tag_bw.amount_remaining()})};
-      assert(per_upper_tag_bw.amount_remaining() >= 0);
+      CHAMPSIM_ASSERT(per_upper_tag_bw.amount_remaining() >= 0);
       long bandwidth_consumed = 0;
       if (!q.get().empty() && per_upper_tag_bw.amount_remaining() > 0) {
         bandwidth_consumed =
@@ -551,7 +551,7 @@ long CACHE::operate()
     return this->handle_miss(pkt); // Treat writes (that is, stores) like reads
   };
   champsim::bandwidth tag_check_bw{MAX_TAG};
-  assert(tag_check_bw.amount_remaining() >= 0);
+  CHAMPSIM_ASSERT(tag_check_bw.amount_remaining() >= 0);
   if (!inflight_tag_check.empty() && tag_check_bw.amount_remaining() > 0) {
     auto [tag_check_ready_begin, tag_check_ready_end] =
         champsim::get_span_p(std::begin(inflight_tag_check), std::end(inflight_tag_check), tag_check_bw,
@@ -590,14 +590,14 @@ std::pair<It, It> get_span(It anchor, typename std::iterator_traits<It>::differe
 auto CACHE::get_set_span(champsim::address address) -> std::pair<set_type::iterator, set_type::iterator>
 {
   const auto set_idx = get_set_index(address);
-  assert(set_idx < NUM_SET);
+  CHAMPSIM_ASSERT(set_idx < NUM_SET);
   return get_span(std::begin(block), static_cast<set_type::difference_type>(set_idx), NUM_WAY); // safe cast because of prior assert
 }
 
 auto CACHE::get_set_span(champsim::address address) const -> std::pair<set_type::const_iterator, set_type::const_iterator>
 {
   const auto set_idx = get_set_index(address);
-  assert(set_idx < NUM_SET);
+  CHAMPSIM_ASSERT(set_idx < NUM_SET);
   return get_span(std::cbegin(block), static_cast<set_type::difference_type>(set_idx), NUM_WAY); // safe cast because of prior assert
 }
 
@@ -664,7 +664,7 @@ void CACHE::finish_packet(const response_type& packet)
   // sanity check
   if (mshr_entry == MSHR.end()) {
     fmt::print(stderr, "[{}_MSHR] {} cannot find a matching entry! address: {} v_address: {}\n", NAME, __func__, packet.address, packet.v_address);
-    assert(0);
+    CHAMPSIM_ASSERT(0);
   }
 
   // MSHR holds the most updated information about this request

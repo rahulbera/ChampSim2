@@ -311,6 +311,39 @@ TEST_CASE("A geometry knob of zero is refused, not crashed on")
   }
 }
 
+TEST_CASE("Invalid nonzero operational geometry is refused with the responsible key")
+{
+  const auto invalid_values = {
+      "pmem.channels=3",
+      "pmem.ranks=3",
+      "pmem.bankgroups=3",
+      "pmem.banks=3",
+      "pmem.bank_rows=3",
+      "pmem.bank_columns=96",
+      "pmem.channel_width=3",
+      "pmem.channel_width=128",
+      "vmem.pte_page_size=512",
+      "vmem.pte_page_size=3072",
+      "vmem.pte_page_size=8192",
+      "cache.llc.max_fill=-1",
+      "ooo_cpu.cpu0.fetch_width=-1",
+      "ptw.cpu0_ptw.max_read=-1",
+      "ooo_cpu.cpu0.register_file_size=0",
+      "ooo_cpu.cpu0.register_file_size=32768",
+  };
+
+  for (const auto* assignment : invalid_values) {
+    DYNAMIC_SECTION(assignment)
+    {
+      champsim::runtime_config cfg{};
+      cfg.set(assignment);
+      const std::string key{assignment,
+                            static_cast<std::size_t>(std::find(assignment, assignment + std::char_traits<char>::length(assignment), '=') - assignment)};
+      REQUIRE_THROWS_WITH(champsim::static_environment{cfg}, Catch::Matchers::ContainsSubstring(key));
+    }
+  }
+}
+
 TEST_CASE("Every parameter the deleted JSON configuration carried is still a knob")
 {
   // The migration's contract: nothing the old champsim_config.json could set

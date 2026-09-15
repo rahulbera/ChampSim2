@@ -349,109 +349,107 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     warmup_instructions = simulation_instructions / 5;
   }
 
-  std::vector<champsim::tracereader> traces;
-  std::transform(std::begin(trace_names), std::end(trace_names), std::back_inserter(traces),
-                 [knob_cloudsuite, trace_version, repeat = simulation_given, i = uint8_t(0)](auto name) mutable {
-                   return get_tracereader(name, i++, knob_cloudsuite, repeat, trace_version);
-                 });
-
-  std::vector<champsim::phase_info> phases{
-      {champsim::phase_info{"Warmup", true, warmup_instructions, std::vector<std::size_t>(std::size(trace_names), 0), trace_names},
-       champsim::phase_info{"Simulation", false, simulation_instructions, std::vector<std::size_t>(std::size(trace_names), 0), trace_names}}};
-
-  for (auto& p : phases) {
-    std::iota(std::begin(p.trace_index), std::end(p.trace_index), 0);
-  }
-
-  fmt::print("\n*** ChampSim Multicore Out-of-Order Simulator ***\nWarmup Instructions: {}\nSimulation Instructions: {}\nNumber of CPUs: {}\nPage size: {}\n\n",
-             phases.at(0).length, phases.at(1).length, std::size(gen_environment.cpu_view()), PAGE_SIZE);
-
-  decltype(champsim::main(gen_environment, phases, traces, sim_knobs)) phase_stats{};
   try {
-    phase_stats = champsim::main(gen_environment, phases, traces, sim_knobs);
-  } catch (const std::runtime_error& err) {
-    // A module may reject its placement at initialize() -- CBP6 tenants throw
-    // when instantiated beyond cpu0 -- which under runtime selection is a
-    // one-flag user error, not a programming error.
+    std::vector<champsim::tracereader> traces;
+    std::transform(std::begin(trace_names), std::end(trace_names), std::back_inserter(traces),
+                   [knob_cloudsuite, trace_version, repeat = simulation_given, i = uint8_t(0)](auto name) mutable {
+                     return get_tracereader(name, i++, knob_cloudsuite, repeat, trace_version);
+                   });
+
+    std::vector<champsim::phase_info> phases{
+        {champsim::phase_info{"Warmup", true, warmup_instructions, std::vector<std::size_t>(std::size(trace_names), 0), trace_names},
+         champsim::phase_info{"Simulation", false, simulation_instructions, std::vector<std::size_t>(std::size(trace_names), 0), trace_names}}};
+
+    for (auto& p : phases) {
+      std::iota(std::begin(p.trace_index), std::end(p.trace_index), 0);
+    }
+
+    fmt::print(
+        "\n*** ChampSim Multicore Out-of-Order Simulator ***\nWarmup Instructions: {}\nSimulation Instructions: {}\nNumber of CPUs: {}\nPage size: {}\n\n",
+        phases.at(0).length, phases.at(1).length, std::size(gen_environment.cpu_view()), PAGE_SIZE);
+
+    auto phase_stats = champsim::main(gen_environment, phases, traces, sim_knobs);
+
+    fmt::print("\nChampSim completed all CPUs\n\n");
+
+    champsim::plain_printer{std::cout}.print(phase_stats);
+
+    for (O3_CPU& cpu : gen_environment.cpu_view()) {
+      cpu.impl_branch_predictor_final_stats();
+    }
+
+    for (CACHE& cache : gen_environment.cache_view()) {
+      cache.impl_prefetcher_final_stats();
+    }
+
+    for (CACHE& cache : gen_environment.cache_view()) {
+      cache.impl_replacement_final_stats();
+    }
+
+    // What produced this document, so that a result file states which machine and
+    // which run it came from.
+    champsim::toml_printer::run_info run{};
+    run.ramulator2 = gen_environment.memory_view().config_record();
+    // Identifies the MACHINE rather than the build: a content hash of the
+    // effective configuration, so two runs that simulate the same thing share it
+    // however their configuration was expressed.
+    run.build_id = champsim::toml_printer::config_id(runtime_cfg.consulted());
+    // [config] is the EFFECTIVE configuration: every key the machine consulted
+    // with the value it actually used. With no configure-time JSON there is no
+    // "baked" configuration to record, and this is the more useful record --
+    // one table with no overlay arithmetic, and directly feedable back as
+    // --config.
+    const auto effective_config = champsim::toml_printer::format_config(runtime_cfg.consulted());
+    const auto effective_config_text = fmt::format("{}", fmt::join(effective_config, "\n"));
+    run.config_toml = effective_config_text;
+    run.warmup_instructions = warmup_instructions;
+    run.simulation_instructions = simulation_instructions;
+    run.trace_version = static_cast<int>(trace_version);
+    // argv joined verbatim. The shell has already expanded process substitution,
+    // globs and quotes by now, so a re-runnable command line cannot be honestly
+    // reconstructed; recording what this process actually received is the only
+    // claim that is true.
+    run.command_line = fmt::format("{}", fmt::join(std::vector<std::string>(argv, std::next(argv, argc)), " "));
+    run.config_files = fmt::format("{}", fmt::join(runtime_cfg.files(), ","));
+    run.overrides = runtime_cfg.applied();
+    // [config_override] records what took effect. A stored heartbeat that lost
+    // to the explicit --heartbeat-frequency flag did not, so it must not be
+    // recorded as if it had.
+    if (heartbeat_option->count() > 0) {
+      run.overrides.erase(
+          std::remove_if(std::begin(run.overrides), std::end(run.overrides), [](const auto& entry) { return entry.first == "sim.heartbeat_frequency"; }),
+          std::end(run.overrides));
+    }
+
+    // champsim::json_printer is still compiled and linked, so it cannot rot
+    // silently, but it is unreachable at run time: --json is rejected above.
+    if (toml_option->count() > 0) {
+      if (toml_file_name.empty()) {
+        champsim::toml_printer{std::cout, toml_sim_stats, run}.print(phase_stats);
+      } else {
+        // The whole document exists before the target is touched. write()
+        // checks the name again, since the filesystem may have changed during
+        // the run, then writes the document in place. An existing file is
+        // truncated first, so a failure after that can leave it empty or
+        // partial, and says so. Any failure exits 1: a full disk must not
+        // report success.
+        std::ostringstream document;
+        champsim::toml_printer{document, toml_sim_stats, run}.print(phase_stats);
+        const auto delivered = champsim::output::write(toml_file_name, trace_names, document.str());
+        for (const auto& message : delivered.messages) {
+          fmt::print(stderr, "{}\n", message);
+        }
+        if (!delivered.written) {
+          return 1;
+        }
+      }
+    }
+
+    return 0;
+  } catch (const std::exception& err) {
+    // Trace setup, decoding, and module initialization can reject user input.
     fmt::print(stderr, "ERROR: {}\n", err.what());
     return 1;
   }
-
-  fmt::print("\nChampSim completed all CPUs\n\n");
-
-  champsim::plain_printer{std::cout}.print(phase_stats);
-
-  for (O3_CPU& cpu : gen_environment.cpu_view()) {
-    cpu.impl_branch_predictor_final_stats();
-  }
-
-  for (CACHE& cache : gen_environment.cache_view()) {
-    cache.impl_prefetcher_final_stats();
-  }
-
-  for (CACHE& cache : gen_environment.cache_view()) {
-    cache.impl_replacement_final_stats();
-  }
-
-  // What produced this document, so that a result file states which machine and
-  // which run it came from.
-  champsim::toml_printer::run_info run{};
-  run.ramulator2 = gen_environment.memory_view().config_record();
-  // Identifies the MACHINE rather than the build: a content hash of the
-  // effective configuration, so two runs that simulate the same thing share it
-  // however their configuration was expressed.
-  run.build_id = champsim::toml_printer::config_id(runtime_cfg.consulted());
-  // [config] is the EFFECTIVE configuration: every key the machine consulted
-  // with the value it actually used. With no configure-time JSON there is no
-  // "baked" configuration to record, and this is the more useful record --
-  // one table with no overlay arithmetic, and directly feedable back as
-  // --config.
-  const auto effective_config = champsim::toml_printer::format_config(runtime_cfg.consulted());
-  const auto effective_config_text = fmt::format("{}", fmt::join(effective_config, "\n"));
-  run.config_toml = effective_config_text;
-  run.warmup_instructions = warmup_instructions;
-  run.simulation_instructions = simulation_instructions;
-  run.trace_version = static_cast<int>(trace_version);
-  // argv joined verbatim. The shell has already expanded process substitution,
-  // globs and quotes by now, so a re-runnable command line cannot be honestly
-  // reconstructed; recording what this process actually received is the only
-  // claim that is true.
-  run.command_line = fmt::format("{}", fmt::join(std::vector<std::string>(argv, std::next(argv, argc)), " "));
-  run.config_files = fmt::format("{}", fmt::join(runtime_cfg.files(), ","));
-  run.overrides = runtime_cfg.applied();
-  // [config_override] records what took effect. A stored heartbeat that lost
-  // to the explicit --heartbeat-frequency flag did not, so it must not be
-  // recorded as if it had.
-  if (heartbeat_option->count() > 0) {
-    run.overrides.erase(
-        std::remove_if(std::begin(run.overrides), std::end(run.overrides), [](const auto& entry) { return entry.first == "sim.heartbeat_frequency"; }),
-        std::end(run.overrides));
-  }
-
-  // champsim::json_printer is still compiled and linked, so it cannot rot
-  // silently, but it is unreachable at run time: --json is rejected above.
-  if (toml_option->count() > 0) {
-    if (toml_file_name.empty()) {
-      champsim::toml_printer{std::cout, toml_sim_stats, run}.print(phase_stats);
-    } else {
-      // The whole document exists before the target is touched. write()
-      // checks the name again, since the filesystem may have changed during
-      // the run, then writes the document in place. An existing file is
-      // truncated first, so a failure after that can leave it empty or
-      // partial, and says so. Any failure exits 1: a full disk must not
-      // report success.
-      std::ostringstream document;
-      champsim::toml_printer{document, toml_sim_stats, run}.print(phase_stats);
-      const auto delivered = champsim::output::write(toml_file_name, trace_names, document.str());
-      for (const auto& message : delivered.messages) {
-        fmt::print(stderr, "{}\n", message);
-      }
-      if (!delivered.written) {
-        return 1;
-      }
-    }
-  }
-
-  return 0;
 }
 #endif

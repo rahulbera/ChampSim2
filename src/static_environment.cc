@@ -143,6 +143,35 @@ std::optional<uint64_t> randomization(const champsim::runtime_config& cfg)
   return std::optional<uint64_t>{cfg.value<uint64_t>("vmem.randomization", 1)};
 }
 
+champsim::bandwidth::maximum_type configured_bandwidth(const champsim::runtime_config& cfg, const std::string& key, long fallback)
+{
+  const auto value = cfg.value<long>(key, fallback);
+  if (value < 0) {
+    throw std::runtime_error{"runtime config: " + key + " must be nonnegative"};
+  }
+  return champsim::bandwidth::maximum_type{value};
+}
+
+champsim::data::bytes::rep configured_pte_page_size(const champsim::runtime_config& cfg)
+{
+  constexpr std::string_view key = "vmem.pte_page_size";
+  const auto value = cfg.positive_value<champsim::data::bytes::rep>(key, 4096);
+  if (value <= 1024 || value > PAGE_SIZE || !champsim::is_power_of_2(value)) {
+    throw std::runtime_error{"runtime config: vmem.pte_page_size must be a power of two greater than 1024 and no larger than PAGE_SIZE"};
+  }
+  return value;
+}
+
+std::size_t configured_register_file_size(const champsim::runtime_config& cfg, const std::string& key)
+{
+  const auto value = cfg.value<std::size_t>(key, 128);
+  constexpr auto maximum = static_cast<std::size_t>(std::numeric_limits<PHYSICAL_REGISTER_ID>::max());
+  if (value == 0 || value > maximum) {
+    throw std::runtime_error{"runtime config: " + key + " must be between 1 and " + std::to_string(maximum)};
+  }
+  return value;
+}
+
 // The simulation's time quantum: do_phase() ticks the shared clock by the
 // SMALLEST clock_period among the operables, so a duration expressed in cycles
 // has to be scaled by this and not by any one component's period.
@@ -218,7 +247,7 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
         return made;
       }()),
       memory(make_memory_backend(cfg, {&channels.at(llc_to_dram_chan(defs::num_cpus))})),
-      vmem(champsim::data::bytes{cfg.positive_value<champsim::data::bytes::rep>("vmem.pte_page_size", 4096)}, cfg.value<std::size_t>("vmem.num_levels", 5),
+      vmem(champsim::data::bytes{configured_pte_page_size(cfg)}, cfg.value<std::size_t>("vmem.num_levels", 5),
            time_quantum(cfg, memory->clocked_component().clock_period) * cfg.value<champsim::chrono::picoseconds::rep>("vmem.minor_fault_penalty", 200),
            memory->size(), randomization(cfg))
 {
@@ -232,8 +261,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                           .cpu(static_cast<uint32_t>(cpu))
                           .lower_level(&channels.at(chan(cpu, ptw_to_l1d)))
                           .mshr_size(cfg.value<uint32_t>(key + ".mshr_size", 5))
-                          .tag_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(key + ".max_read", 2)})
-                          .fill_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(key + ".max_write", 2)})
+                          .tag_bandwidth(configured_bandwidth(cfg, key + ".max_read", 2))
+                          .fill_bandwidth(configured_bandwidth(cfg, key + ".max_write", 2))
                           .clock_period(period(cfg, key + ".frequency", 4000))
                           .fixed_latency(fixed_ptw_latency(cfg, cpu))
                           .add_pscl(5, cfg.value<uint32_t>(key + ".pscl5_set", 1), cfg.value<uint32_t>(key + ".pscl5_way", 2))
@@ -261,8 +290,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                           .pq_size(cfg.value<uint32_t>("cache.llc.pq_size", 32))
                           .mshr_size(cfg.value<uint32_t>("cache.llc.mshr_size", 64))
                           .latency(cfg.value<uint64_t>("cache.llc.latency", 20))
-                          .tag_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>("cache.llc.max_tag_check", 1)})
-                          .fill_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>("cache.llc.max_fill", 1)})
+                          .tag_bandwidth(configured_bandwidth(cfg, "cache.llc.max_tag_check", 1))
+                          .fill_bandwidth(configured_bandwidth(cfg, "cache.llc.max_fill", 1))
                           .offset_bits(champsim::data::bits{champsim::lg2(BLOCK_SIZE)})
                           .prefetch_activate(prefetch_activate(cfg, "cache.llc"))
                           .clock_period(period(cfg, "cache.llc.frequency", 4000))
@@ -289,8 +318,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .pq_size(cfg.value<uint32_t>(dtlb + ".pq_size", 0))
                             .mshr_size(cfg.value<uint32_t>(dtlb + ".mshr_size", 8))
                             .latency(cfg.value<uint64_t>(dtlb + ".latency", 1))
-                            .tag_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(dtlb + ".max_tag_check", 2)})
-                            .fill_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(dtlb + ".max_fill", 2)})
+                            .tag_bandwidth(configured_bandwidth(cfg, dtlb + ".max_tag_check", 2))
+                            .fill_bandwidth(configured_bandwidth(cfg, dtlb + ".max_fill", 2))
                             .offset_bits(champsim::data::bits{page_bits})
                             .prefetch_activate(prefetch_activate(cfg, dtlb))
                             .clock_period(period(cfg, dtlb + ".frequency", 4000))
@@ -306,8 +335,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .pq_size(cfg.value<uint32_t>(itlb + ".pq_size", 0))
                             .mshr_size(cfg.value<uint32_t>(itlb + ".mshr_size", 8))
                             .latency(cfg.value<uint64_t>(itlb + ".latency", 1))
-                            .tag_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(itlb + ".max_tag_check", 2)})
-                            .fill_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(itlb + ".max_fill", 2)})
+                            .tag_bandwidth(configured_bandwidth(cfg, itlb + ".max_tag_check", 2))
+                            .fill_bandwidth(configured_bandwidth(cfg, itlb + ".max_fill", 2))
                             .offset_bits(champsim::data::bits{page_bits})
                             .prefetch_activate(prefetch_activate(cfg, itlb))
                             .clock_period(period(cfg, itlb + ".frequency", 4000))
@@ -324,8 +353,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .pq_size(cfg.value<uint32_t>(l1d + ".pq_size", 8))
                             .mshr_size(cfg.value<uint32_t>(l1d + ".mshr_size", 16))
                             .latency(cfg.value<uint64_t>(l1d + ".latency", 5))
-                            .tag_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(l1d + ".max_tag_check", 2)})
-                            .fill_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(l1d + ".max_fill", 2)})
+                            .tag_bandwidth(configured_bandwidth(cfg, l1d + ".max_tag_check", 2))
+                            .fill_bandwidth(configured_bandwidth(cfg, l1d + ".max_fill", 2))
                             .offset_bits(champsim::data::bits{block_bits})
                             .prefetch_activate(prefetch_activate(cfg, l1d))
                             .clock_period(period(cfg, l1d + ".frequency", 4000))
@@ -343,8 +372,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .pq_size(cfg.value<uint32_t>(l1i + ".pq_size", 32))
                             .mshr_size(cfg.value<uint32_t>(l1i + ".mshr_size", 8))
                             .latency(cfg.value<uint64_t>(l1i + ".latency", 4))
-                            .tag_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(l1i + ".max_tag_check", 2)})
-                            .fill_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(l1i + ".max_fill", 2)})
+                            .tag_bandwidth(configured_bandwidth(cfg, l1i + ".max_tag_check", 2))
+                            .fill_bandwidth(configured_bandwidth(cfg, l1i + ".max_fill", 2))
                             .offset_bits(champsim::data::bits{block_bits})
                             .prefetch_activate(prefetch_activate(cfg, l1i))
                             .clock_period(period(cfg, l1i + ".frequency", 4000))
@@ -362,8 +391,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .pq_size(cfg.value<uint32_t>(l2c + ".pq_size", 16))
                             .mshr_size(cfg.value<uint32_t>(l2c + ".mshr_size", 32))
                             .latency(cfg.value<uint64_t>(l2c + ".latency", 10))
-                            .tag_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(l2c + ".max_tag_check", 1)})
-                            .fill_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(l2c + ".max_fill", 1)})
+                            .tag_bandwidth(configured_bandwidth(cfg, l2c + ".max_tag_check", 1))
+                            .fill_bandwidth(configured_bandwidth(cfg, l2c + ".max_fill", 1))
                             .offset_bits(champsim::data::bits{block_bits})
                             .prefetch_activate(prefetch_activate(cfg, l2c))
                             .clock_period(period(cfg, l2c + ".frequency", 4000))
@@ -380,8 +409,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .pq_size(cfg.value<uint32_t>(stlb + ".pq_size", 0))
                             .mshr_size(cfg.value<uint32_t>(stlb + ".mshr_size", 16))
                             .latency(cfg.value<uint64_t>(stlb + ".latency", 8))
-                            .tag_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(stlb + ".max_tag_check", 1)})
-                            .fill_bandwidth(champsim::bandwidth::maximum_type{cfg.value<long>(stlb + ".max_fill", 1)})
+                            .tag_bandwidth(configured_bandwidth(cfg, stlb + ".max_tag_check", 1))
+                            .fill_bandwidth(configured_bandwidth(cfg, stlb + ".max_fill", 1))
                             .offset_bits(champsim::data::bits{page_bits})
                             .prefetch_activate(prefetch_activate(cfg, stlb))
                             .clock_period(period(cfg, stlb + ".frequency", 4000))
@@ -404,18 +433,18 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                            .ifetch_buffer_size(cfg.value<std::size_t>(key + ".ifetch_buffer_size", 64))
                            .decode_buffer_size(cfg.value<std::size_t>(key + ".decode_buffer_size", 32))
                            .dispatch_buffer_size(cfg.value<std::size_t>(key + ".dispatch_buffer_size", 32))
-                           .register_file_size(cfg.value<std::size_t>(key + ".register_file_size", 128))
+                           .register_file_size(configured_register_file_size(cfg, key + ".register_file_size"))
                            .rob_size(cfg.value<std::size_t>(key + ".rob_size", 352))
                            .lq_size(cfg.value<std::size_t>(key + ".lq_size", 128))
                            .sq_size(cfg.value<std::size_t>(key + ".sq_size", 72))
-                           .fetch_width(champsim::bandwidth::maximum_type{cfg.value<long>(key + ".fetch_width", 6)})
-                           .decode_width(champsim::bandwidth::maximum_type{cfg.value<long>(key + ".decode_width", 6)})
-                           .dispatch_width(champsim::bandwidth::maximum_type{cfg.value<long>(key + ".dispatch_width", 6)})
-                           .schedule_width(champsim::bandwidth::maximum_type{cfg.value<long>(key + ".scheduler_size", 128)})
-                           .execute_width(champsim::bandwidth::maximum_type{cfg.value<long>(key + ".execute_width", 4)})
-                           .lq_width(champsim::bandwidth::maximum_type{cfg.value<long>(key + ".lq_width", 2)})
-                           .sq_width(champsim::bandwidth::maximum_type{cfg.value<long>(key + ".sq_width", 2)})
-                           .retire_width(champsim::bandwidth::maximum_type{cfg.value<long>(key + ".retire_width", 5)})
+                           .fetch_width(configured_bandwidth(cfg, key + ".fetch_width", 6))
+                           .decode_width(configured_bandwidth(cfg, key + ".decode_width", 6))
+                           .dispatch_width(configured_bandwidth(cfg, key + ".dispatch_width", 6))
+                           .schedule_width(configured_bandwidth(cfg, key + ".scheduler_size", 128))
+                           .execute_width(configured_bandwidth(cfg, key + ".execute_width", 4))
+                           .lq_width(configured_bandwidth(cfg, key + ".lq_width", 2))
+                           .sq_width(configured_bandwidth(cfg, key + ".sq_width", 2))
+                           .retire_width(configured_bandwidth(cfg, key + ".retire_width", 5))
                            .mispredict_penalty(cfg.value<unsigned>(key + ".mispredict_penalty", 1))
                            .decode_latency(cfg.value<unsigned>(key + ".decode_latency", 1))
                            .dispatch_latency(cfg.value<unsigned>(key + ".dispatch_latency", 1))

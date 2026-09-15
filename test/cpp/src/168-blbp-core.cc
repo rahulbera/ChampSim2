@@ -1,5 +1,6 @@
 #include <catch.hpp>
 #include <cstdint>
+#include <stdexcept>
 #include <vector>
 
 #include "blbp/blbp.h"
@@ -40,6 +41,17 @@ champsim::blbp::engine_config fig3_config()
 const std::vector<uint8_t> target1{0, 1, 0, 1}; // Fig 3's target_1 = 0101
 const std::vector<uint8_t> target2{1, 0, 1, 1}; // Fig 3's target_2 = 1011
 } // namespace
+
+TEST_CASE("BLBP rejects malformed transfer and interval configuration")
+{
+  auto engine_cfg = fig3_config();
+  engine_cfg.transfer.pop_back();
+  REQUIRE_THROWS_WITH(champsim::blbp::engine{engine_cfg}, Catch::Matchers::ContainsSubstring("transfer"));
+
+  champsim::blbp::predictor_config predictor_cfg{};
+  predictor_cfg.intervals.pop_back();
+  REQUIRE_THROWS_WITH(champsim::blbp::predictor{predictor_cfg}, Catch::Matchers::ContainsSubstring("intervals"));
+}
 
 TEST_CASE("Figure 3, prediction 1: weights 3333 pick target2 and train to 2424")
 {

@@ -1,7 +1,8 @@
 #include "spp_dev.h"
 
-#include <cassert>
 #include <iostream>
+
+#include "champsim_assert.h"
 
 void spp_dev::prefetcher_initialize()
 {
@@ -254,7 +255,7 @@ void spp_dev::SIGNATURE_TABLE::read_and_update_sig(champsim::address addr, uint3
       // Assertion
       if (match == ST_WAY) {
         std::cout << "[ST] Cannot find a replacement victim!" << std::endl;
-        assert(0);
+        CHAMPSIM_ASSERT(0);
       }
     }
   }
@@ -279,7 +280,7 @@ void spp_dev::SIGNATURE_TABLE::read_and_update_sig(champsim::address addr, uint3
         // Assertion
         if (lru[set][way] >= ST_WAY) {
           std::cout << "[ST] LRU value is wrong! set: " << set << " way: " << way << " lru: " << lru[set][way] << std::endl;
-          assert(0);
+          CHAMPSIM_ASSERT(0);
         }
       }
     }
@@ -342,7 +343,7 @@ void spp_dev::PATTERN_TABLE::update_pattern(uint32_t last_sig, typename offset_t
       // Assertion
       if (victim_way == PT_WAY) {
         std::cout << "[PT] Cannot find a replacement victim!" << std::endl;
-        assert(0);
+        CHAMPSIM_ASSERT(0);
       }
     }
   }
@@ -483,7 +484,7 @@ bool spp_dev::PREFETCH_FILTER::check(champsim::address check_addr, FILTER_REQUES
   default:
     // Assertion
     std::cout << "[FILTER] Invalid filter request type: " << filter_request << std::endl;
-    assert(0);
+    CHAMPSIM_ASSERT(0);
   }
 
   return true;
@@ -528,7 +529,7 @@ void spp_dev::GLOBAL_REGISTER::update_entry(uint32_t pf_sig, uint32_t pf_confide
   // Assertion
   if (victim_way >= MAX_GHR_ENTRY) {
     std::cout << "[GHR] Cannot find a replacement victim!" << std::endl;
-    assert(0);
+    CHAMPSIM_ASSERT(0);
   }
 
   if constexpr (SPP_DEBUG_PRINT) {
