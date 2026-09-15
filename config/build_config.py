@@ -188,15 +188,13 @@ def resolve(args):
     if target.startswith(('x86_64-', 'amd64-')):
         arch = 'x64'
         isa = args.isa if args.isa_explicit else 'x86-64-v2'
-        if isa not in ('x86-64', 'x86-64-v2', 'x86-64-v3'):
-            raise ValueError('X86_ISA must be x86-64, x86-64-v2 or x86-64-v3')
+        if isa not in ('x86-64', 'x86-64-v2'):
+            raise ValueError('X86_ISA must be x86-64 or x86-64-v2')
         architecture = [f'-march={isa}', '-mtune=generic']
         # GCC 9/10 implement the v2 extensions without the later named level.
         probe = subprocess.run(command + target_options + architecture + ['-E', '-x', 'c++', '-'], input='', text=True, capture_output=True)
         if probe.returncode and isa == 'x86-64-v2':
             architecture = V2.copy()
-        elif probe.returncode:
-            raise ValueError(f'compiler does not support X86_ISA={isa}')
     elif target.startswith(('aarch64-', 'arm64-')):
         arch, isa = 'arm64', 'armv8-a'
         if args.isa_explicit:
@@ -285,16 +283,12 @@ def verify(policy, includes):
     if policy['isa'].startswith('x86-64'):
         if '__x86_64__' not in values or '__ILP32__' in values:
             raise ValueError('effective compiler target is not 64-bit x86')
+        extra = ('__AVX__', '__AVX2__', '__AVX512F__', '__FMA__', '__BMI__', '__BMI2__', '__AES__', '__PCLMUL__', '__SHA__')
         v2 = ('__SSE3__', '__SSSE3__', '__SSE4_1__', '__SSE4_2__', '__POPCNT__', '__GCC_HAVE_SYNC_COMPARE_AND_SWAP_16')
-        v3 = ('__AVX__', '__AVX2__', '__BMI__', '__BMI2__', '__F16C__', '__FMA__', '__LZCNT__', '__MOVBE__')
-        beyond_v3 = ('__AVX512F__', '__AVX512BW__', '__AVX512CD__', '__AVX512DQ__', '__AVX512VL__', '__AES__', '__PCLMUL__', '__SHA__')
-        exceeded = beyond_v3 + (v3 if policy['isa'] != 'x86-64-v3' else ()) + (v2 if policy['isa'] == 'x86-64' else ())
-        if any(k in values for k in exceeded):
+        if any(k in values for k in extra) or (policy['isa'] == 'x86-64' and any(k in values for k in v2)):
             raise ValueError('effective compiler ISA exceeds selected baseline')
         if policy['isa'] == 'x86-64-v2' and not all(k in values for k in v2):
             raise ValueError('effective compiler ISA lacks required v2 extensions')
-        if policy['isa'] == 'x86-64-v3' and not all(k in values for k in v2 + v3):
-            raise ValueError('effective compiler ISA lacks required v3 extensions')
     elif '__aarch64__' not in values or '__AARCH64EB__' in values or any(k in values for k in ('__ARM_FEATURE_SVE', '__ARM_FEATURE_CRYPTO', '__ARM_FEATURE_ATOMICS')):
         raise ValueError('effective compiler ISA conflicts with little-endian Armv8-A')
     return int(payload)

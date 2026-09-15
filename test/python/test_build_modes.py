@@ -42,15 +42,13 @@ int main() {
  std::puts("unoptimized");
 #endif
  std::printf("assertions=%d core=%d module=%d\\n", CHAMPSIM_ENABLE_ASSERTIONS, core(), module());
-#ifdef __AVX2__
- std::puts("v3");
-#elif defined(__SSE4_2__)
+#ifdef __SSE4_2__
  std::puts("v2");
 #else
  std::puts("v1");
 #endif
-#ifdef __AVX512F__
-#error unexpected AVX-512
+#ifdef __AVX__
+#error unexpected AVX
 #endif
 }
 '''
@@ -75,12 +73,6 @@ int main() {
 
     def execute(self, path):
         return subprocess.check_output([str(path)], text=True, cwd=self.root)
-
-    def require_named_v3(self):
-        result = subprocess.run([self.compiler, '-march=x86-64-v3', '-E', '-x', 'c++', '-'],
-                                input='', text=True, capture_output=True)
-        if result.returncode:
-            self.skipTest('selected compiler lacks named x86-64-v3 support')
 
     def test_fixture_isolates_inherited_output_roots(self):
         inherited = self.root / 'inherited-project'
@@ -127,63 +119,10 @@ int main() {
         self.make('release', *args)
         self.assertTrue(Path(first['binary']).exists())
 
-    def test_explicit_v3_compiles_actual_policy_and_coexists_with_default_v2(self):
-        self.require_named_v3()
-        self.make('fast')
-        v2 = self.paths('BUILD_MODE=fast')
-        args = ['BUILD_MODE=fast', 'X86_ISA=x86-64-v3']
-        self.make('fast', *args)
-        v3 = self.paths(*args)
-        self.assertNotEqual(v2['obj'], v3['obj'])
-        self.assertNotEqual(v2['binary'], v3['binary'])
-        self.assertTrue(Path(v2['binary']).exists())
-        self.assertTrue(Path(v3['binary']).exists())
-        policy = json.loads((Path(v3['obj']) / 'build-policy.json').read_text())
-        self.assertEqual(policy['isa'], 'x86-64-v3')
-        self.assertEqual(policy['architecture_options'], ['-march=x86-64-v3', '-mtune=generic'])
-
-    def test_v3_requires_its_effective_macros_and_rejects_v4_extensions(self):
-        self.require_named_v3()
-        wrapper = self.root / 'v3-macro-driver'
-        wrapper.write_text('''#!/usr/bin/env python3
-from pathlib import Path
-import re, subprocess, sys
-result = subprocess.run(['/usr/bin/g++', *sys.argv[1:]], capture_output=True, text=True)
-output = result.stdout
-if result.returncode == 0 and '-dM' in sys.argv:
-    mode = Path('macro-mode').read_text().strip()
-    if mode == 'missing':
-        output = re.sub(r'^#define __BMI2__ .*\\n', '', output, flags=re.M)
-    elif mode == 'beyond':
-        output += '#define __AVX512F__ 1\\n'
-sys.stdout.write(output)
-sys.stderr.write(result.stderr)
-sys.exit(result.returncode)
-''')
-        wrapper.chmod(0o755)
-        self.compiler = str(wrapper)
-        marker = self.root / 'macro-mode'
-        for mode, diagnostic in [('missing', 'lacks required v3 extensions'),
-                                 ('beyond', 'exceeds selected baseline')]:
-            with self.subTest(mode=mode):
-                marker.write_text(mode + '\n')
-                result = self.make('fast', 'X86_ISA=x86-64-v3', ok=False)
-                self.assertNotEqual(result.returncode, 0, result.stdout)
-                self.assertIn(diagnostic, result.stderr)
-
-    def test_v3_unsupported_compiler_has_actionable_diagnostic(self):
-        wrapper = self.root / 'no-v3-driver'
-        wrapper.write_text('#!/bin/sh\ncase " $* " in *" -march=x86-64-v3 "*) echo "unknown architecture" >&2; exit 1;; *) exec /usr/bin/g++ "$@";; esac\n')
-        wrapper.chmod(0o755)
-        self.compiler = str(wrapper)
-        result = self.make('fast', 'X86_ISA=x86-64-v3', ok=False)
-        self.assertNotEqual(result.returncode, 0, result.stdout)
-        self.assertIn('compiler does not support X86_ISA=x86-64-v3', result.stderr)
-
     def test_rejects_conflicting_policy(self):
         for argument in ['BUILD_MODE=', 'BUILD_MODE=nope', 'CXXFLAGS=-Og', 'CPPFLAGS=-DNDEBUG',
                          'CXXFLAGS=-march=native', 'LDFLAGS=-mavx2', 'CXXFLAGS=-D CHAMPSIM_ENABLE_ASSERTIONS=0',
-                         'X86_ISA=x86-64-v4', 'CXXFLAGS=-m32', 'VCPKG_TARGET_TRIPLET=arm64-linux']:
+                         'X86_ISA=x86-64-v3', 'CXXFLAGS=-m32', 'VCPKG_TARGET_TRIPLET=arm64-linux']:
             with self.subTest(argument=argument):
                 result = self.make('release', argument, ok=False)
                 self.assertNotEqual(result.returncode, 0, result.stdout)
