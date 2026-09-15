@@ -151,10 +151,10 @@ when one allows less than 10 µs. Legacy `--knobs` dumps and statistics document
 record the value they used (500 by default), so remove the key along with
 `pmem.*` when converting one. See
 [configuration examples](configs/README.md) and the
-[validation record](docs/ramulator2-validation.md) for counter units, transaction
+[validation record](docs/ramulator-integration/ramulator2-validation.md) for counter units, transaction
 sizes, reproducibility limits, and the completed evidence.
 
-The [integration writeup](docs/ramulator2-integration.md) explains the design,
+The [integration writeup](docs/ramulator-integration/ramulator2-integration.md) explains the design,
 test coverage, known limits, and recommended stress tests before a mainline merge.
 
 # Test

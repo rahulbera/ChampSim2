@@ -3,8 +3,9 @@
 // The PRODUCTION adapter (src/ramulator2_memory_backend.cc) runs over the REAL
 // native driver. A logging decorator records every native attempt, its
 // accept/reject result, every callback and every tick. An independent model,
-// written from the documented request contract (docs/ramulator2-integration.md,
-// "A request's lifetime") and not from the adapter source, predicts each
+// written from the documented request contract
+// (docs/ramulator-integration/ramulator2-integration.md, "A request's lifetime")
+// and not from the adapter source, predicts each
 // operate: which fragment is sent next, when a queue stops, which responses
 // appear, operate()'s progress value and every adapter counter.
 //

@@ -48,7 +48,7 @@ checkout is used rather than vendoring another copy into ChampSim. The tested
 setup is Linux x86-64, GCC 13.3.0 and CMake 3.28.3. Native fmt and yaml-cpp
 revisions are also pinned by the build helper.
 
-For example, [configs/ramulator2.toml](../configs/ramulator2.toml) contains:
+For example, [configs/ramulator2.toml](../../configs/ramulator2.toml) contains:
 
 ```toml
 dram-model = "ramulator2"
@@ -172,14 +172,14 @@ controller or a second native simulator.
 
 | Responsibility | Main source |
 | --- | --- |
-| Backend interface and selection | [memory_backend.h](../inc/memory_backend.h), [memory_backend.cc](../src/memory_backend.cc) |
-| Preserve the original controller | [legacy_memory_backend.cc](../src/legacy_memory_backend.cc) |
-| Environment wiring and page capacity | [static_environment.cc](../src/static_environment.cc), [vmem.cc](../src/vmem.cc) |
-| Packet admission, fragments and callbacks | [ramulator2_memory_backend.cc](../src/ramulator2_memory_backend.cc) |
-| C++17 driver contract and private native implementation | [ramulator2_driver.h](../inc/ramulator2_driver.h), [ramulator2_driver.cc](../src/ramulator2_driver.cc) |
-| Optional build and ABI/library checks | [Makefile](../Makefile), [ramulator2_build.py](../config/ramulator2_build.py) |
-| Phase lifecycle and timeout default | [champsim.cc](../src/champsim.cc), [main.cc](../src/main.cc) |
-| Counter definitions and reporting | [memory_stats.h](../inc/memory_stats.h), [toml_printer.cc](../src/toml_printer.cc), [plain_printer.cc](../src/plain_printer.cc), [json_printer.cc](../src/json_printer.cc) |
+| Backend interface and selection | [memory_backend.h](../../inc/memory_backend.h), [memory_backend.cc](../../src/memory_backend.cc) |
+| Preserve the original controller | [legacy_memory_backend.cc](../../src/legacy_memory_backend.cc) |
+| Environment wiring and page capacity | [static_environment.cc](../../src/static_environment.cc), [vmem.cc](../../src/vmem.cc) |
+| Packet admission, fragments and callbacks | [ramulator2_memory_backend.cc](../../src/ramulator2_memory_backend.cc) |
+| C++17 driver contract and private native implementation | [ramulator2_driver.h](../../inc/ramulator2_driver.h), [ramulator2_driver.cc](../../src/ramulator2_driver.cc) |
+| Optional build and ABI/library checks | [Makefile](../../Makefile), [ramulator2_build.py](../../config/ramulator2_build.py) |
+| Phase lifecycle and timeout default | [champsim.cc](../../src/champsim.cc), [main.cc](../../src/main.cc) |
+| Counter definitions and reporting | [memory_stats.h](../../inc/memory_stats.h), [toml_printer.cc](../../src/toml_printer.cc), [plain_printer.cc](../../src/plain_printer.cc), [json_printer.cc](../../src/json_printer.cc) |
 
 ### A request's lifetime
 
@@ -473,7 +473,7 @@ private copy of the native root for every native build. No stage ran hosted CI.
 
 Detailed counts, commands and the recovery record are in [the validation
 record](ramulator2-validation.md); portable commands are in
-[test/ramulator2](../test/ramulator2/README.md). Wall-clock figures below come
+[test/ramulator2](../../test/ramulator2/README.md). Wall-clock figures below come
 from the shared host (load average up to about 26), so they are not clean
 performance measurements.
 
@@ -553,7 +553,7 @@ driver) before the next burst. The YAML variants add tiny buffers, two and four
 controllers, asymmetric buffers, interleave bits 2, 128-byte transactions and two
 feeders to the two fixtures. To rerun the campaigns and the mutation check, use
 `oracle_variants.py`, `run_differential.py` and `run_mutants.py` as described in
-[test/ramulator2](../test/ramulator2/README.md#adapter-differential-oracle-test-706);
+[test/ramulator2](../../test/ramulator2/README.md#adapter-differential-oracle-test-706);
 the validation record lists the exact commands.
 
 | Campaign | Build | Result |
@@ -818,7 +818,7 @@ controller count, tCK or DDR5).
 
 **The knob.** Override the burst length `nBL`, which sets the channel's RD-to-RD
 and WR-to-WR spacing, and export with the pinned exporter. The committed
-[`test/ramulator2/ddr4_nbl16384.py`](../test/ramulator2/ddr4_nbl16384.py) is the
+[`test/ramulator2/ddr4_nbl16384.py`](../../test/ramulator2/ddr4_nbl16384.py) is the
 fixture with only `nBL` changed:
 
 ```sh
@@ -1098,11 +1098,11 @@ access procedure rather than automatic redistribution.
 
 Existing records:
 
-- [Approved design](superpowers/specs/2026-09-13-ramulator2-design.md)
-- [Completed implementation plan](superpowers/plans/2026-09-13-ramulator2.md)
+- [Approved design](specs/2026-09-13-ramulator2-design.md)
+- [Completed implementation plan](plans/2026-09-13-ramulator2.md)
 - [Detailed validation, reproduction commands and recovery record](ramulator2-validation.md)
-- [Final review and scalar-type correction](superpowers/reviews/2026-09-13-ramulator2.md)
-- [Portable regression tools and their limits](../test/ramulator2/README.md)
+- [Final review and scalar-type correction](reviews/2026-09-13-ramulator2.md)
+- [Portable regression tools and their limits](../../test/ramulator2/README.md)
 
 No simulation, sanitizer or hosted CI run was made to write this update itself;
 its numbers come from the review and close-out reports cited in section 3, whose

@@ -285,12 +285,12 @@ of one name can see an empty or mixed document. A check that sees the name
 appear or vanish under it (another run's startup probe) repeats, up to 16
 times, instead of refusing. `--knobs` never probes output paths. Full stdout with
 unnamed `--toml` still contains progress/plain output before the TOML tail.
-See [the validation record](docs/ramulator2-validation.md) for evidence, limitations,
+See [the validation record](docs/ramulator-integration/ramulator2-validation.md) for evidence, limitations,
 the corrected default guard, and the recovered validation input incident. Portable
 regressions live in `test/ramulator2`; the enabled CI job uses generated local
 traces and the pinned native root, preserving the legacy compiler matrix.
 
-The [integration writeup](docs/ramulator2-integration.md) documents the architecture,
+The [integration writeup](docs/ramulator-integration/ramulator2-integration.md) documents the architecture,
 the review and pre-merge close-out evidence with its limits, the status of every
 known weak point, and what remains before mainline integration (among it hosted CI,
 a clean-host reproduction and the `RITAddrMapper` leak decision).

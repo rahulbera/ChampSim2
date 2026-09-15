@@ -250,7 +250,7 @@ The complete branch review approved the implementation with no Critical or
 Important findings. Its one replay-comparator test improvement was committed as
 `db25b8cf` and independently approved: all 11 tooling tests and all eight saved
 one-/two-core replay pairs pass with exact scalar types and unchanged leaf counts.
-See the [final review and correction](superpowers/reviews/2026-09-13-ramulator2.md).
+See the [final review and correction](reviews/2026-09-13-ramulator2.md).
 
 Hosted GitHub Actions execution remains pending. Local validation does not claim
 that the hosted compiler matrix has run.

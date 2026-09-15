@@ -144,5 +144,5 @@ report. FIFOs and devices are written in place; a device that cannot be opened
 is refused at startup.
 An omitted `--toml` filename appends the TOML document after ordinary stdout;
 use a named file when a standalone parseable document is needed. See the
-[validation record](../docs/ramulator2-validation.md) for native statistics and
+[validation record](../docs/ramulator-integration/ramulator2-validation.md) for native statistics and
 phase semantics.
