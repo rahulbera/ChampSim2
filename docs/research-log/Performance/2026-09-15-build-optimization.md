@@ -977,3 +977,105 @@ in `sdd-archive/manifest.json`; only the verified temporary SDD workspace is
 removed. Simulator source, the local branch, raw experiments, frozen binaries,
 native roots, and the old baseline remain available. The local alias remains the
 exact accepted assertion-enabled v2 release. No push or merge was performed.
+
+## 9. Compare local native targeting with v2 release
+
+**Issue.** The ETH headnode-native compatibility rejection in Section 6 left
+native throughput unmeasured. The user requested a direct comparison on the local
+machine. This is a local measurement experiment, with no production-policy adoption.
+
+**Experiment overview.** Build two fresh release binaries from the same isolated
+snapshot, using GCC 13.3.0, `-O3 -g3`, assertions enabled, payload disabled, the
+same dependencies, and `WITH_RAMULATOR2=0`. Compare
+`-march=x86-64-v2 -mtune=generic` with `-march=native`. The local machine is an
+AMD Ryzen AI Max+ 395; GCC resolves native architecture and tuning to `znver4`,
+with the complete detected feature expansion saved in the evidence directory.
+Native therefore changes both permitted instructions and compiler tuning.
+
+The snapshot's helper alone is extended to permit the experimental native
+selection. Both builds use that same helper and source directory. Checks of all
+510 original snapshot files find only this recorded helper patch. Complete
+build-policy comparison allows only architecture/tuning and their derived
+identity/path differences; compiler, libraries, assertions and other flags match.
+Actual core/module macro probes confirm optimized x64 code, enabled assertions,
+disabled payload and absence of global `NDEBUG` or fast-math. Dependency hashes
+are rechecked and dynamic-library selections match. No production source, build
+policy or published binary is replaced.
+
+**Files touched.** Paths prefixed `E/` below belong to the external experiment
+directory, not the production checkout:
+`/home/rbera/work/alakazam/champsim-perf-results/2026-09-15-build-optimization/08-local-native`.
+
+1. `docs/research-log/Performance/2026-09-15-build-optimization.md`: add this
+   seven-field experiment record and its measured outcome.
+2. `E/source/config/build_config.py`: permit native architecture/tuning and its
+   additional x64 feature macros in the isolated experimental snapshot only.
+3. `E/build_experiment.py`: build and freeze both candidates; record commands,
+   flags, source identity, macro probes, dependency identity and target stability.
+4. `E/validate_experiment.py`: run existing short/timing comparisons under the
+   controlled environment, record host state, and invoke the artifact audit.
+5. `E/audit_pairs.py`: preserve an unchanged copy of the campaign's independent
+   saved-output auditor.
+6. `E/protected-traces.json`: preserve the unchanged four-trace manifest used
+   throughout the earlier timing campaign.
+7. `E/experiment.json` and `E/CHECKLIST.md`: record scope, source revision,
+   controls and completion. Raw outputs, receipts and the exact helper patch
+   accompany these files.
+
+**Commit hashes and artifacts.** Both trial binaries use simulator source
+`6b7ad551103f13298cafd71a07364322919e6882`, plus the same external helper patch.
+There is no production native-profile implementation commit. Patch SHA256:
+`06266cecc9894474d1ed51b3c121e363a28396531e79ccd8203057d2c7c00dad`.
+Frozen release-v2 binary SHA256:
+`f80a7a0546ab4f2ad1f3609c6c1950fa8306386ddfae78271a1dfbef1f7451f3`;
+frozen release-native binary SHA256:
+`24a79a40472e4175de1c258bf87c6866cff277de7cc941033b895fdd0829b675`.
+Their policy keys are `7a6a89f5ef6d27e241f87a34` and
+`813003a2c00e0557836f6adf`, respectively. These are newly built local experiment
+artifacts, distinct from the previously accepted/frozen release binaries.
+
+**Regression verdict.** Observationally inert across the completed experiment.
+All eight benchmark-tool tests pass. All 16 short cases / 32 runs at 100k/500k
+pass, covering detailed/fixed PTW and the existing stress configurations. All
+four timed cases / 24 runs also match. Separate saved-output audits verify full
+phase/configuration/config-ID parity, warmup/ROI retirement and cycle counts,
+binary/config/trace/stdout hashes, pair ordering and recomputed KIPS. Every run
+explicitly uses `dram-model=legacy`. This experiment does not repeat the full
+C++/payload suites or the 15-workload 5M/50M production-acceptance gate, and does
+not claim production acceptance of native.
+
+**KIPS before/after.** Three alternating pairs per workload, 1M warmup / 3M
+simulation, detailed PTW, CPU 14. KIPS includes actual retired warmup plus ROI
+instructions divided by total process wall time. Both candidates are measured
+in this same window; these are not comparisons with historical KIPS.
+
+| Workload | Release v2 KIPS | Release native KIPS | Native change | V2 range | Native range |
+| --- | ---: | ---: | ---: | --- | --- |
+| sqlite | 446.07 | 433.97 | -2.71% | 442.51–451.22 | 433.97–435.47 |
+| omnetpp | 511.88 | 497.00 | -2.91% | 506.70–512.89 | 496.51–497.18 |
+| gcc | 606.00 | 589.45 | -2.73% | 601.65–612.80 | 588.35–590.16 |
+| mcf | 157.64 | 154.80 | -1.80% | 156.52–157.73 | 154.31–156.29 |
+
+All twelve individual pairs favor v2; native loses 0.91–3.69% across pairs.
+Process CPU/wall ratios span 0.999869–0.999946, and one-minute load spans
+0.896–1.000. CPU 14's SMT sibling is CPU 30. The recorded governor is
+`powersave`, energy preference `balance_performance`, with boost enabled;
+these settings were not changed. No own build, test, profiler or concurrent
+simulation overlapped the timed runs. The shared host and three repetitions
+limit the inference; external interference and frequency variation are not
+ruled out by these counters.
+
+**Decision and limitations.** On this host, compiler, release mode and these
+workloads, native provides no measured speed benefit over v2. Keep the existing
+production settings. This result does not establish fast-mode behavior, other
+CPU/compiler behavior, fleet compatibility, or the cause of the slowdown.
+In particular, the ISA and tuning effects were not separated and no AVX-related
+frequency explanation was tested. Native remains an experimental local binary;
+any future production adoption still requires the full acceptance gates.
+
+**Evidence.** `E/timing/summary.csv`, `timing/runs.json`, the short and timing
+independent-audit JSON files, `build-audit.json`,
+`complete-policy-differences.json`, target expansion files and the two frozen
+candidate directories preserve the primary results. Scripts and the source
+archive permit reproduction; native expansion must be checked again if the
+experiment is repeated on a different host or compiler.
