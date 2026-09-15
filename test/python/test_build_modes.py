@@ -76,6 +76,12 @@ int main() {
     def execute(self, path):
         return subprocess.check_output([str(path)], text=True, cwd=self.root)
 
+    def require_named_v3(self):
+        result = subprocess.run([self.compiler, '-march=x86-64-v3', '-E', '-x', 'c++', '-'],
+                                input='', text=True, capture_output=True)
+        if result.returncode:
+            self.skipTest('selected compiler lacks named x86-64-v3 support')
+
     def test_fixture_isolates_inherited_output_roots(self):
         inherited = self.root / 'inherited-project'
         inherited.mkdir()
@@ -122,6 +128,7 @@ int main() {
         self.assertTrue(Path(first['binary']).exists())
 
     def test_explicit_v3_compiles_actual_policy_and_coexists_with_default_v2(self):
+        self.require_named_v3()
         self.make('fast')
         v2 = self.paths('BUILD_MODE=fast')
         args = ['BUILD_MODE=fast', 'X86_ISA=x86-64-v3']
@@ -136,6 +143,7 @@ int main() {
         self.assertEqual(policy['architecture_options'], ['-march=x86-64-v3', '-mtune=generic'])
 
     def test_v3_requires_its_effective_macros_and_rejects_v4_extensions(self):
+        self.require_named_v3()
         wrapper = self.root / 'v3-macro-driver'
         wrapper.write_text('''#!/usr/bin/env python3
 from pathlib import Path
