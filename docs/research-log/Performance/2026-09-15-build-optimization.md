@@ -391,7 +391,8 @@ configuration identity. Preserve the optional native backend's build checks.
 19. `tools/perf/benchmark_ptw.py`: capture provenance outside measured execution.
 20. `tools/perf/compare_optimization.py`: retain provenance in comparison manifests.
 21. `tools/perf/test_build_info_provenance.py`: test available/unavailable metadata.
-22. `.github/workflows/test.yml`: pass selected test-binary identity to Python tests.
+22. `.github/workflows/test.yml`: resolve the native production object leaf for
+    `run_oracle.py` and update native log/manifest artifact paths.
 23. `CLAUDE.md`: document modes, roots, overrides and compatibility boundaries.
 24. `tools/perf/README.md`: document reproducible build and measurement selection.
 25. `test/ramulator2/README.md`: document canonical native compatibility builds.
@@ -742,6 +743,10 @@ portable fleet profile in this campaign.
 
 ## 7. Close out retained artifacts and publish the local release alias
 
+This section records the initial `dc0c95e1` closeout. Its source-equivalence
+checks and `06-closeout/` receipts remain historical; Section 8 records the later
+input-guard correction and its separate policy/source reconciliation.
+
 **Issue.** The accepted implementations and their evidence span several source
 commits and immutable binaries. The local `bin/champsim` alias still contained
 the preserved pre-campaign binary, so it did not expose the accepted standalone
@@ -809,8 +814,8 @@ The four retained named candidates' adjacent receipts all identify helper SHA256
 and production source `d71de93c`; release, fast, debug, and v1 policy keys are
 respectively `1d264c7c13a56cfb2ef15e36`, `13827087e0e486083ad30810`,
 `21dfb5663f09db1031488f09`, and `cb0b65743e5b358691515f6d`.
-The later accepted commit changes tests only, and the current production tree
-equals accepted `084f7a1d` outside documentation. The v1 hash above is the
+At initial closeout, the later accepted commit changed tests only, and the
+`dc0c95e1` production tree equaled accepted `084f7a1d` outside documentation. The v1 hash above is the
 artifact-and-receipt value; an initial Task 6 handoff transposed its final bytes,
 and the correction is retained explicitly in the closeout verification receipt.
 
@@ -878,3 +883,77 @@ The 26 campaign decisions and tradeoffs are indexed by `final-rulings.md` at the
 evidence root. Final whole-campaign code/evidence review and SDD archival remain
 controller-owned and intentionally open in the plan. The local branch and raw
 evidence are retained; nothing was pushed, merged, or cleaned up.
+
+
+## 8. Reject untracked explicit linker inputs
+
+**Issue.** Final whole-campaign review I1 found that bare filenames and `-Wl,`
+filenames bypassed the explicit-script guard. A script named like an object can
+introduce `INPUT` or `GROUP` children whose contents are absent from the policy
+fingerprint. Real Make fixtures retained `core=42` after recompiling only the
+child to return 43, with unchanged policy path, binary hash and timestamp. Direct
+forwarded objects had the same stale-input defect. This establishes stale reuse;
+silent debug-symbol stripping was not reproduced. Review M2 also identified an
+incorrect description of the CI workflow change in Section 3.
+
+**Fix.** Validate each response-expanded option channel independently. Reject
+unconsumed positional inputs and unknown opaque forwarded linker options, while
+consuming supported driver/linker operands and preserving transparent compiler
+wrappers. Check resolved `-L`/`-l` library formats by magic bytes: ELF, Mach-O and
+ordinary archives retain content identity; implicit scripts and thin archives
+are rejected because their child inputs are untracked. This deliberately narrows
+custom linker input support without implementing a general linker-script parser.
+Correct the CI inventory to identify the production object leaf used by the
+native oracle and its log/manifest artifact paths.
+
+**Files touched.**
+
+1. `config/build_config.py`: enforce input grammar and resolved-library format.
+2. `test/python/test_build_modes.py`: real Make rejection, response/channel,
+   wrapper/operand and changed-library regression coverage; scrub inherited
+   `LDLIBS` and `LOADLIBES` from fixture environments.
+3. `CLAUDE.md`: document supported library, linker-operand and wrapper boundaries.
+4. This campaign log: correct M2, preserve initial closeout as historical and
+   record this separate final-review correction.
+
+**Commit hashes.** Correction follows review baseline
+`dc0c95e131a7b06d940714bd10682f77c1f92421`; the exact correction commit is recorded
+in `07-final-review/fix/final-fix-report.md`. The measured named candidates retain
+production source `d71de93c` and helper
+`3e2831c65498c7e8b3b96cdddc308ca246c8c49aec0bf013113dc97ba83a088c`.
+They have not been rebuilt or relabeled as products of the new helper.
+
+**Regression verdict.** The new guard rejects the demonstrated stale-input paths
+before metadata or a misleading binary is produced. Permitted ordinary archive
+replacement selects a new policy/output and executes the new value. Focused
+build-policy suite passes 32 tests with one expected skip; full Python passes
+110 tests with five expected skips, using the accepted production release for
+both binary environment variables. Commands and logs are recorded in
+`07-final-review/fix/final-fix-report.md`. Exact standard-policy reconciliation
+covers 28 selections: v2/default and explicit v1 across debug/release/fast,
+simulator/test and normal/payload settings, plus separate standard native release
+selections. Actual core/module preprocessor macros agree; native driver macros
+also agree where enabled. Resolved policies, compile/link argument vectors and
+Make output paths differ only by the verified helper source digest and its
+recomputed policy key/derived leaf. All other tracked simulator/build inputs are
+unchanged. This supports reuse of the existing measured artifacts; it is a
+simulator-source and guard-policy proof, not a new simulator/native build.
+
+**KIPS before/after.** No new speed claim or timing run. The measured release
+`ebd0abafe640c83144c09b5579dce51846f46a9a9e41644dc474aaa3a33af1d8`
+and fast `467161d7aaef15cf2fb70eae0b0a4fbc1c446538eda318af1f7f33c7c7ee5275`
+artifacts remain unchanged, as do the published local release alias and native
+library. Earlier incremental timing tables retain their original scope.
+
+**Evidence and limits.** New receipts and actual commands are under
+`07-final-review/fix/`, especially `red-stale-input-proof.json`,
+`green-stale-input-proof.json`, `reconciliation.json`, and the final fix report.
+`07-final-review/final-rulings.md` records the follow-up ruling;
+`06-closeout/` and the original ledger receipts remain immutable. Final scoped
+re-review remains the controller's gate. Existing limits remain: unknown external
+library ISA and unresolved compiler/system library identity, unvalidated Darwin/
+Arm hardware, synthetic older-GCC fallback coverage, ETH codec rather than full
+SPEC/KIPS coverage, six cancelled node allocations, and native evidence from its
+preserved earlier helper reconciled through the recorded guard changes. M1's
+GCC 13 O3 test-183 diagnostic remains unsuppressed and nonblocking; the existing
+focused sanitizer result found no invalid memory access.

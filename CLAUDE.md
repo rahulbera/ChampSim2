@@ -66,8 +66,18 @@ The build rejects conflicting optimization, assertion, ISA or tuning flags from
 user flags, compiler argv and response files. Transparent argv compiler wrappers
 and quoted flag values work in legacy mode; shell programs in `CXX`, opaque
 compiler escape channels, static/stateful/exact linker library selection, and
-special Make graph characters in output paths are
-unsupported. Ambient Conda flags can conflict: use a controlled environment, for
+special Make graph characters in output paths are unsupported. User-supplied
+positional objects, archives and linker scripts are rejected, including forwarded
+and nested-response forms. Use driver `-L`/`-l` selection for extra libraries:
+resolved ELF/Mach-O libraries and ordinary archives are content-fingerprinted;
+implicit scripts and thin archives are rejected regardless of filename suffix.
+Compiler/system search results that cannot be resolved remain explicitly unknown.
+Forwarded linker options use a bounded grammar: ordinary rpath, soname, init,
+symbol-preserving switches and their operands are supported; unknown opaque
+switches are rejected. An operand must stay in its own option channel. Transparent
+wrapper chains may name GCC/Clang drivers and ccache/sccache/distcc/icecc; custom
+wrappers can also serve as the single `CXX` executable.
+Ambient Conda flags can conflict: use a controlled environment, for
 example `env -u CFLAGS -u CPPFLAGS -u CXXFLAGS -u LDFLAGS make release CXX=/usr/bin/g++`.
 Compiler/response/known forced-include contents participate in build identity.
 `--build-info` is standalone and does not construct the simulated machine. Its

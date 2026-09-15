@@ -111,6 +111,64 @@ def validate_flags(tokens):
             raise ValueError('newlines/NUL are unsupported in build options')
 
 
+    validate_input_words(tokens)
+
+
+def validate_input_words(tokens):
+    """Deny untracked files; consume only operands with a known argv grammar.
+
+    Driver response files have already been expanded. Linker response files and
+    unknown linker switches stay unsupported: either can hide INPUT/GROUP files.
+    This validates without rewriting the arguments ultimately sent to the driver.
+    """
+    driver_operands = {'-D', '-U', '-I', '-L', '-l', '-include', '-imacros',
+                       '-isystem', '-iquote', '-idirafter', '-iprefix',
+                       '-iwithprefix', '-iwithprefixbefore', '-isysroot',
+                       '--sysroot', '-target', '--target', '-x', '--param'}
+    linker_operands = {'rpath', 'rpath-link', 'soname', 'init', 'fini', 'entry',
+                       'undefined', 'defsym', 'hash-style', 'dynamic-linker',
+                       'exclude-libs', 'section-start', 'z', 'e', 'u', 'h'}
+    linker_switches = {'as-needed', 'no-as-needed', 'discard-none',
+                      'no-strip-discarded', 'gc-sections', 'no-gc-sections',
+                      'eh-frame-hdr', 'no-eh-frame-hdr', 'export-dynamic',
+                      'no-export-dynamic', 'enable-new-dtags', 'disable-new-dtags',
+                      'warn-common', 'fatal-warnings', 'no-fatal-warnings',
+                      'no-undefined', 'demangle', 'no-demangle', 'build-id'}
+    forwarded = []
+    iterator = iter(tokens)
+    for token in iterator:
+        if token in driver_operands:
+            operand = next(iterator, None)
+            if not operand or operand.startswith(('-', '@')):
+                raise ValueError(f'missing or unsupported operand for {token}')
+        elif token.startswith('-Wl,'):
+            forwarded += token[4:].split(',')
+        elif not token.startswith('-') or token == '-':
+            raise ValueError(f'unsupported positional build input: {token}; use tracked -L/-l libraries')
+    iterator = iter(forwarded)
+    for word in iterator:
+        name, equals, value = word.lstrip('-').partition('=')
+        if not word.startswith('-'):
+            raise ValueError(f'unsupported positional linker input: {word}; custom scripts/objects are not tracked')
+        if name in linker_operands:
+            operand = value if equals else next(iterator, None)
+            if not operand or operand.startswith(('-', '@')):
+                raise ValueError(f'missing or unsupported linker operand for {word}')
+        elif name not in linker_switches or (equals and name not in ('build-id', 'demangle')):
+            raise ValueError(f'unsupported opaque linker policy option: {word}')
+
+
+def validate_library(path):
+    # ld treats unknown formats as scripts, regardless of suffix. Thin archives
+    # also refer to external members that a hash of the archive does not cover.
+    with Path(path).open('rb') as stream:
+        magic = stream.read(8)
+    mach = (b'\xfe\xed\xfa\xce', b'\xce\xfa\xed\xfe', b'\xfe\xed\xfa\xcf', b'\xcf\xfa\xed\xfe',
+            b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca', b'\xca\xfe\xba\xbf', b'\xbf\xba\xfe\xca')
+    if not (magic.startswith((b'\x7fELF', *mach)) or magic == b'!<arch>\n'):
+        raise ValueError(f'unsupported opaque library input: {path}; linker scripts and thin archives are not tracked')
+
+
 def driver_values(tokens, prefix):
     values = []
     iterator = iter(tokens)
@@ -165,9 +223,23 @@ def resolve(args):
                for name in ('cppflags', 'cxxflags', 'ldflags', 'ldlibs', 'loadlibes')}
     common = expand(['@global.options'], inputs)
     module = expand(['@module.options'], inputs)
-    libraries = expand(shlex.split(args.libraries), inputs) + (expand(shlex.split(args.test_libraries), inputs) if args.flavor == 'test' else [])
+    library_options = [expand(shlex.split(args.libraries), inputs)]
+    if args.flavor == 'test':
+        library_options.append(expand(shlex.split(args.test_libraries), inputs))
+    libraries = sum(library_options, [])
     all_user = command[1:] + common + module + sum(options.values(), []) + libraries
-    validate_flags(all_user)
+    # Leading executable compiler/wrapper operands are the transparent CXX
+    # command, not linker inputs. Do not exempt arbitrary executable filenames.
+    command_options = command[1:]
+    compiler_name = r'(?:[\w.+]+-)?(?:g\+\+|gcc|clang\+\+|clang|c\+\+)(?:-[\d.]+)?'
+    if not re.fullmatch(compiler_name, Path(command[0]).name):
+        while command_options and re.fullmatch(compiler_name + '|ccache|sccache|distcc|icecc', Path(command_options[0]).name) and shutil.which(command_options[0]):
+            executable = command_options.pop(0)
+            if re.fullmatch(compiler_name, Path(executable).name):
+                break
+    # An operand may not cross a response-expanded option channel boundary.
+    for channel in [command_options, common, module, *options.values(), *library_options]:
+        validate_flags(channel)
     for index, token in enumerate(all_user):
         if token in ('-include', '-imacros') and index + 1 < len(all_user):
             path = Path(all_user[index + 1]).resolve(strict=True)
@@ -224,11 +296,11 @@ def resolve(args):
         if not matches and token in libraries:
             raise ValueError(f'selected dependency library missing: {token} in {dependency}')
         if matches:
+            validate_library(matches[0])
             linked[token] = str(matches[0].resolve())
             files.append(matches[0])
         else:
             linked[token] = 'unknown (compiler/system search path)'
-    files += [Path(token) for token in options['ldflags'] + options['ldlibs'] + options['loadlibes'] + libraries if not token.startswith('-') and Path(token).is_file()]
     vcpkg_revision = 'unknown (source archive or unavailable checkout)'
     if Path('vcpkg/.git').exists():
         result = subprocess.run(['git', '-C', 'vcpkg', 'rev-parse', 'HEAD'], text=True, capture_output=True)

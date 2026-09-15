@@ -57,7 +57,7 @@ int main() {
         for name, function in [('src/core.cc', 'core'), ('branch/probe/probe.cc', 'module')]:
             (self.root / name).write_text(f'int {function}() {{\n#ifdef CHAMPSIM_TEST_BUILD\nreturn 1;\n#else\nreturn 0;\n#endif\n}}\n')
         self.env = {k: v for k, v in os.environ.items() if k not in (
-            'CFLAGS', 'CXXFLAGS', 'CPPFLAGS', 'LDFLAGS', 'MAKEFLAGS', 'MFLAGS', 'BUILD_MODE', 'X86_ISA',
+            'CFLAGS', 'CXXFLAGS', 'CPPFLAGS', 'LDFLAGS', 'LDLIBS', 'LOADLIBES', 'MAKEFLAGS', 'MFLAGS', 'BUILD_MODE', 'X86_ISA',
             'WITH_RAMULATOR2', 'RAMULATOR2_ROOT', 'OBJ_ROOT', 'DEP_ROOT', 'BIN_ROOT')}
 
     def make(self, *args, ok=True):
@@ -247,13 +247,18 @@ int main() {
 
     def test_unknown_dependency_isa_and_library_identity(self):
         library = self.root / 'vcpkg_installed/x64-linux/lib/libfixture.a'
-        library.write_bytes(b'first external library')
+        (self.root / 'src/core.cc').write_text('extern int fixture(); int core() { return fixture(); }\n')
         args = ['CHAMPSIM_LIBRARIES=-lfixture']
-        before = self.paths(*args)
-        library.write_bytes(b'replaced external library')
-        self.assertNotEqual(before['obj'], self.paths(*args)['obj'])
-        self.make('release')
-        policy = json.loads((Path(self.paths()['obj']) / 'build-policy.json').read_text())
+        paths = []
+        for value in [42, 43]:
+            (self.root / 'fixture.cc').write_text(f'int fixture() {{ return {value}; }}\n')
+            subprocess.run([self.compiler, '-c', 'fixture.cc', '-o', 'fixture.o'], cwd=self.root, check=True)
+            subprocess.run(['ar', 'rcs', library, self.root / 'fixture.o'], check=True)
+            self.make('release', *args)
+            paths.append(self.paths(*args))
+            self.assertIn(f'core={value}', self.execute(paths[-1]['binary']))
+        self.assertNotEqual(paths[0]['obj'], paths[1]['obj'])
+        policy = json.loads((Path(paths[-1]['obj']) / 'build-policy.json').read_text())
         self.assertTrue(policy['dependencies']['isa_provenance'].startswith('unknown'))
 
     def test_payload_policy_and_rejected_graph_paths(self):
@@ -296,7 +301,7 @@ int main() {
             subprocess.run(['/usr/bin/g++', '-c', source, '-o', directory / 'fixture.o'], check=True)
             subprocess.run(['ar', 'rcs', directory / 'libfixture.a', directory / 'fixture.o'], check=True)
         (self.root / 'src/core.cc').write_text('extern int fixture_value(); int core() { return fixture_value(); }\n')
-        args = ['CHAMPSIM_LIBRARIES=-lfixture', 'LDFLAGS=-Lalternate-libs']
+        args = ['CHAMPSIM_LIBRARIES=-l fixture', 'LDFLAGS=-L alternate-libs']
         self.make('release', *args)
         paths = self.paths(*args)
         self.assertIn('core=7', self.execute(paths['binary']))
@@ -357,6 +362,86 @@ int main() {
         result = self.make('release', 'LDFLAGS=@grouped-outer.options', ok=False)
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn('grouped short linker policy option', result.stderr)
+
+    def test_custom_link_inputs_are_rejected_before_artifacts(self):
+        (self.root / 'child.cc').write_text('int child() { return 42; }\n')
+        subprocess.run([self.compiler, '-c', 'child.cc', '-o', 'child.o'], cwd=self.root, check=True)
+        (self.root / 'src/core.cc').write_text('extern int child(); int core() { return child(); }\n')
+        # Scripts have no required suffix: these deliberately look like objects.
+        (self.root / 'input.o').write_text('INPUT(child.o)\n')
+        (self.root / 'group.a').write_text('GROUP(child.o)\n')
+        flags = ['input.o', 'group.a', 'child.o', '-Wl,input.o', '-Wl,child.o',
+                 '-Wl,--just-symbols=child.o', '-Wl,-R,child.o',
+                 '-Wl,--version-script=input.o', '-Wl,--dynamic-list=input.o',
+                 '-Wl,--rpath=/tmp,child.o', '-Wl,--undefined,main,child.o']
+        for flag in flags:
+            with self.subTest(flag=flag):
+                result = self.make('release', 'LDFLAGS=' + flag, ok=False)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn('Build policy:', result.stderr)
+                self.assertFalse(list(self.root.glob('**/build-policy.json')))
+                self.assertFalse(list(self.root.glob('**/champsim')))
+
+    def test_nested_custom_inputs_are_rejected_in_every_channel(self):
+        (self.root / 'input.o').write_text('INPUT(child.o)\n')
+        for flag in ['input.o', '-Wl,input.o', '-Wl,@linker.options']:
+            (self.root / 'input-inner.options').write_text(flag + '\n')
+            (self.root / 'input-outer.options').write_text('@input-inner.options\n')
+            for channel in ['CXX', 'CPPFLAGS', 'CXXFLAGS', 'LDFLAGS', 'LDLIBS', 'LOADLIBES',
+                            'CHAMPSIM_LIBRARIES', 'CHAMPSIM_TEST_LIBRARIES', 'global.options', 'module.options']:
+                with self.subTest(flag=flag, channel=channel):
+                    args = ['test']
+                    if channel.endswith('.options'):
+                        path = self.root / channel
+                        original = path.read_text()
+                        path.write_text(original + '\n@input-outer.options\n')
+                    else:
+                        value = '@input-outer.options'
+                        if channel == 'CXX':
+                            value = self.compiler + ' ' + value
+                        args.append(channel + '=' + value)
+                    result = self.make(*args, ok=False)
+                    if channel.endswith('.options'):
+                        path.write_text(original)
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertIn('Build policy:', result.stderr)
+                    self.assertFalse(list(self.root.glob('**/build-policy.json')))
+
+    def test_link_operands_and_transparent_wrapper_remain_supported(self):
+        wrapper = self.root / 'wrapper'
+        wrapper.write_text('#!/bin/sh\nexec "$@"\n')
+        wrapper.chmod(0o755)
+        self.compiler = str(wrapper) + ' /usr/bin/g++'
+        (self.root / 'forced.h').write_text('#define OPERAND_VALUE 27\n')
+        (self.root / 'src/core.cc').write_text('int core() { return OPERAND_VALUE; }\n')
+        flags = ['CPPFLAGS=-I inc -iquote inc -isystem inc -include forced.h -D EXTRA=1 -U UNUSED',
+                 'LDFLAGS=--sysroot / -Wl,-rpath -Wl,/tmp/fixture -Wl,--soname=fixture,-init,_init,-z,now']
+        self.make('release', *flags)
+        self.assertIn('core=27', self.execute(self.paths(*flags)['binary']))
+
+    def test_selected_library_cannot_hide_script_or_thin_archive_inputs(self):
+        directory = self.root / 'vcpkg_installed/x64-linux/lib'
+        (self.root / 'child.cc').write_text('int child() { return 42; }\n')
+        subprocess.run([self.compiler, '-c', 'child.cc', '-o', 'child.o'], cwd=self.root, check=True)
+        (self.root / 'src/core.cc').write_text('extern int child(); int core() { return child(); }\n')
+        for content in ['INPUT(child.o)\n', 'GROUP(child.o)\n']:
+            with self.subTest(content=content):
+                (directory / 'libhidden.so').write_text(content)
+                result = self.make('release', 'CHAMPSIM_LIBRARIES=-lhidden', ok=False)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn('Build policy:', result.stderr)
+        (directory / 'libhidden.so').unlink()
+        subprocess.run(['ar', 'rcsT', directory / 'libhidden.a', self.root / 'child.o'], check=True)
+        result = self.make('release', 'CHAMPSIM_LIBRARIES=-lhidden', ok=False)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn('Build policy:', result.stderr)
+        self.assertFalse(list(self.root.glob('**/build-policy.json')))
+
+    def test_missing_operand_cannot_consume_another_option_channel(self):
+        result = self.make('release', 'LDFLAGS=-Wl,-rpath', 'LDLIBS=child.o', ok=False)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn('Build policy:', result.stderr)
+        self.assertFalse(list(self.root.glob('**/build-policy.json')))
 
     def test_single_dash_long_linker_options_remain_supported(self):
         flags = 'LDFLAGS=-Wl,-rpath,/tmp/fixture-xs,-soname,champsim-fixture,-init,_init,-discard-none,-no-strip-discarded'
