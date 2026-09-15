@@ -280,6 +280,15 @@ with live native requests, parent contexts and callbacks, with and without
 `finalize()`; it runs in every enabled build and is meant to be run
 instrumented. vcpkg's static libraries and libstdc++ are not instrumented.
 
+LeakSanitizer runs only when a process returns from `main` or calls `exit`,
+which includes the runtime errors `bin/champsim` reports with exit status 1.
+The no-progress guard's deliberate `abort()` after its diagnostics, any other
+exception that reaches `std::terminate`, and SIGTERM or SIGINT end the process
+without a leak check, so the live requests those runs hold are never
+examined; test 708's in-process teardown is the check for them. Leave
+`handle_abort` unset: with `handle_abort=1` AddressSanitizer reports that
+`abort()` as an error, still without a leak check.
+
 The instrumented library is much larger than the release one, and every driver
 construction fingerprints the loaded library, so tests that construct many
 drivers are noticeably slower in this mode.
