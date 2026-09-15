@@ -1155,3 +1155,106 @@ review, short/queue-stress/long campaigns, audits, decoded assembly and timings.
 Candidate SHA-256 `d6ba9984b09cda707e1dcae64b27565df9c66744bb3beab677847e1aeaec9cff`;
 parent `11-cache-guards/champsim`, SHA-256
 `fe657e62bb275213fda52348c18ef3f411c724e00d34d8243d962d38f5263e79`.
+
+## Final retained result and review — 2026-09-15
+
+The final simulator retains optimizations **1–8 and 11**. Experiments **9, 10, 12
+and 13** are deferred: their meaningful tests and evidence remain, and their
+production changes are absent. The final rebuilt executable is byte-identical to
+`11-cache-guards/champsim`; later commits add characterizations and documentation.
+No merge or push was performed. The clone, `feat/perf-fix` branch and raw evidence
+remain available for review.
+
+**Fresh cumulative KIPS against the original baseline.** Compare the immutable
+pre-first-optimization `b1fb06b9` release directly with the final retained release,
+using the same compiler/build configuration, two TOML files, four traces, legacy
+DRAM and detailed PTW. CPU 14; 1M warmup / 3M ROI; three alternating pairs per
+trace. KIPS counts actual warmup plus ROI retirement over whole-process wall time.
+Medians below include observed minimum–maximum. These are direct measurements,
+not multiplied historical per-target improvements.
+
+| Trace | Original KIPS | Final KIPS | Gain | Throughput ratio |
+|---|---:|---:|---:|---:|
+| SQLite | 196.79 (195.69–198.32) | 453.02 (448.53–453.15) | +130.21% | 2.30× |
+| omnetpp | 217.68 (215.60–219.63) | 515.41 (513.45–515.75) | +136.77% | 2.37× |
+| GCC | 269.74 (266.20–270.50) | 611.58 (610.83–614.72) | +126.73% | 2.27× |
+| mcf | 71.91 (71.72–72.07) | 156.70 (156.49–158.54) | +117.91% | 2.18× |
+
+All twelve individual pairs favor the final release (per-pair gains 117.15–138.15%).
+All 24 runs match complete exported phase statistics, effective configuration,
+and actual warmup/ROI instruction and cycle counts. An independent artifact audit
+recomputes parity and KIPS. No own build, test, profile or long campaign overlaps
+this timing. The concurrent final review is read-only source/artifact inspection.
+Host load is low, but frequency boost and unrelated activity are uncontrolled;
+precise gain estimates still need quiet-host replication. These ratios describe
+four measured windows, not the entire workload inventory or every configuration.
+
+**Final regression scope.** Restored normal C++: 899 passed / 7 native-backend
+skips / 81,745 assertions; restored payload C++: 904 passed / 7 skips / 83,838.
+Python configuration tests: 66 run / 4 native skips. Performance-tool tests: 7 passed normally and with an outer Python `-O`
+unittest process (the CLI subprocesses do not inherit that flag).
+Both normal and payload builds use separate object directories. No golden
+statistics were changed.
+
+The 5M/50M comparison chain starts at the release after the first six optimizations,
+then validates retained 7+8 and retained 11 on all 14 current SPEC26 workloads plus
+mcf. Each rejected high-risk trial, 12 and 13, separately passes those same fifteen
+long comparisons against retained 11. Their long successes do not justify their
+performance regressions. The original pre-first-six binary is compared directly
+in the final four-trace 1M/3M campaign; it is **not** claimed as the reference for
+all fifteen long runs. Short matrices also cover fixed PTW, seeds, mixed clocks,
+prefetching and legacy geometries. The supplemental tiny-queue matrix explicitly
+exercises writes, queue-full retries, refreshes and repeated slot reuse.
+
+**Whole-branch review.** Independent review of `b1fb06b9..aad05478` found no
+Critical or Important production finding. It checked interactions among canonical
+phase ordering, cache side effects, trace/payload ownership, LSQ guards and
+bandwidth exception behavior. The sole Minor finding—an empty
+trace manifest causing a late `IndexError` after output creation—is fixed in
+`cd97b6ed` and its scoped re-review is approved. An ordinary input guard now
+rejects empty/non-list manifests with a clear argparse diagnostic before campaign
+setup. The four new subprocess cases fail on original code and pass after the fix.
+
+Files touched for that review fix:
+
+1. `tools/perf/compare_optimization.py`: validate that the loaded trace manifest is
+   a non-empty list before processing traces, creating output or setting affinity.
+2. `tools/perf/test_compare_optimization.py`: check exit code, diagnostic, absence
+   of a traceback and absence of output for empty/non-list inputs in both modes.
+
+This changes invalid benchmark input handling; it is not a simulator optimization
+or a new KIPS claim. Valid campaigns and the production executable are unchanged.
+Authoritative unedited red/green output and commands are retained in
+`final-review-fix/`; an earlier condensed red transcript is explicitly excluded
+as raw evidence. The final scoped review is `final-review-fix/review.md`.
+
+**Remaining work before mainline.** Broader simpoints and full multicore shared
+cache/DRAM traffic remain untested by the real-trace comparisons. Exercise other
+supported compilers/platforms and additional module combinations, and repeat timing
+on an isolated host. No native Ramulator execution is part of this legacy-only
+performance verdict; unexported warmup cache/DRAM counters are also outside the
+trace parity check. Existing oversized-register RAT indexing, zero-step DRAM
+swizzling and vendored ITTAGE undefined shifts are documented pre-existing issues,
+not fixes in this pass.
+
+**Next investigations.** The fresh profile still makes core scheduling/execution/
+completion the largest target, but the rejected ROB prefix trial shows that an
+apparently redundant scan can be cheaper than its replacement bookkeeping.
+Allocation call sites merit separate attribution before changing container storage.
+The DRAM trial exposes by-value mapper/predicate copies as a possible independent
+target; reducing those copies requires its own proof and measurement before
+reconsidering precomputed geometry. No additional prototype is left active.
+
+**Evidence and provenance.** `2026-09-15-optimizations/final-cumulative/` contains
+commands, input/binary hashes, each run's outputs, per-pair changes, host snapshots,
+the independent audit, and the exact executed comparison script before the final
+CLI guard. Original binary SHA-256:
+`6b1ccf78b6e19c739566a9315193711fd1006350d6562a2f5dfd85c236727bbd`;
+final binary SHA-256:
+`fe657e62bb275213fda52348c18ef3f411c724e00d34d8243d962d38f5263e79`.
+The final review is `2026-09-15-optimizations/final-branch-review.md`.
+
+**Closing commit trail.** ROB characterizations `5640d18f`, rejection log
+`7ac17f54`; DRAM characterizations `6425c6aa`, rejection log `aad05478`;
+benchmark CLI validation `cd97b6ed`. Earlier retained-source and documentation commits are recorded
+under each target above. This final section is documentation only.
