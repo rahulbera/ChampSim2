@@ -5,8 +5,10 @@
 The user approved the direction of explicit debug, release, and fast builds,
 then clarified that ChampSim runs on heterogeneous x86 compute clusters and
 AWS Graviton machines, including c7g, c8g, and sometimes c9g instances. They
-build separately on each cluster. CPU portability within each architecture is
-a requirement for every standard build mode, including fast.
+build separately on each cluster. CPU portability within each architecture and
+the documented minimum ISA is a requirement for every standard build mode,
+including fast. The user subsequently requested x86-64-v2 as the x86 minimum;
+the compute-node audit below supports that choice for the current ETH CPU fleet.
 
 This document records the design and validation requirements; build-system and
 assertion changes have not been implemented. Work belongs in
@@ -36,8 +38,17 @@ The initial standard targets use the following GCC instruction-set baselines:
 
 | Compiler target | Baseline flags |
 | --- | --- |
-| Linux x86-64 | `-march=x86-64 -mtune=generic` |
+| Linux x86-64 | `-march=x86-64-v2 -mtune=generic` |
 | Linux little-endian AArch64 | `-march=armv8-a -mtune=generic` |
+
+Provide an explicit `X86_ISA=x86-64` fallback for older x86 machines. The default
+is `X86_ISA=x86-64-v2`; these are the two supported x86 values in the initial
+implementation. Reject an explicitly supplied x86 ISA option for an Arm target.
+The selection applies equally to debug, release, and fast, participates in
+artifact isolation and dependency preparation, and appears in build provenance.
+Default x86 binaries are portable across v2-capable hosts, not every historical
+x86-64 processor. Other clusters must meet the selected minimum or use the
+fallback. This is a declared minimum, not automatic tuning to the build host.
 
 Determine architecture from the selected compiler's target, not the login
 machine's CPU. Validate equivalent flags for other supported compilers. Fail
@@ -51,12 +62,21 @@ The Arm baseline includes its standard floating-point and Advanced SIMD support;
 portability does not mean disabling all vectorization. Runtime-dispatched library
 implementations are acceptable when they retain a baseline-compatible fallback.
 
+x86-64-v2 adds CMPXCHG16B, LAHF/SAHF, POPCNT, SSE3, SSSE3, SSE4.1, and SSE4.2
+over the original x86-64 baseline. It does not require AVX or AVX2. Choosing v2
+enables additional instruction selection and vector operations; it does not
+establish a KIPS improvement. The original baseline still permits the compiler's
+`-O3` optimizations, so ISA selection and optimization level are distinct axes.
+Measure the v1-to-v2 change with assertions and optimization level held fixed
+before attributing any later release-to-fast gain to assertion removal.
+
 ## CPU-specific alternatives
 
 Three approaches were considered:
 
-1. Portable modes only: the initial implementation. This directly serves the
-   user's deployment pattern and keeps assertion measurements independent of ISA.
+1. Portable modes with a declared minimum ISA: the initial implementation, with
+   x86-64-v2 by default and an explicit v1 fallback. This serves the user's
+   deployment pattern and keeps assertion measurements independent of ISA.
 2. Explicit specialized binaries: a later experiment could add AVX2 or a named
    CPU profile, with visibly different output names and recorded requirements.
    These would not carry the standard portability guarantee.
@@ -161,17 +181,46 @@ That log must distinguish prospective validation from completed evidence.
 
 ## Cluster reconnaissance: 2026-09-15
 
-Read-only SSH through the user's `kratos2` alias succeeded. The endpoint reported
+Initial read-only SSH through the user's `kratos2` alias succeeded. The endpoint reported
 hostname `safari-proxy`, architecture `x86_64`, Slurm 21.08.5, GCC 11.3.0, and
 glibc 2.35. These are login-environment observations, not compute-node guarantees.
 `sinfo` listed 19 nodes in `cpu_part`; their advertised feature fields were null.
 CPU count and partition membership do not establish processor generation or ISA.
 
-No simulator build, benchmark, or Slurm job was run during this reconnaissance.
-Use Slurm allocations for subsequent compute-node discovery and validation.
-Identify representative CPU generations before selecting coverage; do not use
-the login node as the performance benchmark host. AWS access details were not
-provided, and no AWS machines have been inspected or validated for this change.
+No simulator build, benchmark, or Slurm job was run during that initial login
+reconnaissance. The user's subsequent v2 question prompted a compute-node audit
+through Slurm, requesting one CPU and 64 MiB per node, with a one-minute time
+limit and a ten-second immediate-allocation limit. The successful audit was job
+`14547781` and returned exactly the expected 19 distinct `cpu_part` nodes:
+
+| Processor | Nodes | v2 supported | Loader also reports v3 |
+| --- | --- | --- | --- |
+| Intel Xeon Gold 5118 | 8 | Yes | Yes |
+| Intel Xeon Gold 6226R | 9 | Yes | Yes |
+| AMD EPYC 7742 | 1 | Yes | Yes |
+| AMD EPYC 9554 | 1 | Yes | Yes |
+
+The probe checked the intersection of flags across every logical CPU listed in
+each node's `/proc/cpuinfo` for the additional v2 requirements. It also executed
+the node's system ELF loader with `--help` and checked its supported ISA levels.
+Every node had all required additional v2 flags and loader-reported v2 support.
+v3 is consequently a reasonable later experiment for this CPU partition, but
+does not become the default or establish compatibility with uninspected hosts.
+
+Evidence is under
+`/home/rbera/work/alakazam/champsim-perf-results/2026-09-15-build-portability/eth-isa-audit-compact-20260915T111617.630091Z/`:
+`probe.py`, `command.json`, `stdout.jsonl`, `stderr.txt`, and `summary.json`.
+An earlier verbose attempt completed remotely but interleaved output from
+different nodes, preventing complete JSON parsing. Its raw output is preserved
+in sibling `eth-isa-audit-20260915T111449.287423Z/`. The successful rerun retained
+the same checks and shortened each emitted record; no failed record was counted
+as a pass.
+
+This is an ISA availability audit, not a ChampSim simulation, behavior-parity
+test, or KIPS measurement. Simulator validation must still cover representative
+generations using Slurm allocations. GPU and bio partitions were not inspected.
+AWS access details were not provided, and no AWS machines have been inspected
+or validated for this change. Do not use the login node as a benchmark host.
 
 ## References
 
@@ -181,6 +230,8 @@ provided, and no AWS machines have been inspected or validated for this change.
   distinguishes debug, optimized with debugging, and fast with checks removed.
 - [GCC 13 x86 options](https://gcc.gnu.org/onlinedocs/gcc-13.3.0/gcc/x86-Options.html):
   distinguishes the instruction-set requirements of `-march` from `-mtune`.
+- [x86-64 psABI microarchitecture levels](https://gitlab.com/x86-psABIs/x86-64-ABI/-/blob/master/x86-64-ABI/low-level-sys-info.tex):
+  specifies the cumulative v2/v3/v4 instruction requirements and OS enablement.
 - [GCC 13 AArch64 options](https://gcc.gnu.org/onlinedocs/gcc-13.3.0/gcc/AArch64-Options.html):
   defines Arm architecture baselines, tuning, and optional feature controls.
 - [AWS C/C++ guidance](https://github.com/aws/aws-graviton-getting-started/blob/main/c-c%2B%2B.md):
