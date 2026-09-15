@@ -33,6 +33,7 @@ Named portable builds use Python 3.10+ and the selected compiler's target:
 make debug release fast              # retain all three canonical binaries
 make BUILD_MODE=fast all test         # same mode, isolated production/test objects
 make release X86_ISA=x86-64           # explicit v1 fallback; default is x86-64-v2
+make fast X86_ISA=x86-64-v3           # explicit v3 experiment; default stays v2
 make print-build-paths BUILD_MODE=release  # JSON: obj, dep, binary
 bin/champsim --build-info             # standalone compiler/dependency provenance JSON
 ```
@@ -44,6 +45,9 @@ policies. Every standard mode uses generic tuning. GCC 9/10 use the explicit v2
 extension expansion when their driver lacks the named architecture. Linux x64,
 little-endian AArch64 and the existing Darwin target routes are selected from the
 compiler target. ARM/Darwin routing does not establish hardware validation.
+The explicit v3 profile requires cumulative x86-64-v3 CPU features and OS/XCR0
+support on every destination host. It remains a restricted experiment unless a
+separate compatibility and performance gate accepts it for a declared fleet.
 
 `OBJ_ROOT`, `DEP_ROOT`, and `BIN_ROOT` are container roots. Their resolved leaves
 include compiler target, ISA, mode, compiler/options/dependency fingerprint, and
