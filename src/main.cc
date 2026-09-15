@@ -26,6 +26,7 @@
 #include <fmt/core.h>
 #include <fmt/ranges.h>
 
+#include "build_info.h"
 #include "cache.h" // for CACHE
 #include "champsim.h"
 #include "ramulator2_driver.h"
@@ -63,6 +64,11 @@ const unsigned LOG2_PAGE_SIZE = champsim::lg2(PAGE_SIZE);
 #ifndef CHAMPSIM_TEST_BUILD
 int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 {
+  if (argc == 2 && std::string_view{argv[1]} == "--build-info") {
+    fmt::print("{}\n", champsim::build_info_json());
+    return 0;
+  }
+
   // The runtime configuration store. --config and --set apply to it in argv
   // order (trigger_on_parse), so the LAST definition of a key wins regardless
   // of which source it came from. The environment is constructed only after
@@ -89,6 +95,10 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   bool hide_heartbeat{false};
   bool list_knobs{false};
 
+  app.add_flag_function(
+         "--build-info", [](std::int64_t) { throw CLI::ValidationError{"--build-info", "must be used as a standalone command"}; },
+         "Print compiler/build provenance as JSON (standalone only)")
+      ->trigger_on_parse();
   app.add_flag("-c,--cloudsuite", knob_cloudsuite, "Read all traces using the cloudsuite format");
 
   app.add_option_function<std::string>(

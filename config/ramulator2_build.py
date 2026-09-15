@@ -6,6 +6,8 @@ Make reads dependency files, so changed mode/compiler/provenance reaches both
 preprocessing and compilation. Output files change only when their bytes change.
 """
 import argparse
+from contextlib import contextmanager
+import fcntl
 import hashlib
 import json
 import os
@@ -40,11 +42,12 @@ def mode_string(settings):
     return f'{mode} Sanitizers={settings["sanitizers"]}' if settings['sanitizers'] else mode
 
 
-def cmake_commands(root, build, compiler, settings):
+def cmake_commands(root, build, compiler, settings, architecture=()):
     return [['cmake', '-S', str(root), '-B', str(build), '-DRAMULATOR_PYTHON_BINDINGS=OFF',
              f'-DCMAKE_BUILD_TYPE={settings["build_type"]}', f'-DCMAKE_CXX_COMPILER={compiler}',
-             f'-DCMAKE_CXX_FLAGS={settings["cxx_flags"]}',
-             f'-DCMAKE_SHARED_LINKER_FLAGS={settings["shared_linker_flags"]}', '-DCMAKE_EXE_LINKER_FLAGS='],
+             '-DCMAKE_CXX_FLAGS=' + shlex.join(list(architecture) + shlex.split(settings['cxx_flags'])),
+             '-DCMAKE_SHARED_LINKER_FLAGS=' + shlex.join(list(architecture) + shlex.split(settings['shared_linker_flags'])),
+             '-DCMAKE_EXE_LINKER_FLAGS=' + shlex.join(list(architecture) + shlex.split(settings['shared_linker_flags']))],
             # Unknown/replaced libraries cannot acquire provenance from an up-to-date no-op.
             ['cmake', '--build', str(build), '--target', 'ramulator', '--clean-first', '-j6']]
 
@@ -81,9 +84,34 @@ def build_record(identity, dependencies, settings):
 def write_changed(path, text):
     if path.exists() and path.read_text() == text:
         return
-    tmp = path.with_suffix(path.suffix + '.tmp')
-    tmp.write_text(text)
-    tmp.replace(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False) as stream:
+        stream.write(text)
+    os.replace(stream.name, path)
+
+
+@contextmanager
+def native_lock(root):
+    """Serialize library ownership; distinct simulator flavors share this root."""
+    with (root / '.champsim-native.lock').open('a') as stream:
+        fcntl.flock(stream, fcntl.LOCK_EX)
+        yield
+
+
+def verify_native_product(manifest, library, inputs):
+    if not manifest.exists() and not library.exists():
+        return None
+    try:
+        prior = json.loads(manifest.read_text())
+        valid = (prior['inputs'] == inputs and prior['dependencies'] == DEPENDENCIES
+                 and prior['sha256'] == hashlib.sha256(library.read_bytes()).hexdigest()
+                 and prior['fingerprint'] == fingerprint(library.read_bytes()))
+    except (OSError, ValueError, KeyError, TypeError):
+        valid = False
+    if not valid:
+        raise RuntimeError('native root has an unknown, changed, or incomplete library policy; '
+                           'use a fresh isolated native source root (existing libraries are never replaced)')
+    return prior
 
 
 def output(args, **kwargs):
@@ -180,20 +208,26 @@ def main():
     parser.add_argument('--check-abi', action='store_true')
     parser.add_argument('--sanitize', action='store_true',
                         help='build the native library with the sanitizers the host objects use')
+    parser.add_argument('--policy')
     args = parser.parse_args()
     if args.sanitize and args.mode != '1':
         raise RuntimeError('RAMULATOR2_SANITIZE=1 instruments the native library together with the host, '
                            'so it requires WITH_RAMULATOR2=1 RAMULATOR2_ROOT=/path/to/ramulator2')
     settings = native_settings(args.sanitize)
+    policy = json.loads(Path(args.policy).read_text()) if args.policy else {}
+    architecture = policy.get("architecture_options", [])
     if args.check_abi:
         check_abi(shlex.split(args.cxx), args.flags, Path(args.root).resolve() if args.root else None,
-                  shlex.split(settings['cxx_flags']))
+                  architecture + shlex.split(settings['cxx_flags']))
         return
     obj = Path(args.obj).resolve()
     obj.mkdir(parents=True, exist_ok=True)
     command = shlex.split(args.cxx)
     identity = compiler_identity(command, args.flags, args.sanitize)
     compiler = shutil.which(command[0])
+    if not compiler:
+        raise RuntimeError(f'compiler not found: {args.cxx}')
+    identity.update(policy_key=policy.get('policy_key'), architecture_options=architecture)
     write_changed(obj / 'compiler.stamp', json.dumps(identity, sort_keys=True))
     if args.mode == '0':
         write_changed(obj / 'ramulator2_build.h', '#define CHAMPSIM_WITH_RAMULATOR2 0\n')
@@ -208,38 +242,57 @@ def main():
         raise RuntimeError(f'unsupported native revision {revision}; expected {REVISION}')
     if output(['git', '-C', str(root), 'status', '--porcelain', '--untracked-files=no']):
         raise RuntimeError('native tracked source is modified; use the pinned clean checkout')
-    check_abi(command, args.abi_flags, root, shlex.split(settings['cxx_flags']))
+    check_abi(command, args.abi_flags, root, architecture + shlex.split(settings['cxx_flags']))
     native = obj / 'ramulator2-native'
     native.mkdir(exist_ok=True)
-    manifest_path = native / 'manifest.json'
     library = root / 'libramulator.so'
-    inputs = manifest_inputs(root, revision, identity, settings)
-    prior = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
-    digest = hashlib.sha256(library.read_bytes()).hexdigest() if library.exists() else None
-    valid = manifest_matches(prior, inputs, digest)
-    for dep, commit in prior.get('dependencies', {}).items():
-        path = root / 'ext' / dep
-        valid = valid and output(['git', '-C', str(path), 'rev-parse', 'HEAD']) == commit
-        valid = valid and not output(['git', '-C', str(path), 'status', '--porcelain', '--untracked-files=no'])
-    for name, expected in DEPENDENCIES.items():
-        dep_path = root / 'ext' / name
-        if (dep_path / '.git').exists() and output(['git', '-C', str(dep_path), 'rev-parse', 'HEAD']) != expected:
-            raise RuntimeError(f'unsupported {name} dependency revision; expected {expected}')
+    product = root / '.champsim-native'
+    manifest_path = product / 'manifest.json'
+    native_compiler = policy.get('compiler', dict(identity))
+    if not policy:
+        native_compiler = {key: identity[key] for key in ('command', 'path', 'version')}
+        native_compiler['sha256'] = hashlib.sha256(Path(compiler).read_bytes()).hexdigest()
+    inputs = {'root': str(root), 'revision': revision, 'compiler': native_compiler,
+              'architecture_options': architecture, 'mode': mode_string(settings), 'native': settings,
+              'dependencies': DEPENDENCIES,
+              'helper': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     env = {k: v for k, v in os.environ.items() if k not in ('CXXFLAGS', 'CPPFLAGS', 'CFLAGS', 'LDFLAGS')}
-    if not valid:
-        build = build_directory(native, inputs)
-        with (native / 'build.log').open('w') as log:
-            for step in cmake_commands(root, build, compiler, settings):
-                subprocess.run(step, stdout=log, stderr=subprocess.STDOUT, env=env, check=True)
-        deps = {name: output(['git', '-C', str(root / 'ext' / name), 'rev-parse', 'HEAD']) for name in ('fmt', 'yaml-cpp')}
-        if deps != DEPENDENCIES:
-            raise RuntimeError(f'native dependency revisions differ from the pinned build: {deps}')
-        for name in deps:
-            if output(['git', '-C', str(root / 'ext' / name), 'status', '--porcelain', '--untracked-files=no']):
-                raise RuntimeError(f'native dependency {name} has modified tracked files')
-        prior = {'inputs': inputs, 'dependencies': deps, 'sha256': hashlib.sha256(library.read_bytes()).hexdigest(),
-                 'fingerprint': fingerprint(library.read_bytes())}
-        write_changed(manifest_path, json.dumps(prior, sort_keys=True, indent=2) + '\n')
+    with native_lock(root):
+        prior = verify_native_product(manifest_path, library, inputs)
+        for name, expected in DEPENDENCIES.items():
+            dep_path = root / 'ext' / name
+            if (dep_path / '.git').exists():
+                if output(['git', '-C', str(dep_path), 'rev-parse', 'HEAD']) != expected:
+                    raise RuntimeError(f'unsupported {name} dependency revision; expected {expected}')
+                if output(['git', '-C', str(dep_path), 'status', '--porcelain', '--untracked-files=no']):
+                    raise RuntimeError(f'native dependency {name} has modified tracked files')
+            elif prior:
+                raise RuntimeError('native dependency provenance is missing; use a fresh isolated native source root')
+        if prior is None:
+            product.mkdir(exist_ok=True)
+            build = product / 'build'
+            log_path = product / 'build.log'
+            # Keep the existing per-selection diagnostic path usable, including
+            # failures. Library/build ownership itself belongs to the native root.
+            local_log = native / 'build.log'
+            if not local_log.exists():
+                local_log.symlink_to(log_path)
+            with log_path.open('w') as log:
+                for step in cmake_commands(root, build, compiler, settings, architecture):
+                    subprocess.run(step, stdout=log, stderr=subprocess.STDOUT, env=env, check=True)
+            deps = {name: output(['git', '-C', str(root / 'ext' / name), 'rev-parse', 'HEAD']) for name in DEPENDENCIES}
+            if deps != DEPENDENCIES:
+                raise RuntimeError(f'native dependency revisions differ from the pinned build: {deps}')
+            for name in deps:
+                if output(['git', '-C', str(root / 'ext' / name), 'status', '--porcelain', '--untracked-files=no']):
+                    raise RuntimeError(f'native dependency {name} has modified tracked files')
+            prior = {'inputs': inputs, 'dependencies': deps, 'sha256': hashlib.sha256(library.read_bytes()).hexdigest(),
+                     'fingerprint': fingerprint(library.read_bytes())}
+            write_changed(manifest_path, json.dumps(prior, sort_keys=True, indent=2) + '\n')
+        write_changed(native / 'manifest.json', json.dumps(prior, sort_keys=True, indent=2) + '\n')
+        local_log = native / 'build.log'
+        if not local_log.exists():
+            local_log.symlink_to(product / 'build.log')
     # Definitions are pure Python; they do not import the native extension.
     env.update(PYTHONPATH=str(root / 'python'), PYTHONDONTWRITEBYTECODE='1')
     code = '''import json, ramulator

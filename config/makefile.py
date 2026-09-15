@@ -64,7 +64,7 @@ def relroot(abspath):
     champsim_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return os.path.relpath(abspath, start=champsim_root)
 
-def get_discovery_makefile_lines(executable, module_info):
+def get_discovery_makefile_lines(executable, module_info, registry_dir=".csconfig"):
     """
     The makefile fragment for a discovery-only configure: one executable, and
     the objects of every module found on disk. No build ids -- there is one
@@ -77,7 +77,8 @@ def get_discovery_makefile_lines(executable, module_info):
     yield ''
     exe_dirname, exe_basename = os.path.split(os.path.normpath(executable))
     exe_basename = os.path.join('$(BIN_ROOT)', exe_basename)
-    yield from hard_assign_variable('BIN_ROOT', exe_dirname)
+    yield from hard_assign_variable('configured_bindir', exe_dirname)
+    yield from hard_assign_variable('registry_dir', registry_dir)
 
     mod_paths = [relroot(mod['path']) for mod in module_info.values()]
     yield from append_variable('nonbase_module_objs', '$(filter-out $(base_module_objs),$(call get_module_list,', *mod_paths, '))')

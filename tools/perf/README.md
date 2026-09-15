@@ -30,17 +30,15 @@ detailed-mode phase-statistics parity.
 
 ## Build and run
 
-Build release and test objects separately. This Makefile normally shares objects
-between targets, and `make test` adds `-Og`. When using a separate test object
-directory, explicitly include the original generated registry directory:
+Production and test objects are isolated automatically by mode and flavor.
+Use a controlled compiler environment and resolve candidate paths explicitly:
 
 ```bash
 ./config.sh
 env -u CXXFLAGS -u CPPFLAGS -u LDFLAGS -u CFLAGS \
-  make CXX=/usr/bin/g++ -j6 WITH_RAMULATOR2=0
+  make CXX=/usr/bin/g++ -j4 WITH_RAMULATOR2=0 release
 env -u CXXFLAGS -u CPPFLAGS -u LDFLAGS -u CFLAGS \
-  make CXX=/usr/bin/g++ CPPFLAGS=-I.csconfig -j6 WITH_RAMULATOR2=0 \
-  OBJ_ROOT=.csconfig-test DEP_ROOT=.csconfig-test test
+  make CXX=/usr/bin/g++ -j4 WITH_RAMULATOR2=0 BUILD_MODE=release test
 python3 -m unittest discover -s tools/perf -v
 ```
 
@@ -185,3 +183,38 @@ It uses glibc's internal allocation entry points, so it is not portable and is
 never loaded for reported KIPS measurements. Check phase parity with the
 uninstrumented run. The running optimization log records code revisions and each
 incremental before/after result.
+
+## Named build provenance
+
+Use `make release`, `make debug`, or `make fast` for separate canonical binaries.
+Release is `-O3 -g3` with ChampSim assertions; fast uses the same optimization with
+ChampSim assertions disabled; debug uses `-O0 -g3 -fno-omit-frame-pointer`.
+The x64 default is `X86_ISA=x86-64-v2`; `X86_ISA=x86-64` retains a baseline control.
+Never infer a speed benefit from an ISA level or attribute v1/v2 differences to
+assertion removal. Keep each comparison's toolchain and dependencies fixed.
+
+`make print-build-paths BUILD_MODE=release` prints the canonical binary and
+object/dependency directories as JSON. `OBJ_ROOT`, `DEP_ROOT`, and `BIN_ROOT` are
+containers, with distinct policy/flavor leaves. Ordinary `make` publishes
+`bin/champsim` atomically; named targets leave that alias alone. Use isolated
+containers for candidates and preserve predecessor binaries before publishing.
+Do not mix named and ordinary goals; `make BUILD_MODE=fast all test` selects fast
+for both, with isolated test objects. Distinct policies may build concurrently;
+identical-selection concurrent writers are unsupported. Never overlap builds or
+provenance hashing with reported timing runs.
+
+`<binary> --build-info` emits JSON without simulation construction. The paired
+benchmark manifests query it once before timing and retain it beside the binary
+SHA256. Historical binaries that lack the command are recorded as unavailable.
+Compiler policy identity does not change statistics `meta.build_id`, which still
+identifies simulated configuration. Existing statistics comparators are unchanged.
+The legacy build path supports Python 3.10+; these performance tools retain their
+Python 3.11+ requirement (`tomllib` and `hashlib.file_digest`).
+
+Provenance selects and fingerprints the target-matched installed vcpkg dependencies.
+External libraries' ISA requirements are explicitly unknown without independent
+build receipts; successful startup is not portability certification. Hardware and
+codec validation must be recorded per deployment. ARM/Darwin policy routing has
+no implied runtime validation. Optional native Ramulator retains Release/C++20,
+receives the selected ISA flags, and uses an immutable shared source-root manifest:
+changed/unknown occupied roots require a fresh isolated clone.

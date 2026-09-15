@@ -153,6 +153,6 @@ def write_discovery(executable_name, bindir_name, objdir_name, makedir_name, mod
         (os.path.join(objdir_name, 'registry.cc.inc'), cxx_file(registry_impl_lines(module_info))),
         (os.path.join(makedir_name or '.', '_configuration.mk'), (
             *make_generated_warning(),
-            *get_discovery_makefile_lines(executable, joined)
+            *get_discovery_makefile_lines(executable, joined, objdir_name)
         ))
     ]).write(verbose=verbose)

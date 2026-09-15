@@ -5,18 +5,32 @@ traces, a second CPU model, or checked-in binary fixtures. Use Python 3.11 or
 later with PyYAML, a C++20 compiler, and an already prepared native-enabled
 ChampSim build. The currently validated native toolchain is Linux/GCC 13.
 
-From the repository root, after the normal enabled build:
+From the repository root, choose a fresh pinned native root and isolated build
+containers. Export the selection so the build and path query use identical inputs:
+
+```sh
+unset CFLAGS CPPFLAGS CXXFLAGS LDFLAGS
+export CXX=/usr/bin/g++ WITH_RAMULATOR2=1 BUILD_MODE=release
+export RAMULATOR2_ROOT=/path/to/fresh-pinned-ramulator2
+export OBJ_ROOT=/tmp/native-objects DEP_ROOT=/tmp/native-dependencies BIN_ROOT=/tmp/native-binaries
+make -j4 all test
+native_paths=$(make --no-print-directory print-build-paths)
+native_objects=$(printf '%s' "$native_paths" | python3 -c 'import json,sys; print(json.load(sys.stdin)["obj"])')
+native_binary=$(printf '%s' "$native_paths" | python3 -c 'import json,sys; print(json.load(sys.stdin)["binary"])')
+```
+
+Then run the compatibility checks:
 
 ```sh
 python3 -m unittest discover -s test/ramulator2 -p test_tools.py -v
 python3 test/ramulator2/run_oracle.py \
-  --native-root /path/to/ramulator2 \
-  --build-dir .csconfig \
+  --native-root "$RAMULATOR2_ROOT" \
+  --build-dir "$native_objects" \
   --dependency-dir vcpkg_installed/x64-linux \
   --cxx /usr/bin/g++ \
   --output-dir /tmp/champsim-oracle-results
 python3 test/ramulator2/run_integration.py \
-  --binary bin/champsim \
+  --binary "$native_binary" \
   --output-dir /tmp/champsim-integration-results
 ```
 
@@ -29,12 +43,22 @@ ChampSim object build for the oracle: the direct native External frontend
 reports one core. The simulator integration runner detects the binary's core
 count and works with one-core and two-core binaries.
 
-Serialize builds and executions that use a native source root: upstream writes
-`libramulator.so` at that root even with out-of-tree CMake. For concurrent work,
-use separate native checkouts/libraries. The oracle sets its subprocess library
-search path to the supplied native root. The integration runner inherits the
-caller environment, so a stable copied simulator/library pair can be selected
-with `LD_LIBRARY_PATH` when other builds are running.
+The source-root `.champsim-native/manifest.json` owns the native product; a root
+lock serializes preparation. The helper reuses an exact known library across
+simulator modes and production/test flavors, retaining native Release/C++20 and
+the selected architecture flags. Distinct flavor builds such as `make -j4 all test`
+may share that exact product. An occupied root with a different compiler/ISA,
+modified dependencies, a replaced library or incomplete provenance is rejected.
+Use a fresh isolated clone for another native product. Existing libraries are
+never replaced by this helper, and previous-helper manifests are not sufficient.
+Do not run external CMake builds or source changes against a root in use.
+
+`print-build-paths` returns the selected production object leaf by default;
+`BUILD_FLAVOR=test` returns the separate test leaf. Pass the production leaf to
+the oracle. Native build logs are under the native root's `.champsim-native/`
+directory, with a convenience link in each selected object leaf's
+`ramulator2-native/build.log`. The oracle selects its subprocess library search
+path from the supplied root; the integration runner inherits the environment.
 
 ## Differential oracle
 

@@ -27,6 +27,53 @@ bin/champsim --config configs/lnc.toml --set ooo_cpu.cpu0.btb=ittage_64kb \
     -w 20000000 -i 50000000 --toml stats.toml -- trace.champsimtrace.xz
 ```
 
+Named portable builds use Python 3.10+ and the selected compiler's target:
+
+```bash
+make debug release fast              # retain all three canonical binaries
+make BUILD_MODE=fast all test         # same mode, isolated production/test objects
+make release X86_ISA=x86-64           # explicit v1 fallback; default is x86-64-v2
+make print-build-paths BUILD_MODE=release  # JSON: obj, dep, binary
+bin/champsim --build-info             # standalone compiler/dependency provenance JSON
+```
+
+Release and fast use `-O3 -g3`; debug uses `-O0 -g3` and keeps frame pointers.
+ChampSim assertions are enabled in debug/release and disabled in fast. Fast does
+not define global `NDEBUG`; Catch2 and dependency assertions retain their own
+policies. Every standard mode uses generic tuning. GCC 9/10 use the explicit v2
+extension expansion when their driver lacks the named architecture. Linux x64,
+little-endian AArch64 and the existing Darwin target routes are selected from the
+compiler target. ARM/Darwin routing does not establish hardware validation.
+
+`OBJ_ROOT`, `DEP_ROOT`, and `BIN_ROOT` are container roots. Their resolved leaves
+include compiler target, ISA, mode, compiler/options/dependency fingerprint, and
+production/test flavor. Named targets retain only canonical binaries; ordinary
+`all` atomically publishes the configured binary alias (default `bin/champsim`).
+Ordinary `test` also publishes `test/bin/000-test-main`; `test_main_name` overrides
+that publication path. Distinct policies may build concurrently; simultaneous
+writers of the identical selection and concurrent `config.sh`/cleanup/source
+changes are unsupported. A user-specified shared alias is last-writer-wins.
+Do not combine named and ordinary goals (`make fast test`); use `BUILD_MODE`.
+
+Dependencies are selected explicitly with `VCPKG_INSTALLED_DIR` and
+`VCPKG_TARGET_TRIPLET` (target-matched x64/arm64 Linux or OSX triplets). Make never
+installs dependencies implicitly. Provenance records selected libraries, package
+receipts and available vcpkg identity; external dependency ISA requirements remain
+**unknown** unless established by a separate controlled build/deployment receipt.
+The default library directories are vcpkg Release directories in every mode.
+
+The build rejects conflicting optimization, assertion, ISA or tuning flags from
+user flags, compiler argv and response files. Transparent argv compiler wrappers
+and quoted flag values work in legacy mode; shell programs in `CXX`, opaque
+compiler escape channels, static/stateful/exact linker library selection, and
+special Make graph characters in output paths are
+unsupported. Ambient Conda flags can conflict: use a controlled environment, for
+example `env -u CFLAGS -u CPPFLAGS -u CXXFLAGS -u LDFLAGS make release CXX=/usr/bin/g++`.
+Compiler/response/known forced-include contents participate in build identity.
+`--build-info` is standalone and does not construct the simulated machine. Its
+policy identity is separate from the statistics configuration `build_id` and the
+binary SHA256. Mixed build-info/simulation invocations are rejected by CLI parsing.
+
 Re-run `config.sh` after **adding, renaming, or removing a module** — including when
 git removes one for you, which is what checking out a branch with a different module
 set does. No `make clean` is needed for that; see the branch-switch gotcha for why.
@@ -146,6 +193,11 @@ interface, adapter, legacy mode and standalone harnesses remain C++17.
 revisions, compiler/options and library fingerprint. Its host/native ABI probe
 includes public base/spec/request/config layouts and type identities; response
 files and forced includes participate. Incompatible ABI flags fail clearly.
+The native product retains its explicit Release/C++20 policy and receives the
+selected architecture flags. A source-root `.champsim-native/manifest.json` and
+lock allow production/test flavors to reuse exactly the same verified library.
+An occupied root with changed policy, missing provenance, or a replaced library
+is rejected; use a fresh isolated clone. No build option authorizes replacement.
 Mode/compiler/root changes invalidate relevant stamps and dependencies; existing
 `.d` edges still apply to `make -n/-q/-t` without executing remakes. Runtime checks
 the loaded shared library against recorded provenance, asking the dynamic loader
@@ -355,13 +407,13 @@ guarded is gone.
 
 ### Cleaning / regenerating
 
-- `make clean` — remove object and dep files. It also deletes
-  `inc/champsim_constants.h` and `inc/cache_modules.h`; **those paths are vestigial**,
-  nothing has written them for two migrations, and looking for what does is a dead end.
-- `make configclean` — also remove `_configuration.mk`, `compile_commands.json`, and
-  the two `.csconfig/registry*.inc` files. Note it also deletes every `.cache/` directory,
-  so clangd needs `make compile_commands` afterwards.
-- `make compile_commands` — regenerate `compile_commands.json` (per module/src/test) for clangd.
+- `make clean` — remove only the resolved selection's objects, dependencies and
+  canonical binaries. Use the same mode/options that selected the build.
+- `make configclean` — also remove `_configuration.mk` and the configured registry
+  inputs. Configuration cleanup must not run concurrently with any build.
+- `make compile_commands` — write the selected flavor's exact compiler argv to
+  `<resolved obj>/compile_commands.json`. Use `BUILD_FLAVOR=test` for tests. Editor
+  publication is explicit: point clangd at that database or copy/symlink it yourself.
 
 ## Architecture
 
@@ -560,8 +612,8 @@ overwrite that one.
 - **`CHAMPSIM_TRACE_MEMORY_VALUES=1` changes `ooo_model_instr`'s size in every
   translation unit.** It is build-wide, not per-target: mixing objects across the two
   settings is an ODR violation that produces wrong stats rather than a link error.
-  Always `make clean` when switching it. It roughly doubles wall-clock, so it is off by
-  default.
+  Named build isolation accounts for this switch, so changing it selects different
+  objects automatically. It roughly doubles wall-clock, so it is off by default.
 - **A perfect cache reporting a 100% hit rate proves nothing**, for the same reason
   the perfect-predictor entry below gives: it follows structurally from the flag. The
   load-bearing checks are that the level below goes quiet (every `*_fill` for the
@@ -779,7 +831,7 @@ covers the store, including the statistics-document round trip.
 
 ## Conventions
 
-- C++17 (only `ramulator2_driver.cc` uses C++20 in enabled builds), warnings-heavy (`global.options`: `-Wall -Wextra -Wshadow -Wpedantic -Wconversion -O3`).
+- C++17 (only `ramulator2_driver.cc` uses C++20 in enabled builds), warnings-heavy (`global.options`: `-Wall -Wextra -Wshadow -Wpedantic -Wconversion`; optimization comes from `BUILD_MODE`).
   Modules additionally get `-Wno-unused-parameter -DCHAMPSIM_MODULE` (`module.options`).
 - Formatting is enforced by `.clang-format` (LLVM base, 160 col); the `lint` job in
   `.github/workflows/main.yml` reformats `vcpkg.json src inc prefetcher branch

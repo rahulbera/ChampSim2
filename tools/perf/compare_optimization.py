@@ -10,7 +10,7 @@ import statistics
 from types import SimpleNamespace
 import tomllib
 
-from benchmark_ptw import measure, sha256
+from benchmark_ptw import build_info, measure, sha256
 
 
 def fingerprint(record):
@@ -51,7 +51,7 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     os.sched_setaffinity(0, {args.cpu})
     manifest = {'arguments': {k: str(v) for k, v in vars(args).items()}, 'traces': traces,
-                'binaries': {label: {'path': str(p), 'sha256': sha256(p)} for label, p in binaries.items()},
+                'binaries': {label: {'path': str(p), 'sha256': sha256(p), 'build_info': build_info(p)} for label, p in binaries.items()},
                 'configs': [{'path': str(p), 'sha256': sha256(p), 'text': p.read_text()} for p in args.config],
                 'cpu_affinity': sorted(os.sched_getaffinity(0)), 'regression_only': args.regression}
     (args.output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')

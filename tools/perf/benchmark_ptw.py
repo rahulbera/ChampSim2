@@ -22,6 +22,22 @@ def sha256(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def build_info(path):
+    """Query once before timing; retained predecessor binaries may lack the CLI."""
+    try:
+        result = subprocess.run([str(Path(path).resolve()), "--build-info"], text=True,
+                                capture_output=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return {"available": False, "reason": str(error)}
+    if result.returncode:
+        return {"available": False, "returncode": result.returncode, "diagnostic": result.stderr.strip()}
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return {"available": False, "reason": "binary did not emit build-info JSON"}
+    return {"available": True, "provenance": data}
+
+
 def parse_counts(variant, text):
     prefixes = ("Warmup complete", "Finished") if variant == "hermes" else ("Warmup finished", "Simulation finished")
     counts = {}
@@ -191,7 +207,7 @@ def main():
     manifest = {"arguments": {k: str(v) if isinstance(v, Path) else [str(x) for x in v] if k == "config" else v for k, v in vars(args).items()},
                 "traces": traces, "platform": platform.platform(), "python": platform.python_version(),
                 "cpu_affinity": sorted(os.sched_getaffinity(0)), "metric": "actual warmup+ROI retired instructions / (1000 * process wall seconds)",
-                "binaries": {key: {"path": str(getattr(args, key)), "sha256": sha256(getattr(args, key))}
+                "binaries": {key: {"path": str(getattr(args, key)), "sha256": sha256(getattr(args, key)), "build_info": build_info(getattr(args, key))}
                              for key in ("champsim", "hermes", "baseline") if getattr(args, key) is not None},
                 "configs": [{"path": str(p), "sha256": sha256(p), "text": p.read_text()} for p in args.config]}
     (args.output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

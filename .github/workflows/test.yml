@@ -530,8 +530,9 @@ jobs:
     # traces are required. One source root is built and executed serially.
     - name: Compare driver with direct native replay
       run: |
+        native_objects=$(make --no-print-directory print-build-paths | python3 -c 'import json,sys; print(json.load(sys.stdin)["obj"])')
         python3 test/ramulator2/run_oracle.py \
-          --native-root "$RAMULATOR2_ROOT" --build-dir .csconfig \
+          --native-root "$RAMULATOR2_ROOT" --build-dir "$native_objects" \
           --dependency-dir vcpkg_installed/x64-linux \
           --output-dir "$RUNNER_TEMP/native-oracle" --cxx "$CXX"
 
@@ -563,7 +564,9 @@ jobs:
         path: |
           ${{ runner.temp }}/native-oracle
           ${{ runner.temp }}/native-integration
-          .csconfig/ramulator2-native/build.log
+          .csconfig/**/ramulator2-native/build.log
+          native-source/.champsim-native/build.log
+          native-source/.champsim-native/manifest.json
 
   # The native library and every host object are built with ASan and UBSan
   # through RAMULATOR2_SANITIZE=1, so native allocations, callbacks and

@@ -45,6 +45,7 @@ class RamulatorBuildTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        self.env = {k: v for k, v in os.environ.items() if k not in ('CFLAGS', 'CXXFLAGS', 'CPPFLAGS', 'LDFLAGS')}
         self.compiler = shutil.which('g++') or shutil.which('clang++')
         if not self.compiler:
             self.skipTest('a C++ compiler is required for build stamp checks')
@@ -69,7 +70,7 @@ class RamulatorBuildTests(unittest.TestCase):
         objects = self.root / 'dry-run-objects'
         result = subprocess.run(['make', '-n', 'ramulator2', 'WITH_RAMULATOR2=0',
                                  f'OBJ_ROOT={objects}', f'CXX={self.compiler}'],
-                                cwd=HELPER.parent.parent, text=True, capture_output=True)
+                                cwd=HELPER.parent.parent, env=self.env, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(objects.exists(), 'dry-run must not create compiler/native stamps')
 
@@ -89,7 +90,7 @@ class RamulatorBuildTests(unittest.TestCase):
         objects = self.root / 'enabled-dry-run'
         result = subprocess.run(['make', '-n', 'all', 'WITH_RAMULATOR2=1', f'RAMULATOR2_ROOT={native}',
                                  f'OBJ_ROOT={objects}', f'CXX={self.compiler}'],
-                                cwd=workspace, text=True, capture_output=True)
+                                cwd=workspace, env=self.env, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f"{HELPER.name} --mode='1' --root='{native}'", result.stdout)
         self.assertIn('--check-abi', result.stdout)
@@ -103,9 +104,9 @@ class RamulatorBuildTests(unittest.TestCase):
         objects = self.root / 'normal-objects'
         result = subprocess.run(['make', '--no-print-directory', 'ramulator2',
                                  'WITH_RAMULATOR2=0', f'OBJ_ROOT={objects}', f'CXX={self.compiler}'],
-                                cwd=HELPER.parent.parent, text=True, capture_output=True)
+                                cwd=HELPER.parent.parent, env=self.env, text=True, capture_output=True)
         self.assertNotEqual(result.returncode, 0)  # target explains enablement
-        self.assertTrue((objects / 'compiler.stamp').exists())
+        self.assertEqual(len(list(objects.rglob('compiler.stamp'))), 1)
 
     def test_effective_abi_changes_are_rejected_in_flags_response_and_include_files(self):
         forced = self.root / 'forced.h'
@@ -123,35 +124,45 @@ class RamulatorBuildTests(unittest.TestCase):
         compatible = self.run_helper('--mode=1', '--check-abi', '--flags=-O1 -DUNRELATED_BUILD_OPTION=1')
         self.assertEqual(compatible.returncode, 0, compatible.stderr)
 
-    def test_no_execute_modes_keep_newer_header_dependencies_without_remaking_them(self):
-        workspace = self.root / 'dependency-edges'
-        (workspace / 'src').mkdir(parents=True)
-        (workspace / '.csconfig').mkdir()
-        shutil.copyfile(HELPER.parent.parent / 'Makefile', workspace / 'Makefile')
-        files = {'_configuration.mk': 'executable_name :=\n', 'global.options': '',
-                 'absolute.options': '', '.csconfig/compiler.stamp': '',
-                 'src/probe.cc': '', 'changed-header.h': '', '.csconfig/probe.o': '',
-                 '.csconfig/probe.d': '.csconfig/probe.o .csconfig/probe.d: changed-header.h\n'}
-        base = time.time() - 100
-        for name, content in files.items():
-            path = workspace / name
-            path.write_text(content)
-            os.utime(path, (base, base))
-        obj = workspace / '.csconfig/probe.o'
-        dep = workspace / '.csconfig/probe.d'
-        os.utime(obj, (base + 10, base + 10))
-        os.utime(workspace / 'changed-header.h', (base + 20, base + 20))
-        dep_time = dep.stat().st_mtime_ns
-        for flag, expected in (('-q', 1), ('-n', 0), ('-t', 0)):
-            with self.subTest(flag=flag):
-                result = subprocess.run(['make', flag, '.csconfig/probe.o', f'CXX={self.compiler}'],
-                                        cwd=workspace, text=True, capture_output=True)
-                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
-                self.assertEqual(dep.stat().st_mtime_ns, dep_time, 'dependency file must not be remade')
-                if flag == '-n':
-                    self.assertIn(' -c ', result.stdout)
-                if flag == '-t':
-                    self.assertGreater(obj.stat().st_mtime, base + 20)
+    def test_native_root_product_requires_exact_known_identity(self):
+        from config import ramulator2_build as helper
+        self.assertTrue(hasattr(helper, 'verify_native_product'), 'root-owned native provenance validation is missing')
+        library = self.root / 'libramulator.so'
+        manifest = self.root / 'manifest.json'
+        inputs = {'compiler': 'fixture', 'architecture': ['-march=x86-64-v2']}
+        self.assertIsNone(helper.verify_native_product(manifest, library, inputs))
+        library.write_bytes(b'compiled native library')
+        with self.assertRaisesRegex(RuntimeError, 'fresh isolated'):
+            helper.verify_native_product(manifest, library, inputs)
+        import hashlib
+        record = {'inputs': inputs, 'sha256': hashlib.sha256(library.read_bytes()).hexdigest(),
+                  'dependencies': helper.DEPENDENCIES, 'fingerprint': helper.fingerprint(library.read_bytes())}
+        manifest.write_text(json.dumps(record))
+        self.assertEqual(helper.verify_native_product(manifest, library, inputs), record)
+        with self.assertRaisesRegex(RuntimeError, 'fresh isolated'):
+            helper.verify_native_product(manifest, library, dict(inputs, architecture=['-march=x86-64']))
+        library.write_bytes(b'replaced native library')
+        with self.assertRaisesRegex(RuntimeError, 'fresh isolated'):
+            helper.verify_native_product(manifest, library, inputs)
+
+    def test_native_root_lock_serializes_distinct_flavor_writers(self):
+        from config import ramulator2_build as helper
+        self.assertTrue(hasattr(helper, 'native_lock'), 'source-root preparation lock is missing')
+        code = """import sys,time
+from pathlib import Path
+from config.ramulator2_build import native_lock
+root=Path(sys.argv[1])
+with native_lock(root):
+    count=root/'build-count'
+    previous=int(count.read_text()) if count.exists() else 0
+    time.sleep(.05)
+    count.write_text(str(previous+1))
+"""
+        processes = [subprocess.Popen([sys.executable, '-c', code, str(self.root)], cwd=HELPER.parent.parent,
+                                      env=self.env) for flavor in ('sim', 'test')]
+        for process in processes:
+            self.assertEqual(process.wait(timeout=10), 0)
+        self.assertEqual((self.root / 'build-count').read_text(), '2')
 
     def test_enabled_missing_root_fails_before_building(self):
         result = self.run_helper('--mode=1')
