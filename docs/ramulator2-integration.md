@@ -24,9 +24,11 @@ duplicate-read coalition, or physical DRAM accuracy.
 The implementation review approved the change with no unresolved Critical or
 Important findings; its small replay-comparator finding was fixed in `db25b8cf`.
 Fifteen independent evaluators then reviewed `74159f1e`. Review rounds ending at
-`3cbb6e2b` fixed most of their confirmed findings; the close-out then added the
-differential oracle, an instrumented native build, clock and lifecycle tests and
-enforced native counter bounds, and ran the campaigns section 4 had proposed.
+`3cbb6e2b` fixed confirmed findings (the main ones are under "Problems found and
+corrected" in section 3; section 4 lists what stays open). The close-out then
+added the differential oracle, an instrumented native build, clock and lifecycle
+tests and enforced native counter bounds, and ran the campaigns section 4 had
+proposed.
 Hosted CI has not run on any of these revisions.
 
 ## 1. What we integrated
@@ -208,10 +210,10 @@ controller or a second native simulator.
 **How large the backlog grows.** The LLC-to-DRAM feeder channel has no capacity
 limit, but in the standard hierarchy the LLC forwards a response-requested miss
 only while its MSHR (`cache.llc.mshr_size`, 64) has room, so outstanding reads
-stay bounded; writebacks have no such bound. Under rejection floods the overload
-campaign (section 3) saw at most 69 live parents at one core and 74 at four. Its
-feeder PQ reached 183 entries only after `cache.llc.mshr_size` was raised to
-1,000,000, and its writeback queue never held more than 3. A producer that
+stay bounded; writebacks have no such bound. In the overload campaign's probed
+runs (section 3), rejection floods peaked at 69 live parents at one core and 74
+at four. The feeder PQ reached 183 entries only after `cache.llc.mshr_size` was
+raised to 1,000,000, and the writeback queue never held more than 3. A producer that
 bypasses the LLC, such as a speculative DRAM read, is not bounded by the MSHR.
 
 **Out-of-range prefetches.** Physical-address caches (L1D, L2C and LLC by
@@ -345,7 +347,7 @@ with the clock before the tick in which the adapter admits it. Without forwarded
 reads, `total_read_latency_ps` equals (native `read_latency` - completed reads)
 x tCK exactly; the close-out checked this in 64 overload documents, in the DDR4
 runs of the clock sweep and per phase in test 707. A read forwarded from a
-buffered write records 0 ps and is answered in the operate that admits it.
+buffered write can record 0 ps and be answered in the operate that admits it.
 Native counts such a read as one tick, but pinned Ramulator 2.1 can deliver its
 callback hundreds of ticks later when it is queued behind an already issued
 read: in a 100M-instruction run, 11 forwarded reads waited 1,956 ticks in total,
@@ -434,9 +436,9 @@ under running simulations; eight runs launched at that moment failed to load it.
 `RAMULATOR2_SANITIZE=1` (only with `WITH_RAMULATOR2=1`, added in `1f63c0ee`)
 builds the native library `RelWithDebInfo` with
 `-fsanitize=address,undefined -fno-omit-frame-pointer` and adds the same options
-and `-g` to every host compile and link. The mode is part of the compiler stamp
-and the native manifest, so flipping it rebuilds the library and every host
-object, and `meta.ramulator2.build` records it
+to every host compile and link, and `-g` to every host compile. The mode is part
+of the compiler stamp and the native manifest, so flipping it rebuilds the
+library and every host object, and `meta.ramulator2.build` records it
 (`RelWithDebInfo C++20 Python=OFF Sanitizers=address,undefined`). The release
 path is unchanged: the Makefile change leaves release `make -n` output
 byte-identical, and a 0 -> 1 -> 0 flip rebuilt every host object each way and
@@ -459,8 +461,8 @@ private copy of the native root for every native build. No stage ran hosted CI.
 
 1. **Implementation validation**, to `b5addb74` (tools and docs to `74159f1e`):
    the first rows of the table below and the initial workload envelope.
-2. **Independent review** of `74159f1e` on 2026-09-13: 15 evaluators in detached
-   worktrees, followed by review-fix rounds ending at `3cbb6e2b`.
+2. **Independent review** of `74159f1e` on 2026-09-13: 15 evaluators, most in
+   detached worktrees, followed by review-fix rounds ending at `3cbb6e2b`.
 3. **Pre-merge close-out**, 2026-09-14 and 15. Implementers branched from
    `3cbb6e2b` for the oracle, sanitizer, counter and clock work, integrated at
    `63c44f38`. Evidence-only campaigns covered sustained overload (at
@@ -481,15 +483,15 @@ performance measurements.
 | Suites after the review fixes | Enabled: 17,663 assertions, 867 C++ cases passed, one intentional skip. Disabled: 17,211 assertions, 859 passed, nine native skips. Python: 73 tests, all passed enabled; disabled `OK (skipped=6)`; unconfigured checkout `OK (skipped=18)`. The oracle, integration and tool tests pass. On two short supplied windows, legacy and native DDR4/LPDDR5 output matches the `74159f1e` binaries apart from `meta.command_line` and the new, zero `out_of_range_prefetches` counter. | Local Linux/GCC 13 runs of the review fixes (five production fixes and one Python test fix) applied to `74159f1e`; not hosted CI. Details are in the validation record. |
 | Suites after the second review | Enabled: 17,766 assertions, 876 C++ cases passed, one intentional skip. Disabled: 17,309 assertions, 868 passed, nine native skips. Python: 82 tests, all passed enabled; disabled `OK (skipped=6)`; unconfigured checkout `OK (skipped=27)`. The oracle, integration and tool tests pass with unchanged leaf counts. On `706.stockfish_r.sp0`, a no-progress abort with stdout redirected now leaves the full dump, ending with the memory backend's, where it left nothing. | Local Linux/GCC 13 runs of the second review's fixes (`--toml` target resolution and write modes, deadlock diagnostics that survive a throwing printer, native rejection wording, one adapter test) applied to `d3604b51`; not hosted CI. Details are in the validation record. |
 | Suites after the close-out | At `63c44f38`, with every close-out branch integrated. Enabled: 891 C++ cases, 890 passed, one intentional skip, 67,974 assertions. Disabled: 891 cases, 873 passed, 18 skipped, 53,018 assertions. Python: 100 tests, all passed enabled; disabled `OK (skipped=8)`; unconfigured checkout `OK (skipped=38)`. `test_tools.py`: 23 tests. After the fix stage (tree identical to `4e1bf028`): enabled 893 cases, 892 passed, one skip, 68,000 assertions; disabled 893, 873 passed, 20 skipped, 53,038 assertions; Python the same (unconfigured checkout not rerun). Test 707 supplies 49,786 of the enabled assertions. | Local runs; not hosted CI. The instrumented runs of these suites are in the sanitizer row. |
-| Legacy bit-identity | Implementation: ten comparisons against `79cb5fdb` at one and two cores, all 237/177 and 695/314 phase/config leaves equal. First wave (`74159f1e` against `79cb5fdb`, legacy-only and enabled builds): 89 comparisons over 58,718 phase leaves, 18,245 config leaves and 13,794 stdout lines with no undocumented difference. Close-out (`63c44f38` against `3cbb6e2b`, two supplied traces): 8 legacy and native pairs, 4,176 phase and 1,368 config leaves, zero differences. | Exact, NaN-aware and type-exact. Checked at one and two cores only, on windows of at most 11M instructions per core, with GCC 13.3. |
+| Legacy bit-identity | Implementation: ten comparisons against `79cb5fdb` at one and two cores, all 237/177 and 695/314 phase/config leaves equal. First wave (`74159f1e` against `79cb5fdb`, legacy-only and enabled builds): 89 comparisons over 58,718 phase leaves, 18,245 config leaves and 13,794 stdout lines with no undocumented difference. Close-out (`63c44f38` against `3cbb6e2b`, two supplied traces): 8 legacy and native pairs, 4,176 phase and 1,368 config leaves, zero differences. | Exact and NaN-aware; type-exact in the first-wave and close-out comparisons. Checked at one and two cores only, on windows of at most 11M instructions per core, with GCC 13.3. |
 | Deterministic adapter tests | Test 705 against a fake driver: 195 assertions / 16 cases at `b5addb74`, 436 assertions / 22 cases at `63c44f38`. Covers 32/64/128-byte transactions, retries, same-address parents, synchronous and out-of-order callbacks, metadata, phases, out-of-range prefetches, invalid requests and teardown. | Real adapter queues, deliberately awkward callback schedules; no native timing. |
-| Adapter differential oracle | Test 706: the production adapter over the real native driver against an independent model. First wave (harness at `74159f1e`, 1 and 2 cores): about 2,000 seeds, over 20M parents and 500M native attempts, no discrepancy; 17 of 18 mutants detected. Close-out: 1,530 seeds over ten campaigns at 1, 2 and 4 cores, 33,476,840 parents, 893,828,614 native attempts and 13,200 producer-pause recovery cycles with no discrepancy; 30 of 31 mutants detected. | Synthetic traffic enters a channel directly, not through a real LLC. Native accept/reject decisions and timing are trusted inputs. M12 is an equivalent mutant. |
+| Adapter differential oracle | Test 706: the production adapter over the real native driver against an independent model. First wave (harness at `74159f1e`, 1 and 2 cores): 1,530 seed runs, 24.2M parents and 626M native attempts, no discrepancy; 17 of 18 mutants detected. Close-out: 1,530 seeds over ten campaigns at 1, 2 and 4 cores, 33,476,840 parents, 893,828,614 native attempts and 13,200 producer-pause recovery cycles with no discrepancy; 30 of 31 mutants detected. | Synthetic traffic enters a channel directly, not through a real LLC. Native accept/reject decisions and timing are trusted inputs. M12 is an equivalent mutant. |
 | Sanitizers | First wave (`74159f1e`): host and native library instrumented by a manual library swap; full suites at 1 and 2 cores, the native oracle, both integration runners and real-trace runs report nothing beyond vendored ITTAGE. Close-out: a supported `RAMULATOR2_SANITIZE=1` build. At `63c44f38`, 24 instrumented simulations at 1, 2 and 4 cores (44.7M measured instructions, 53.7M rejected submissions) report nothing and match release builds in every phase and config leaf. Tests 705, 707 and 708 and the oracle campaigns are clean. The full suite passes every assertion but exits 1 on a leak inside pinned native `RITAddrMapper`, from two test 704 cases now tagged `[rit-addr-mapper]` (2,028 bytes in 20 allocations). | The `native_sanitize` CI job's last step fails on that native leak until it is decided (section 4). `abort()`, SIGTERM and SIGINT exits are never leak-checked. No MSan or TSan; vcpkg static libraries and libstdc++ are not instrumented. |
 | Direct native versus driver | Identical SEND/CALLBACK streams and all 44 DDR4 / 48 LPDDR5 typed native memory leaves; 22 transactions per device. | Independent callers of the same native engine; the production request adapter is absent from this oracle. |
 | Real simulator integration | One- and two-core DDR4, LPDDR5, two-channel DDR4 and changed-clock cases on a generated trace, plus supplied traces and exact typed TOML replay. The same runner passed on a 4-core binary (first wave) and on instrumented 1- and 2-core binaries (close-out). | Real reads, writes, retries, source 1 traffic and live retirement boundaries. Self-replay establishes determinism, not an independent expected packet schedule. |
 | Multi-core runs | First wave (`74159f1e`): 28 native 4-core documents, mostly at 3M ROI instructions per core and up to 15M, and 8-core runs at 1M per core; all accounting invariants hold, reruns and replays are identical, and no CPU-id bias appears across core permutations. Close-out: the oracle at 2 and 4 cores, 4-core overload runs, and instrumented 2- and 4-core simulations. | Short 8-core windows; per-core age and tail latency only from uncommitted probes; shared-channel fairness is not guaranteed (section 4). |
-| Real traces, long runs and overload | First wave: 5 traces on legacy, DDR4 and LPDDR5 at 10M ROI instructions, and a 100M-instruction DDR4 run whose RSS stayed at 65 MB. Close-out (`3cbb6e2b`): 75 statistics documents from 1M to 100M ROI instructions at one core and at four cores (10M per core at stock timing, 1-2M at about 200 MB/s), all passing exact accounting; 1,687,148,249 rejected submissions; RSS bounded, and every probed backlog drains once input stops. | 100M ROI instructions only for two workloads; no LPDDR5 fragmentation under sustained overload at full-simulator scale. |
-| Clocks and epochs | Test 707: a closed-form scheduling reference predicts every tick, submission, completion and response under 10 period sets, with a fake driver and with real DDR4 and LPDDR5 drivers (4 cases, 49,786 assertions). CLI tests recompute the default guard on 9 machines and pass a 13.7 µs native pause with an explicit guard. A real-trace sweep of 36 period configurations replays exactly. | At most six operables in 707, and one core in the sweep; native `clock_ratio` is ignored. |
+| Real traces, long runs and overload | First wave: 5 traces on legacy, DDR4 and LPDDR5 at 10M ROI instructions, and a 100M-instruction DDR4 run whose RSS stayed at 65 MB. Close-out (`3cbb6e2b`): 75 statistics documents from 1M to 100M ROI instructions at one core and at four cores (10M per core at stock timing, 1-2M at about 200 or 800 MB/s), all passing exact accounting; 1,687,148,249 rejected submissions; RSS bounded, and every probed backlog drains once input stops. | 100M ROI instructions only for two workloads; no LPDDR5 fragmentation under sustained overload at full-simulator scale. |
+| Clocks and epochs | Test 707: a closed-form scheduling reference predicts every tick, submission, completion and response of a fake driver under 10 period sets, and every native tick of the real DDR4 and LPDDR5 drivers (4 cases, 49,786 assertions). CLI tests recompute the default guard on 9 machines and pass a 13.7 µs native pause with an explicit guard. A real-trace sweep of 36 period configurations replays exactly. | At most six operables in 707, and one core in the sweep; native `clock_ratio` is ignored. |
 | Native counter bounds | Test 704 checks, with lowered limits through a test seam, that the driver refuses the send or tick that would overflow a signed native counter (section 2), including between the fragments of a split LPDDR5 block and on either of two controllers. The change leaves 9 SQLite run pairs leaf-identical. | The real limits were not reached end to end. |
 | Test-tool negative controls | 11 unit tests after `db25b8cf`; all eight saved original/replay pairs pass the stricter comparator. 23 tests at `63c44f38`; ten deliberate breaks of the new runners each fail a matching test. | Detect changed callback timing, duplicate acceptance, missing/wrong scalar types, integer low-bit loss, absent core traffic, input overwrites, parsing and exit-status errors, and stale mutant patterns. |
 | Build/deployment checks | Mode/root/ABI/dependency checks, native example construction, and forced C++17 builds of three standalone tools pass. After a test-only fix, the Python suite also passes locally in an unconfigured, unbuilt checkout using the `python` job's commands: for the 61-test suite at `74159f1e`, 55 passed and six methods that need `bin/champsim` skipped. Later counts are in the suite rows above. Close-out: flipping `RAMULATOR2_SANITIZE` 0 -> 1 -> 0 rebuilds every host object each way and restores the release library; the `native_sanitize` job's steps were run locally. | Local Linux/GCC result. Hosted CI has not run; retaining its 15-entry legacy matrix is not equivalent to executing it. |
@@ -544,7 +546,7 @@ native buffers, idle gaps and out-of-range prefetches in all three queues, acros
 warmup, a zero-length measured phase, staggered per-CPU ROI ends, a later warmup
 holding partial heads, and a drain or a finalization with live work. Each campaign
 run first checks 46 invalid requests per YAML that must stop the run before any
-native attempt. The recovery campaign overloads tiny buffers, stops the producer
+native attempt. The recovery campaign overloads the native buffers, stops the producer
 and requires full quiescence (empty queues, zero gauges, balanced counters, a
 callback for every accepted request and no callback closure left below the
 driver) before the next burst. The YAML variants add tiny buffers, two and four
@@ -556,7 +558,7 @@ the validation record lists the exact commands.
 
 | Campaign | Build | Result |
 | --- | --- | --- |
-| First wave, untracked harness at `74159f1e` | 1 and 2 cores | About 2,000 seed runs, over 20M parents and over 500M native send attempts: no discrepancy. 17 of 18 mutants detected; M12 is equivalent |
+| First wave, untracked harness at `74159f1e` | 1 and 2 cores | 1,530 seed runs over eleven campaigns, 24,225,863 parents and 625,647,736 native send attempts: no discrepancy. 17 of 18 mutants detected; M12 is equivalent |
 | Differential, 12 runs x 10 seeds x 10,000 parents | 1 core | 120 seeds; 1,305,584 parents; 30,979,923 attempts; 1,633,679 accepted fragments; 1,669,296 rejections of partial heads; 57,406 synchronous callbacks; 637,406 responses; 53,142 out-of-range prefetches |
 | The same | 2 cores | 120 seeds, identical totals; accepted fragments by core 816,956 / 816,723 |
 | 6 runs x 10 seeds x 10,000 parents | 4 cores | 60 seeds; 652,187 parents; 19,471,302 attempts; accepted fragments by core 216,423 / 216,061 / 216,031 / 216,330 |
@@ -629,11 +631,12 @@ unsuppressed.
 **Not covered.** LeakSanitizer never runs on the no-progress guard's `abort()`,
 SIGTERM or SIGINT; with 1 and 6 live parents, and mid-run signals, those exits
 printed nothing. With `handle_abort=1`, AddressSanitizer reports the deliberate
-abort as an error. Uncaught exceptions and the simulation-phase runtime-error
-exit were not re-exercised at `63c44f38` (a first-wave check at `74159f1e` of an
-error exit during simulation with live native state was clean). At 200 MB/s the
-multi-core ROI was cut to 250,000 or 100,000 instructions per core at two cores
-and 50,000 or 100,000 at four; no 8-core build; no MSan, TSan or
+abort as an error. The simulation-phase runtime-error exit was not re-exercised
+at `63c44f38` (a first-wave check at `74159f1e` of such an exit with live native
+state was clean), and no uncaught exception, which ends in `std::terminate`,
+was exercised. At 200 MB/s the multi-core ROI was cut to 250,000 or 100,000
+instructions per core at two cores and 50,000 or 100,000 at four; no 8-core
+build; no MSan, TSan or
 `_GLIBCXX_ASSERTIONS`; RIT/VRR mappers and RowHammer plugins only through test
 704; out-of-range prefetches in simulation produced one event (test 706 supplies
 bulk coverage). Instrumented runs cost 20-30 times release wall time and up to
@@ -726,12 +729,13 @@ LPDDR5, nine core/cache/LLC period sets from 119 to 4,359 ps including 300/257/9
 ps) ran 36 configurations, 36 self-replays and 2 repeats, all exiting 0 with the
 accounting invariants, a native window within one tick of the core's, and every
 phase and config leaf replayed type-exactly. Zero- and one-instruction ROIs are
-exactly one global tick. The sweep found three behaviours no test pins:
-`vmem.minor_fault_penalty` is 200 quantum ticks, and the quantum stops shrinking
-at tCK, so once cores are slower than the native clock the fault penalty stops
-scaling with them (SQLite time per instruction 2-8% below its linear trend); a
-native `clock_ratio` of 3 or 4 is accepted and changes nothing; and `-i 0` still
-runs one tick.
+exactly one global tick on the real binary, as 707 requires of a zero-length
+phase. The clock campaign found two behaviours no test pins:
+`vmem.minor_fault_penalty` is 200 quantum ticks, and the quantum cannot exceed
+tCK, so once cores are slower than the native clock the fault penalty stops
+scaling with them (SQLite time per instruction 2-8% below its linear trend); and
+a native `clock_ratio` of 3 or 4, tried on a generated trace, is accepted and
+changes nothing.
 
 ### Refresh study
 
@@ -808,8 +812,9 @@ natively, how far the setting can be trusted, and what else must change. It used
 one- and four-core `-O3` enabled binaries, the DDR4 fixture's organization and
 timing (DDR4_8Gb_x8, DDR4_2400R, tCK 833 ps, one rank, one controller, 64-byte
 transactions, 8 GiB), a harness that drives each backend alone with 64 pending
-64-byte reads, and end-to-end single-trace windows of 0.1-10M instructions.
-Everything below is scoped to that setup.
+64-byte reads, and end-to-end windows of 0.1-10M instructions per core.
+Everything below is scoped to that setup unless it names a variant (payload,
+controller count, tCK or DDR5).
 
 **The knob.** Override the burst length `nBL`, which sets the channel's RD-to-RD
 and WR-to-WR spacing, and export with the pinned exporter. The committed
@@ -820,8 +825,10 @@ fixture with only `nBL` changed:
 PYTHONPATH=/path/to/ramulator2/python python3 -m ramulator export bw.py -o bw.yaml
 ```
 
-Every other timing stays fixed in cycles, and every read's latency grows by
-`nBL` x tCK, as it grows by one transfer time with legacy `pmem.data_rate`.
+The other base timings (nCL, nRCD, nRP, nRAS and refresh) stay fixed in cycles,
+although constraints that include `nBL`, such as read-write turnaround, grow with
+it. Every read's latency grows by `nBL` x tCK, as it grows by one transfer time
+with legacy `pmem.data_rate`.
 
 **Expected bandwidth.** Bandwidth ~= 76,831 x A / nBL MB/s, where
 76,831 = 64 bytes / 833 ps in MB/s and A is the share of time refresh leaves the
@@ -871,8 +878,8 @@ timing up, leaves nREFI and nRFC at the preset's cycle counts unless set, and
 gave 6.5-10.7% lower IPC end to end than `nBL` at equal bandwidth. A smaller
 transaction payload moves in powers of two, changes capacity and per-block
 latency, and gave 4-19% lower IPC near stock bandwidth. Extra controllers with
-32-byte transactions produced statistics identical to one controller with
-64-byte ones: capacity doubles, bandwidth does not. With 64-byte transactions
+32-byte transactions produced core and cache statistics identical to one
+controller with 64-byte ones: capacity doubles, bandwidth does not. With 64-byte transactions
 extra controllers do add bandwidth, not linearly (two and four gave 1.76 and
 2.63 times on 605.mcf_s at nBL 256). For DDR5 also override `nRTW` (`nBL + 8`
 for DDR5_5600B), and after any timing override compare the exported timing list
@@ -947,13 +954,13 @@ does not mean hosted CI has run.
 | Row | Status | Evidence | Residual limit |
 | --- | --- | --- | --- |
 | Independent adapter/native oracle | Closed | Test 706 and its runners: 1,530 seeds at 1, 2 and 4 cores, 13,200 recovery cycles, 30 of 31 mutants detected, no discrepancy, also clean instrumented ([section 3](#independent-differential-oracle-for-the-adapter)). | Synthetic traffic enters a channel directly; native decisions and timing are trusted; a parent leaked before its first accepted fragment is unobservable; no 8-core run. |
-| Native sanitizer coverage | Partially closed | `RAMULATOR2_SANITIZE=1`, test 708 and the `native_sanitize` job; 24 instrumented simulations at 1, 2 and 4 cores match release builds; tests 705, 707, 708 and the oracle campaigns are clean ([section 3](#native-sanitizer-coverage)). | Pinned native `RITAddrMapper` leaks 2,028 bytes in 20 allocations, so the job's last step fails until someone chooses an upstream fix with a pin update, an approved narrow suppression, or `detect_leaks=0` for the tagged cases. `abort()`, SIGTERM and SIGINT exits are never leak-checked; uncaught-exception exits were not rerun at `63c44f38`; multi-core windows were reduced; no 8-core build, MSan or TSan; the job has never run hosted. |
+| Native sanitizer coverage | Partially closed | `RAMULATOR2_SANITIZE=1`, test 708 and the `native_sanitize` job; 24 instrumented simulations at 1, 2 and 4 cores match release builds; tests 705, 707, 708 and the oracle campaigns are clean ([section 3](#native-sanitizer-coverage)). | Pinned native `RITAddrMapper` leaks 2,028 bytes in 20 allocations, so the job's last step fails until someone chooses an upstream fix with a pin update, an approved narrow suppression, or `detect_leaks=0` for the tagged cases. `abort()`, SIGTERM, SIGINT and uncaught-exception exits are never leak-checked; a runtime-error exit during simulation was leak-checked only at `74159f1e`; multi-core windows were reduced; no 8-core build, MSan or TSan; the job has never run hosted. |
 | Sustained overload and recovery | Partially closed | 75 statistics documents from 1M to 100M ROI instructions with exact accounting, bounded RSS and drains to zero; the feeder is bounded in practice by the LLC MSHR; 13,200 producer-pause recovery cycles in test 706 ([section 3](#real-traces-long-runs-and-sustained-overload)). | 100M ROI instructions only for libquantum and zstd; write-heavy mcf to 10M, the rejection flood to 50M; four-core runs to 2M per core at 200 MB/s; no multi-fragment heads under sustained rejection at this scale; one host. |
 | Interference and larger machines | Partially closed | First-wave 4- and 8-core runs with 1, 2 and 4 channels, permutation spread below legacy's, prefetch-queue wait measured; close-out 4-core oracle, overload and instrumented runs ([section 3](#multi-core-runs)). | No per-core age, tail-latency or feeder-wait statistic; RQ-before-PQ order starves prefetches under saturation, as legacy does; a mixed flood splits a shared channel unevenly; GenericDDR can starve reads under write pressure; equal-time operate order with 17 or more operables is not environment order; 8-core windows of 1M; hot-channel and row-conflict-heavy traffic not run systematically. |
-| Clocks and epochs | Closed | Test 707's reference at 10 period sets with fake and real drivers, including frozen snapshots and finalization without ticks; the guard-formula and long-pause CLI tests; a 36-configuration real-trace sweep ([section 3](#clocks-epochs-and-the-no-progress-guard)). | 707's machines have at most six operables and the sweep one core; `vmem.minor_fault_penalty` stops scaling at tCK; native `clock_ratio` is ignored; the livelock check is unscaled (guards row); one 707 check on a real-native partial head depends on native timing. |
-| Native counter limits | Closed | Enforced bounds and the counter audit ([section 2](#native-signed-counter-bounds)); test 704 at lowered limits, including split LPDDR5 blocks and either of two controllers; the close-out review's counter mutants K01-K06 detected; 9 SQLite run pairs unchanged. | The real `INT_MAX` limits were reached neither end to end nor under UBSan; per-row counters in ClosedCAP, PRAC, IdealTRR, SamsungTRR and TWiCeIdeal are not enforced; plugin reset-period conversions are unchecked. |
+| Clocks and epochs | Closed | Test 707's reference at 10 period sets with a fake driver, and its native tick times with real DDR4 and LPDDR5 drivers, including frozen snapshots and finalization without ticks; the guard-formula and long-pause CLI tests; a 36-configuration real-trace sweep ([section 3](#clocks-epochs-and-the-no-progress-guard)). | 707's machines have at most six operables and the sweep one core; `vmem.minor_fault_penalty` stops scaling at tCK; native `clock_ratio` is ignored; the livelock check is unscaled (guards row); one 707 check on a real-native partial head depends on native timing. |
+| Native counter limits | Closed | Enforced bounds and the counter audit ([section 2](#native-signed-counter-bounds)); the driver refuses the operation before a native counter can pass `INT_MAX`, so the proposed near-limit native fixture under UBSan was not built; test 704 at lowered limits, including split LPDDR5 blocks and either of two controllers; the close-out review's counter mutants K01-K06 detected; 9 SQLite run pairs unchanged. | The real `INT_MAX` limits were reached neither end to end nor under UBSan; per-row counters in ClosedCAP, PRAC, IdealTRR, SamsungTRR and TWiCeIdeal are not enforced; plugin reset-period conversions are unchecked. |
 | Hosted/clean-host checks | Open | Local builds, mode flips including `RAMULATOR2_SANITIZE`, and the `native_sanitize` steps run by hand. | No hosted job has run on any revision; no clean-host reproduction; macOS, Clang and GCC 9/10 not built on these revisions; the new job will report a failure (sanitizer row). |
-| Native YAML and plugins | Open | Narrowed: real 128-byte transactions, two and four controllers and interleave bits 1 and 2 ran in test 706 and in instrumented simulations; CommandCounter and CmdTraceRecorder outputs are byte-identical between instrumented and release runs; the counter audit lists every reachable scheduler, refresh manager, row policy and plugin. | No per-combination validation or fuzzing; native `clock_ratio` accepted and ignored; `nBL` and `tCK` overrides can leave derived timings stale (two new rows); CmdTraceRecorder writes `<path>.ch<N>` rather than the configured path; AllBank `debug: true` printed to stdout and corrupted `--knobs` output at `74159f1e`. |
+| Native YAML and plugins | Open | Narrowed: real 128-byte transactions, two and four controllers and interleave bits 2 ran in test 706 and in instrumented simulations, interleave bits 1 in the latter; CommandCounter and CmdTraceRecorder outputs are byte-identical between instrumented and release runs; the counter audit lists every reachable scheduler, refresh manager, row policy and plugin. | No per-combination validation or fuzzing; native `clock_ratio` accepted and ignored; `nBL` and `tCK` overrides can leave derived timings stale (two new rows); CmdTraceRecorder writes `<path>.ch<N>` rather than the configured path; AllBank `debug: true` printed to stdout and corrupted `--knobs` output at `74159f1e`. |
 | Plugin epochs and file outputs | Open | CommandCounter, CmdTraceRecorder and BinTraceRecorder ran only in runs with one measured phase; AQUA, Graphene, Hydra and RRS ran only in test 704's tick-limit cases, which check that a statistics reset does not restart the limit. | Multi-phase reset and finalize contracts, stateful plugins and output errors unchecked; relative plugin paths resolve from the working directory. |
 | Duplicate-read coalition | Open | None beyond [the description in section 2](#request-coalition-differs-from-legacy). | Hermes-like studies in native mode would understate or lose the modelled benefit. |
 | Model fidelity and host overhead | Open | Host overhead partly measured: in the overload campaign native simulated 0.5-34% more cycles per host second than legacy at equal bandwidth, with 2.1-2.5 MiB more RSS; the counter checks cost 0.0088% of user-mode instructions. Native refresh intervals and durations were checked against JEDEC and vendor data; bandwidth was calibrated against a formula, not hardware. | No validation of native command timing or latency against hardware or an independent reference; no allocation, queue-walk or snapshot profile. |
@@ -1052,7 +1059,7 @@ Before particular studies, rather than before merge:
 
 ## 6. What must survive for posterity
 
-Committed: the design, implementation plan and reviews; fixture exports and their
+Committed: the design, implementation plan and final review; fixture exports and their
 Python sources; the native oracle stream and generators; the portable tools; and
 from the close-out, tests 706 (with `oracle_variants.py`, `run_differential.py`,
 `oracle_mutants.py` and `run_mutants.py`), 707 (with `ddr4_nbl16384.{py,yaml}` and

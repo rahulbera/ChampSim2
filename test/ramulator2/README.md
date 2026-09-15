@@ -217,8 +217,9 @@ make -j6 WITH_RAMULATOR2=1 RAMULATOR2_ROOT=/path/to/ramulator2-sanitize \
 The build helper configures the pinned native checkout as `RelWithDebInfo`
 with `-fsanitize=address,undefined -fno-omit-frame-pointer` for compilation
 and the shared-library link; fmt and yaml-cpp inherit those flags through
-FetchContent. The Makefile adds the same options, plus `-g`, to every host
-compile and link, for both `bin/champsim` and the test binary. Release builds
+FetchContent. The Makefile adds the same options to every host compile and
+link, and `-g` to every host compile, for both `bin/champsim` and the test
+binary. Release builds
 are unaffected when the variable is unset or 0. It is rejected without
 `WITH_RAMULATOR2=1`: an instrumented host with an uninstrumented native library
 would leave native allocations and callbacks unchecked.

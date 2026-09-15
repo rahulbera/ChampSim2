@@ -228,10 +228,10 @@ options and ITTAGE-only suppressions in `test/ramulator2/README.md`. Pinned nati
 `native_sanitize` job runs those cases in a last step that fails until someone
 chooses an upstream fix, an approved suppression or `detect_leaks=0`. Every new case
 that constructs a `RITAddrMapper` controller must carry that tag. LeakSanitizer
-never runs on the no-progress `abort()`, SIGTERM or SIGINT. When one `make`
-invocation builds both `bin/champsim` and the test binary, shared objects can take
-the test target's `-g3 -Og` (about 2.3x slower, same results), so build the
-simulator on its own before timing it.
+never runs on the no-progress `abort()`, SIGTERM or SIGINT. Shared objects first
+built for the test binary (after `make test`, or with `test` named before `all`)
+keep its `-g3 -Og` and are linked into `bin/champsim` (about 2.3x slower, same
+results), so build the simulator on its own before timing it.
 
 To model DRAM bandwidth natively, override `nBL` on DDR4_2400R (bandwidth about
 76,831 x A / nBL MB/s, A 0.95-1.00) and read "Modelling memory bandwidth with the
@@ -292,8 +292,8 @@ traces and the pinned native root, preserving the legacy compiler matrix.
 
 The [integration writeup](docs/ramulator2-integration.md) documents the architecture,
 the review and pre-merge close-out evidence with its limits, the status of every
-known weak point, and what remains before mainline integration (hosted CI, a
-clean-host reproduction, the `RITAddrMapper` leak decision).
+known weak point, and what remains before mainline integration (among it hosted CI,
+a clean-host reproduction and the `RITAddrMapper` leak decision).
 
 ### Tests
 
@@ -338,6 +338,9 @@ Construction order is load-bearing and fixed by member declaration order: channe
 DRAM → vmem → PTWs → caches → cores, with every vector fully `reserve`d and filled
 before a pointer into it is handed out. Cache order is the per-cycle `operate()` order:
 `LLC` first, then each core's caches alphabetically (`DTLB, ITLB, L1D, L1I, L2C, STLB`).
+That holds among operables due at the same time only while there are at most 16:
+`do_cycle` orders them with `std::sort`, which libstdc++ does not keep stable above
+16 elements, and a machine with two or more cores has at least 18.
 
 `config.sh` → `config/` package (`modules.py`, `module_registry.py`, `makefile.py`,
 `filewrite.py`, `util.py`) walks the four module directories and emits only what a
