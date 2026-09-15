@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -55,7 +56,9 @@ int main() {
         (self.root / 'test/cpp/src/000-test-main.cc').write_text(probe)
         for name, function in [('src/core.cc', 'core'), ('branch/probe/probe.cc', 'module')]:
             (self.root / name).write_text(f'int {function}() {{\n#ifdef CHAMPSIM_TEST_BUILD\nreturn 1;\n#else\nreturn 0;\n#endif\n}}\n')
-        self.env = {k: v for k, v in os.environ.items() if k not in ('CFLAGS', 'CXXFLAGS', 'CPPFLAGS', 'LDFLAGS', 'MAKEFLAGS', 'MFLAGS', 'BUILD_MODE', 'X86_ISA', 'WITH_RAMULATOR2', 'RAMULATOR2_ROOT')}
+        self.env = {k: v for k, v in os.environ.items() if k not in (
+            'CFLAGS', 'CXXFLAGS', 'CPPFLAGS', 'LDFLAGS', 'MAKEFLAGS', 'MFLAGS', 'BUILD_MODE', 'X86_ISA',
+            'WITH_RAMULATOR2', 'RAMULATOR2_ROOT', 'OBJ_ROOT', 'DEP_ROOT', 'BIN_ROOT')}
 
     def make(self, *args, ok=True):
         result = subprocess.run(['make', '--no-print-directory', f'CXX={self.compiler}',
@@ -70,6 +73,18 @@ int main() {
 
     def execute(self, path):
         return subprocess.check_output([str(path)], text=True, cwd=self.root)
+
+    def test_fixture_isolates_inherited_output_roots(self):
+        inherited = self.root / 'inherited-project'
+        inherited.mkdir()
+        roots = {name: str(inherited / name.lower()) for name in ('OBJ_ROOT', 'DEP_ROOT', 'BIN_ROOT')}
+        with patch.dict(os.environ, roots):
+            fixture = BuildModeTests()
+            fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.make('all')
+        self.assertEqual(list(inherited.iterdir()), [])
+        self.assertIn('assertions=1', fixture.execute(fixture.root / 'bin/champsim'))
 
     def test_named_modes_compile_actual_policy_and_coexist(self):
         self.make('-j4', 'debug', 'release', 'fast')
