@@ -17,7 +17,6 @@
 #ifndef TRACEREADER_H
 #define TRACEREADER_H
 
-#include <cstring>
 #include <deque>
 #include <iterator>
 #include <memory>
@@ -89,13 +88,13 @@ class bulk_tracereader
   constexpr static std::size_t refresh_thresh = 1;
   std::deque<ooo_model_instr> instr_buffer;
 
-  // The v2 trace format makes these refill buffers 128 KiB. Keep them out of
-  // operator() so the per-instruction path does not allocate and probe that
-  // frame on every call.
+  // Keep the large trace-refill buffer out of operator() so the
+  // per-instruction path does not allocate and probe that frame on every call.
 #if defined(__clang__) || defined(__GNUC__)
   __attribute__((noinline))
 #endif
-  void refill();
+  void
+  refill();
 
 public:
   ooo_model_instr operator()();
@@ -125,21 +124,17 @@ template <typename T, typename F>
 void bulk_tracereader<T, F>::refill()
 {
   std::array<T, buffer_size - refresh_thresh> trace_read_buf;
-  std::array<char, std::size(trace_read_buf) * sizeof(T)> raw_buf;
   std::size_t bytes_read;
 
-  // Read from trace file
-  trace_file.read(std::data(raw_buf), std::size(raw_buf));
+  // Read through the character representation of the trivial trace records.
+  trace_file.read(reinterpret_cast<char*>(std::data(trace_read_buf)), std::size(trace_read_buf) * sizeof(T));
   bytes_read = static_cast<std::size_t>(trace_file.gcount());
   eof_ = trace_file.eof();
-
-  // Transform bytes into trace format instructions
-  std::memcpy(std::data(trace_read_buf), std::data(raw_buf), bytes_read);
 
   // Inflate trace format into core model instructions
   auto begin = std::begin(trace_read_buf);
   auto end = std::next(begin, bytes_read / sizeof(T));
-  std::transform(begin, end, std::back_inserter(instr_buffer), [cpu = this->cpu](T t) { return ooo_model_instr{cpu, t}; });
+  std::transform(begin, end, std::back_inserter(instr_buffer), [cpu = this->cpu](const T& t) { return ooo_model_instr{cpu, t}; });
 
   // Set branch targets
   set_branch_targets(std::begin(instr_buffer), std::end(instr_buffer));

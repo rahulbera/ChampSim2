@@ -1,5 +1,4 @@
 #include <catch.hpp>
-
 #include <cstring>
 #include <sstream>
 #include <string>
@@ -12,9 +11,10 @@ namespace
 // v2 records are 512 bytes, so spelling them as byte literals (as the v1 tests
 // do) would be unreadable. Build them structurally and serialise instead --
 // this also exercises the exact reinterpretation the reader performs.
-std::string serialize(const std::vector<input_instr_v2>& records)
+template <typename T>
+std::string serialize(const std::vector<T>& records)
 {
-  std::string out(std::size(records) * sizeof(input_instr_v2), '\0');
+  std::string out(std::size(records) * sizeof(T), '\0');
   std::memcpy(std::data(out), std::data(records), std::size(out));
   return out;
 }
@@ -42,6 +42,30 @@ std::vector<input_instr_v2> sample_program()
   prog[2].ip = 0x2000;
 
   return prog;
+}
+
+template <typename T>
+void check_trailing_partial_record()
+{
+  std::vector<T> records(2);
+  records[0].ip = 0x1000;
+  records[0].is_branch = 1;
+  records[0].branch_taken = 1;
+  records[0].destination_registers[0] = champsim::REG_INSTRUCTION_POINTER;
+  records[0].source_registers[0] = champsim::REG_INSTRUCTION_POINTER;
+  records[0].source_registers[1] = champsim::REG_FLAGS;
+  records[1].ip = 0x2000;
+
+  auto bytes = serialize(records);
+  bytes.append(sizeof(T) - 1, '\xff');
+  champsim::bulk_tracereader<T, std::istringstream> reader{0, std::istringstream{bytes}};
+
+  CHECK_FALSE(reader.eof());
+  const auto branch = reader();
+  CHECK(branch.ip == champsim::address{0x1000});
+  CHECK(branch.branch_target == champsim::address{0x2000});
+  CHECK(reader.eof());
+  CHECK(reader().ip == champsim::address{0x2000});
 }
 } // namespace
 
@@ -127,6 +151,73 @@ TEST_CASE("A v1 and a v2 record describing the same instruction yield the same i
     REQUIRE(a.source_memory == b.source_memory);
     REQUIRE(a.destination_memory == b.destination_memory);
   }
+}
+
+TEST_CASE("Constructing from a sparse v2 record preserves raw slots and owns compacted operands")
+{
+  auto record = sample_program().front();
+  record.source_memory[0] = 0x11110000;
+  record.source_memory[2] = 0x33330000;
+  record.destination_memory[1] = 0x44440000;
+  const input_instr_v2 raw_record = record;
+
+  const ooo_model_instr instr{0, raw_record};
+
+  REQUIRE(raw_record.source_memory[0] == 0x11110000);
+  REQUIRE(raw_record.source_memory[1] == 0);
+  REQUIRE(raw_record.source_memory[2] == 0x33330000);
+  REQUIRE(raw_record.destination_memory[0] == 0);
+  REQUIRE(raw_record.destination_memory[1] == 0x44440000);
+  REQUIRE_THAT(instr.source_memory, Catch::Matchers::RangeEquals(std::vector<champsim::address>{champsim::address{0x11110000}, champsim::address{0x33330000}}));
+  REQUIRE_THAT(instr.destination_memory, Catch::Matchers::RangeEquals(std::vector<champsim::address>{champsim::address{0x44440000}}));
+
+  const ooo_model_instr owned_instr{0, record};
+  record.source_memory[0] = 0;
+  record.source_memory[2] = 0;
+  record.destination_memory[1] = 0;
+  record.source_memory[1] = 0x22220000;
+  REQUIRE_THAT(owned_instr.source_memory,
+               Catch::Matchers::RangeEquals(std::vector<champsim::address>{champsim::address{0x11110000}, champsim::address{0x33330000}}));
+}
+
+TEST_CASE("v1 and CloudSuite constructors compact sparse records and own their operands")
+{
+  SECTION("v1")
+  {
+    input_instr record{};
+    record.source_memory[2] = 0x33330000;
+    record.destination_memory[1] = 0x44440000;
+    const ooo_model_instr instr{2, record};
+    record.source_memory[2] = 0;
+    record.destination_memory[1] = 0;
+
+    REQUIRE(instr.asid == std::array<uint8_t, 2>{2, 2});
+    REQUIRE_THAT(instr.source_memory, Catch::Matchers::RangeEquals(std::vector<champsim::address>{champsim::address{0x33330000}}));
+    REQUIRE_THAT(instr.destination_memory, Catch::Matchers::RangeEquals(std::vector<champsim::address>{champsim::address{0x44440000}}));
+  }
+
+  SECTION("CloudSuite")
+  {
+    cloudsuite_instr record{};
+    record.asid[0] = 3;
+    record.asid[1] = 7;
+    record.source_memory[2] = 0x33330000;
+    record.destination_memory[3] = 0x55550000;
+    const ooo_model_instr instr{2, record};
+    record.source_memory[2] = 0;
+    record.destination_memory[3] = 0;
+
+    REQUIRE(instr.asid == std::array<uint8_t, 2>{3, 7});
+    REQUIRE_THAT(instr.source_memory, Catch::Matchers::RangeEquals(std::vector<champsim::address>{champsim::address{0x33330000}}));
+    REQUIRE_THAT(instr.destination_memory, Catch::Matchers::RangeEquals(std::vector<champsim::address>{champsim::address{0x55550000}}));
+  }
+}
+
+TEST_CASE("Trailing partial records retain complete-record lookahead and EOF behavior")
+{
+  SECTION("v1") { check_trailing_partial_record<input_instr>(); }
+  SECTION("v2") { check_trailing_partial_record<input_instr_v2>(); }
+  SECTION("CloudSuite") { check_trailing_partial_record<cloudsuite_instr>(); }
 }
 
 TEST_CASE("Trace operands and targets survive multiple refill boundaries")
