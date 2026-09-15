@@ -189,27 +189,44 @@ TEST_CASE("Native driver rejects components that cannot serve the External shim"
   CHECK_THROWS_WITH(champsim::make_ramulator2_driver(negative.config()), !Catch::Matchers::ContainsSubstring("shifted"));
 }
 
-TEST_CASE("Native driver serves every admitted flat and row-indirection address mapper")
+namespace
+{
+// A controller with this address mapper serves reads at both ends of the fixture's capacity.
+void require_mapper_serves_capacity(const std::string& mapper)
+{
+  CAPTURE(mapper);
+  temporary_yaml file(changed(fixture(), "      addr_mapper:\n        impl: RoBaRaCoCh\n", mapper));
+  auto driver = champsim::make_ramulator2_driver(file.config());
+  REQUIRE(driver->size().count() == 8589934592LL);
+  unsigned completed = 0;
+  REQUIRE(driver->send(false, 0x100000, 0, 64, [&] { ++completed; }));
+  REQUIRE(driver->send(false, 8589934592ULL - 64, 0, 64, [&] { ++completed; }));
+  for (int i = 0; i < 10000 && completed != 2; ++i)
+    driver->tick();
+  REQUIRE(completed == 2);
+}
+} // namespace
+
+TEST_CASE("Native driver serves every admitted flat address mapper")
 {
   if (!champsim::ramulator2_available())
     SKIP("native build disabled");
-  const auto original = fixture();
-  const std::string flat_mapper = "      addr_mapper:\n        impl: RoBaRaCoCh\n";
-  for (const auto& mapper : std::vector<std::string>{
-           "      addr_mapper:\n        impl: ChRaBaRoCo\n", "      addr_mapper:\n        impl: MOP4CLXOR\n",
-           "      addr_mapper:\n        impl: RITAddrMapper\n        addr_mapper:\n          impl: RoBaRaCoCh\n",
-           "      addr_mapper:\n        impl: RITAddrMapper\n        reserved_rows_per_bank: 0\n        addr_mapper:\n          impl: MOP4CLXOR\n"}) {
-    CAPTURE(mapper);
-    temporary_yaml file(changed(original, flat_mapper, mapper));
-    auto driver = champsim::make_ramulator2_driver(file.config());
-    REQUIRE(driver->size().count() == 8589934592LL);
-    unsigned completed = 0;
-    REQUIRE(driver->send(false, 0x100000, 0, 64, [&] { ++completed; }));
-    REQUIRE(driver->send(false, 8589934592ULL - 64, 0, 64, [&] { ++completed; }));
-    for (int i = 0; i < 10000 && completed != 2; ++i)
-      driver->tick();
-    REQUIRE(completed == 2);
-  }
+  for (const auto* mapper : {"      addr_mapper:\n        impl: ChRaBaRoCo\n", "      addr_mapper:\n        impl: MOP4CLXOR\n"})
+    require_mapper_serves_capacity(mapper);
+}
+
+// Cases tagged [rit-addr-mapper] construct RITAddrMapper controllers. The
+// pinned native RITAddrMapper never frees the nested mapper it creates, so
+// LeakSanitizer fails any process that runs one; the instrumented CI job runs
+// them in a step of their own (see test/ramulator2/README.md).
+TEST_CASE("Native driver serves every admitted row-indirection address mapper", "[rit-addr-mapper]")
+{
+  if (!champsim::ramulator2_available())
+    SKIP("native build disabled");
+  for (const auto* mapper :
+       {"      addr_mapper:\n        impl: RITAddrMapper\n        addr_mapper:\n          impl: RoBaRaCoCh\n",
+        "      addr_mapper:\n        impl: RITAddrMapper\n        reserved_rows_per_bank: 0\n        addr_mapper:\n          impl: MOP4CLXOR\n"})
+    require_mapper_serves_capacity(mapper);
 }
 
 TEST_CASE("Native input identity is effective and detects replay drift")
@@ -477,55 +494,71 @@ TEST_CASE("The native request limit can stop a split cache block between its fra
   REQUIRE(stats.outstanding_parents == 2);
 }
 
+namespace
+{
+std::string with_plugin(const std::string& text, const std::string& plugin)
+{
+  return changed(text, "      row_policy:\n", "      controller_plugins:\n" + plugin + "      row_policy:\n");
+}
+// A three-tick plugin limit stops the memory clock at its fourth tick, and a statistics reset does not restart it.
+void require_plugin_tick_limit(const std::string& name, const std::string& yaml)
+{
+  CAPTURE(name);
+  champsim::ramulator2_native_limits limits;
+  limits.plugin_ticks = 3;
+  temporary_yaml file(yaml);
+  auto driver = champsim::make_ramulator2_driver(file.config(), limits);
+  for (int i = 0; i < 3; ++i)
+    driver->tick();
+  REQUIRE_THROWS_WITH(driver->tick(),
+                      Catch::Matchers::ContainsSubstring("native controller plugin " + name) && Catch::Matchers::ContainsSubstring("limit of 3 ticks"));
+  REQUIRE(counter(driver->statistics(), {"memory_system", "controller", "channel0", "cycles"}) == 3);
+  // Native never resets the plugin counter, so a statistics reset does not restart the limit.
+  driver->reset_stats();
+  REQUIRE_THROWS_WITH(driver->tick(), Catch::Matchers::ContainsSubstring("native controller plugin " + name));
+  REQUIRE(counter(driver->statistics(), {"memory_system", "controller", "channel0", "cycles"}) == 0);
+}
+} // namespace
+
+// AQUA and RRS require a RITAddrMapper; see the row-indirection mapper case for the tag.
+TEST_CASE("Native plugins over RITAddrMapper with a never-reset signed tick counter stop the memory clock at its limit", "[rit-addr-mapper]")
+{
+  if (!champsim::ramulator2_available())
+    SKIP("native build disabled");
+  const auto rit = changed(fixture(), "      addr_mapper:\n        impl: RoBaRaCoCh\n",
+                           "      addr_mapper:\n        impl: RITAddrMapper\n        addr_mapper:\n          impl: RoBaRaCoCh\n");
+  require_plugin_tick_limit(
+      "AQUA", with_plugin(rit, "        - impl: AQUA\n          num_art_entries: 16\n          num_fpt_entries: 16\n          num_qrows_per_bank: 64\n"
+                               "          art_threshold: 1000\n"));
+  require_plugin_tick_limit(
+      "RRS", with_plugin(rit, "        - impl: RRS\n          num_hrt_entries: 16\n          num_rit_entries: 16\n          rss_threshold: 1000\n"));
+}
+
 TEST_CASE("Native plugins with a never-reset signed tick counter stop the memory clock at its limit")
 {
   if (!champsim::ramulator2_available())
     SKIP("native build disabled");
   const auto original = fixture();
-  const std::string flat_mapper = "      addr_mapper:\n        impl: RoBaRaCoCh\n";
-  const auto rit = [&] {
-    return changed(original, flat_mapper, "      addr_mapper:\n        impl: RITAddrMapper\n        addr_mapper:\n          impl: RoBaRaCoCh\n");
-  };
   // DDR4_VRR is DDR4 with a VRR command and an nVRR timing appended. Native
   // AllBank refresh has no scope for it, and refresh is irrelevant here.
-  const auto vrr = [&] {
+  const auto vrr_channel = [&] {
     auto text = changed(original, "impl: AllBank\n        scatter_interval: 0\n        debug: false\n", "impl: NoRefresh\n");
     text = changed(changed(text, "impl: DDR4\n", "impl: DDR4_VRR\n"), "2, 833]", "2, 833, 1]");
     return changed(text, "command_cycles: [1, 1, 1, 1, 1, 1, 1, 1]", "command_cycles: [1, 1, 1, 1, 1, 1, 1, 1, 1]");
-  };
-  const auto with_plugin = [](const std::string& text, const std::string& plugin) {
-    return changed(text, "      row_policy:\n", "      controller_plugins:\n" + plugin + "      row_policy:\n");
-  };
+  }();
+  const std::string hydra = "        - impl: Hydra\n          hydra_tracking_threshold: 1000\n          hydra_group_threshold: 800\n";
+  require_plugin_tick_limit(
+      "Graphene",
+      with_plugin(vrr_channel,
+                  "        - impl: Graphene\n          num_table_entries: 16\n          activation_threshold: 1000\n          reset_period_ns: 64000000\n"));
+  require_plugin_tick_limit("Hydra", with_plugin(vrr_channel, hydra));
+
   champsim::ramulator2_native_limits limits;
   limits.plugin_ticks = 3;
-  for (const auto& [name, yaml] : std::vector<std::pair<std::string, std::string>>{
-           {"AQUA", with_plugin(rit(), "        - impl: AQUA\n          num_art_entries: 16\n          num_fpt_entries: 16\n          num_qrows_per_bank: 64\n"
-                                       "          art_threshold: 1000\n")},
-           {"Graphene",
-            with_plugin(
-                vrr(),
-                "        - impl: Graphene\n          num_table_entries: 16\n          activation_threshold: 1000\n          reset_period_ns: 64000000\n")},
-           {"Hydra", with_plugin(vrr(), "        - impl: Hydra\n          hydra_tracking_threshold: 1000\n          hydra_group_threshold: 800\n")},
-           {"RRS", with_plugin(rit(), "        - impl: RRS\n          num_hrt_entries: 16\n          num_rit_entries: 16\n          rss_threshold: 1000\n")}}) {
-    CAPTURE(name);
-    temporary_yaml file(yaml);
-    auto driver = champsim::make_ramulator2_driver(file.config(), limits);
-    for (int i = 0; i < 3; ++i)
-      driver->tick();
-    REQUIRE_THROWS_WITH(driver->tick(),
-                        Catch::Matchers::ContainsSubstring("native controller plugin " + name) && Catch::Matchers::ContainsSubstring("limit of 3 ticks"));
-    REQUIRE(counter(driver->statistics(), {"memory_system", "controller", "channel0", "cycles"}) == 3);
-    // Native never resets the plugin counter, so a statistics reset does not restart the limit.
-    driver->reset_stats();
-    REQUIRE_THROWS_WITH(driver->tick(), Catch::Matchers::ContainsSubstring("native controller plugin " + name));
-    REQUIRE(counter(driver->statistics(), {"memory_system", "controller", "channel0", "cycles"}) == 0);
-  }
   // Controllers need not list the same plugins, so the one that does can be
-  // any of them. Hydra over DDR4_VRR, not a RITAddrMapper plugin, because the
-  // pinned RITAddrMapper leaks under LeakSanitizer.
-  const auto vrr_channel = vrr();
+  // any of them. Hydra over DDR4_VRR, not a RITAddrMapper plugin, keeps this
+  // case free of the pinned RITAddrMapper leak.
   const auto vrr_controller = vrr_channel.substr(vrr_channel.find("    - impl: GenericDDR"));
-  const std::string hydra = "        - impl: Hydra\n          hydra_tracking_threshold: 1000\n          hydra_group_threshold: 800\n";
   for (const auto& [where, yaml] : std::vector<std::pair<std::string, std::string>>{{"first", with_plugin(vrr_channel, hydra) + vrr_controller},
                                                                                     {"second", vrr_channel + with_plugin(vrr_controller, hydra)}}) {
     CAPTURE(where);
