@@ -234,8 +234,10 @@ keep its `-g3 -Og` and are linked into `bin/champsim` (about 2.3x slower, same
 results), so build the simulator on its own before timing it.
 
 To model DRAM bandwidth natively, override `nBL` on DDR4_2400R (bandwidth about
-76,831 x A / nBL MB/s, A 0.95-1.00) and read "Modelling memory bandwidth with the
-native backend" in the integration writeup first: low-bandwidth runs need
+76,831 x A / nBL MB/s, A 0.95-1.00): export points with
+`configs/ramulator2/bandwidth.py` (driven by `make_bandwidth_sweep.sh`) and read
+[the bandwidth sweep report](docs/ramulator-integration/ramulator2-bandwidth-sweeps.md)
+first: low-bandwidth runs need
 `sim.livelock_period` raised and, at very low bandwidth (the default aborted at
 about 13 MB/s), `sim.deadlock_cycle`; tCK scaling, smaller payloads and extra
 32-byte-transaction controllers are the wrong knobs; a DDR5 `nBL` override needs

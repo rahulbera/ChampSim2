@@ -72,6 +72,12 @@ for `tomllib`. Both fixtures use External, GenericDRAM and CacheLineInterleave:
 | DDR4 | GenericDDR | 64 B | 833 ps | 8 GiB |
 | LPDDR5 | LPDDR5 | 32 B | 1,453 ps | 1 GiB |
 
+For a DRAM bandwidth sweep, `ramulator2/bandwidth.py` exports DDR4 (calibrated)
+or DDR5 points with `nBL` overridden and derived timings resolved, plus a
+manifest of the matching `--set` arguments; `ramulator2/make_bandwidth_sweep.sh`
+runs it for the default points. See the
+[bandwidth sweep report](../docs/ramulator-integration/ramulator2-bandwidth-sweeps.md).
+
 Other exports must keep that frontend, memory system and channel mapper. Each
 controller `impl` must be `GenericDDR`, `LPDDR5`, `LPDDR6`, `GDDR7`, `HBM12`,
 `HBM34` or `PRAC`. Each controller `addr_mapper` must be `RoBaRaCoCh`,

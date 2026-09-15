@@ -814,7 +814,11 @@ timing (DDR4_8Gb_x8, DDR4_2400R, tCK 833 ps, one rank, one controller, 64-byte
 transactions, 8 GiB), a harness that drives each backend alone with 64 pending
 64-byte reads, and end-to-end windows of 0.1-10M instructions per core.
 Everything below is scoped to that setup unless it names a variant (payload,
-controller count, tCK or DDR5).
+controller count, tCK or DDR5). The
+[bandwidth sweep report](ramulator2-bandwidth-sweeps.md) turns it into a workflow
+and best practices, and
+[`configs/ramulator2/bandwidth.py`](../../configs/ramulator2/bandwidth.py) exports
+sweep points with these calibrated values and derived timings resolved.
 
 **The knob.** Override the burst length `nBL`, which sets the channel's RD-to-RD
 and WR-to-WR spacing, and export with the pinned exporter. The committed
@@ -1065,8 +1069,9 @@ from the close-out, tests 706 (with `oracle_variants.py`, `run_differential.py`,
 `oracle_mutants.py` and `run_mutants.py`), 707 (with `ddr4_nbl16384.{py,yaml}` and
 the CLI guard tests), 708, the counter-bound cases of 704, the
 `RAMULATOR2_SANITIZE` build path with its ITTAGE-only suppression files, and the
-`native_sanitize` CI job. This report records the tested envelope and the
-remaining agenda.
+`native_sanitize` CI job; and the bandwidth sweep generator
+(`configs/ramulator2/bandwidth.py`, `make_bandwidth_sweep.sh`) with its report.
+This report records the tested envelope and the remaining agenda.
 
 Not committed, and therefore at risk: the first-wave evaluators' harnesses beyond
 what the close-out ported; the overload campaign's probes, accounting checker
@@ -1101,6 +1106,7 @@ Existing records:
 - [Approved design](specs/2026-09-13-ramulator2-design.md)
 - [Completed implementation plan](plans/2026-09-13-ramulator2.md)
 - [Detailed validation, reproduction commands and recovery record](ramulator2-validation.md)
+- [Bandwidth sweep observations and best practices](ramulator2-bandwidth-sweeps.md)
 - [Final review and scalar-type correction](reviews/2026-09-13-ramulator2.md)
 - [Portable regression tools and their limits](../../test/ramulator2/README.md)
 
