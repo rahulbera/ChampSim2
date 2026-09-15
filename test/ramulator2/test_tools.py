@@ -22,6 +22,21 @@ import run_mutants
 from run_oracle import check_leaves, check_events, compare_events
 
 REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / "configs" / "ramulator2"))
+import bandwidth  # noqa: E402
+
+
+def native_exporter():
+    """The pinned exporter from RAMULATOR2_ROOT, or None when it is not available."""
+    root = os.environ.get("RAMULATOR2_ROOT")
+    if not root or not (Path(root) / "python" / "ramulator").is_dir():
+        return None
+    if str(Path(root) / "python") not in sys.path:
+        sys.path.insert(0, str(Path(root) / "python"))
+    sys.dont_write_bytecode = True  # keep the pinned checkout clean
+    import ramulator
+
+    return ramulator
 
 
 class OracleComparisonTests(unittest.TestCase):
@@ -279,3 +294,72 @@ class ScratchCopyTests(unittest.TestCase):
             (copy_dir / "src" / "tracked.cc").write_text("mutated\n")
             self.assertEqual((repo / "src" / "tracked.cc").read_text(), "tracked\n")
             self.assertEqual(subprocess.check_output(git + ["status", "--porcelain"]), before)
+
+
+class BandwidthGeneratorTests(unittest.TestCase):
+    def test_calibrated_targets_use_their_measured_burst_lengths(self):
+        self.assertEqual(bandwidth.pick_nbl("ddr4", 200, 833), (381, True))
+        self.assertEqual(bandwidth.pick_nbl("ddr4", 6400, 833), (11, True))
+
+    def test_other_targets_pick_the_closest_expected_bandwidth(self):
+        nbl, calibrated = bandwidth.pick_nbl("ddr4", 300, 833)
+        self.assertFalse(calibrated)
+        error = lambda n: abs(bandwidth.expected_mbps("ddr4", n, 833) - 300)
+        self.assertLessEqual(error(nbl), min(error(nbl - 1), error(nbl + 1)))
+        self.assertAlmostEqual(bandwidth.expected_mbps("ddr4", 256, 833), 293.5, delta=0.1)
+        self.assertEqual(bandwidth.pick_nbl("ddr5", 175, 357), (1024, False))
+
+    def test_guard_and_legacy_rate_follow_the_study(self):
+        self.assertEqual(bandwidth.suggested_deadlock_cycle(5800, 833, 250), 166600)
+        self.assertEqual(bandwidth.suggested_deadlock_cycle(381, 833, 250), 40000)
+        self.assertAlmostEqual(bandwidth.legacy_data_rate(4, 833), 2400.96, places=2)
+        self.assertAlmostEqual(bandwidth.legacy_data_rate(381, 833) * 381, 9604, delta=1)
+
+    def test_timings_that_differ_from_their_recomputation_are_not_written(self):
+        class StandIn:
+            timing_presets = {"DDR5_5600B": {"nBL": 8, "nRTW": 16}}
+            honours = ()
+
+            def __init__(self, *, org_preset, timing_preset, rank, **overrides):
+                self.overrides = overrides
+
+            @classmethod
+            def resolve_secondary_timings(cls, timing, org):
+                timing["nRTW"] = timing["nBL"] + 8
+
+            def resolve(self):
+                timing = dict(self.timing_presets["DDR5_5600B"])
+                self.resolve_secondary_timings(timing, {})
+                timing.update({k: v for k, v in self.overrides.items() if k in self.honours})
+                return {"rank": 1}, timing
+
+        class Honouring(StandIn):
+            honours = ("nBL", "nRTW")
+
+        class DroppingDerived(StandIn):
+            honours = ("nBL",)
+
+        exporter = lambda dram: type("ramulator", (), {"dram": type("dram", (), {"DDR5": dram})})
+        overrides, derived, _, timing = bandwidth.resolve_with_derived_timings(exporter(Honouring), "ddr5", {"nBL": 1024})
+        self.assertEqual((derived, timing["nRTW"]), ({"nRTW": 1032}, 1032))
+        with self.assertRaisesRegex(SystemExit, "nRTW"):
+            bandwidth.resolve_with_derived_timings(exporter(DroppingDerived), "ddr5", {"nBL": 1024})
+
+    def test_exports_match_the_fixture_and_set_derived_timings(self):
+        ramulator = native_exporter()
+        if ramulator is None:
+            self.skipTest("RAMULATOR2_ROOT does not name a native checkout with its python package")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "sweep"
+            with contextlib.redirect_stdout(io.StringIO()):
+                bandwidth.main(["--standard", "ddr4", "--stock", "--mbps", "200", "--out-dir", str(out / "ddr4")])
+                bandwidth.main(["--standard", "ddr5", "--nbl", "1024", "--out-dir", str(out / "ddr5")])
+            self.assertEqual((out / "ddr4" / "ddr4_stock.yaml").read_bytes(), (REPO / "configs" / "ramulator2" / "ddr4.yaml").read_bytes())
+            ddr4 = yaml.safe_load((out / "ddr4" / "ddr4_nbl381.yaml").read_text())["memory_system"]["controllers"][0]
+            self.assertEqual(ddr4["dram"]["timing"][1], 381)
+            with open(out / "ddr5" / "manifest.csv", newline="") as f:
+                (row,) = list(csv.DictReader(f))
+            self.assertEqual((row["nbl"], row["derived_overrides"]), ("1024", "nRTW=1032"))
+            self.assertIn("ramulator2.config=" + str((out / "ddr5" / "ddr5_nbl1024.yaml").resolve()), row["champsim_set"])
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                bandwidth.main(["--standard", "ddr5", "--nbl", "1024", "--out-dir", str(out / "ddr5")])
