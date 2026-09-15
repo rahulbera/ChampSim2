@@ -1037,3 +1037,121 @@ campaign/audits and fresh timings. Candidate SHA-256:
 `3fb647841c0abc86825cda32f675e9a27ae68767ece6007130e09f22d980efce`;
 immediate parent: `11-cache-guards/champsim`, SHA-256
 `fe657e62bb275213fda52348c18ef3f411c724e00d34d8243d962d38f5263e79`.
+
+## Optimization 13 — precompute legacy DRAM XOR geometry
+
+**Issue.** The fresh profile after cache guards attributes 15.12% of mcf sampled
+cycles to DRAM mapping, versus at most 0.02% in the three protected v2 windows.
+Each channel/group/bank getter rebuilds row-relative extents, widths and masks.
+The earlier global extent-inlining experiment traded mcf gains for v2 regressions;
+this trial confines the change to the legacy mapper.
+
+**Fix tested.** Derive three compact immutable XOR descriptors from the initialized
+address slicer. Preserve each getter's full seven-coordinate checked extraction
+and checked row construction, then fold only contributing row bits using prepared
+mask/shift/count values. The count retains the original absolute row upper bound,
+including partial final segments. Eight-channel hashing still changes only the
+low channel bit. Unsupported extents, bounds at or above 64, narrow-unsigned-long
+contributions and zero stride take the original path. Public swizzle, constructor
+assertions, geometry queries, scheduling order and collision captures are unchanged.
+The existing single-bank/single-group zero-step hang is preserved, not repaired.
+
+**Outcome: deferred; production trial rejected.** All three mcf pairs improve,
+but every v2 pair regresses. Restore the mapper implementation and retain the
+characterization tests. The single-candidate experiment ends here; no collision-
+capture change or second descriptor variant is folded into this pass.
+
+**Files touched.**
+
+1. `inc/dram_controller.h`: trial only, reverted: private descriptor type, immutable storage and helper
+   declarations; mapper grows by 48 bytes, with no request-state changes.
+2. `src/dram_controller.cc`: trial only, reverted: safe descriptor construction and arithmetic folding
+   in only the channel/group/bank getters, preserving the original fallback.
+3. `test/cpp/src/703-dram-address-mapping.cc`: independent coordinate-level
+   characterizations for short/partial rows, layouts, copies and checked bounds.
+4. `docs/research-log/Performance/2026-09-14-performance-optimization.md`:
+   record the experiment, observed parity, copy costs and timing outcome.
+
+**Commits.** `6425c6aa` (retained tests); production trial was never
+committed and its exact patch remains archived; documentation follows.
+
+**Regression verdict.** **INERT over the observed scope.** All 32 standard short runs,
+24 queue-stress runs, 15 long successor runs and 24 timing runs match complete
+exported phase statistics, effective configuration and actual warmup/ROI
+instruction and cycle counts. The long gate uses 5M warmup / 50M ROI for all
+14 current SPEC26 workloads plus mcf, against the retained cache-guard parent.
+Both the comparisons and independent saved-artifact audits pass. Independent
+source review has no open correctness finding.
+
+Final characterizations passed on unchanged parent source before the production
+edit: 65,534 assertions / 13 cases across both 703 files, then the same on the
+candidate. The mapping portion has 61,514 assertions: the existing 198-geometry
+oracle, 600 short/partial-row/layout combinations, eight upper-63/64 combinations,
+copies, and exact invalid-argument type/message for row bounds [16,66). The other
+4,020 assertions are backend tests. The oracle derives coordinates and hashes
+bits independently of descriptor arithmetic. No mixed-header oracle was used.
+The nonterminating geometry is excluded from in-process tests and preserved by
+source review. Narrow-unsigned-long fallback has source review, not a platform run.
+
+Full normal C++: 899 passed / 7 native skips / 81,745 assertions. Payload C++:
+904 passed / 7 skips / 83,838 assertions. Python: 66 tests / 4 native skips;
+performance-tool tests: 6 passed. Existing capacity, exact read-scheduling and
+refresh tests also pass. The initial inherited cross-compiler and combined 703
+filename-selector failures were infrastructure issues; corrected explicit GCC
+and Catch OR selectors pass. Those first logs remain preserved.
+
+The additional 12-case / 24-run matrix uses RQ/WQ sizes of two and L1D/L2C/LLC
+16 sets × two ways on SQLite v2 and mcf v1, both PTW modes and seed/clock/geometry
+controls. Every run has nonzero writes, WQ-full retries and refreshes: 21,210–69,282
+reads, 8,418–12,576 writes, 67–4,501 retries and 354–720 refreshes. Counts far
+exceed two queue slots, exercising reuse. These are traffic-coverage checks, not
+visibility into each internal collision or individual write-mode transition.
+Their elapsed times are excluded from performance reporting.
+
+**Fresh KIPS.** CPU 14, detailed PTW, legacy DRAM, 1M warmup / 3M ROI, three
+alternating pairs. Medians (observed minimum–maximum), counting actual total
+retirement over whole-process wall time:
+
+| Trace | Before KIPS | Trial KIPS | Change |
+|---|---:|---:|---:|
+| SQLite | 449.26 (442.12–449.35) | 431.93 (428.32–435.56) | -3.86% |
+| omnetpp | 516.06 (514.38–516.74) | 486.59 (485.87–492.48) | -5.71% |
+| GCC | 609.02 (604.96–611.62) | 585.37 (585.36–586.36) | -3.88% |
+| mcf | 158.28 (156.57–159.27) | 182.26 (178.55–183.19) | +15.15% |
+
+Per-pair changes are SQLite −3.12/−3.86/−3.07%, omnetpp
+−5.54/−5.71/−4.69%, GCC −3.07/−3.88/−4.29%, and mcf
++15.15/+12.11/+17.00%. No own build, test, profile or long campaign overlapped.
+The consistent workload tradeoff warrants rejection. Host load was low during
+this campaign; boost and shared-host activity remain uncontrolled. Do not infer
+a separately isolated cause from the assembly or compare these fresh baselines
+with earlier runs taken under different host conditions.
+
+After restoration, both full C++ suites pass again with the same counts above.
+The rebuilt release is byte-identical to the retained cache-guard parent; see
+`restored/binary-verification.json`. The rejected slowdown is absent from the
+final production tree.
+
+
+**Generated-code costs.** Mapper size is 120 to 168 bytes; each descriptor is 16
+bytes. DRAM_CHANNEL is 544 to 592 bytes and request_type remains 112. Supported
+getter paths contain shift/AND/XOR loops; repeated extent-size calls and nested
+public swizzle are behind fallback. The standalone helper is 142 hot bytes with
+no calls, and GCC inlines it into getters. By-value collision captures propagate
+the extra fields through algorithm predicate copies: write-collision stack
+reservation grows 1,000 to 1,736 bytes, read-collision 1,304 to 2,488. Their hot
+text grows 2,092 to 2,716 and 6,033 to 6,125 bytes respectively. These are real
+costs; assembly verifies the mechanism but does not itself establish a speedup.
+
+**Limits.** One selected simpoint per SPEC26 workload; single-core legacy DRAM;
+long windows use detailed PTW, short matrices cover both modes. Wider simpoint
+coverage, shared multicore traffic, other toolchains/platforms, additional module
+combinations and unexported warmup cache/DRAM counters remain outside the observed
+parity verdict. Exact speedup estimates still need a quiet-host replication.
+
+**Evidence.** `2026-09-15-optimizations/13-dram-geometry/` contains reviewed design
+references, immutable release/patch, characterizations, full suites, independent
+review, short/queue-stress/long campaigns, audits, decoded assembly and timings.
+Candidate SHA-256 `d6ba9984b09cda707e1dcae64b27565df9c66744bb3beab677847e1aeaec9cff`;
+parent `11-cache-guards/champsim`, SHA-256
+`fe657e62bb275213fda52348c18ef3f411c724e00d34d8243d962d38f5263e79`.
