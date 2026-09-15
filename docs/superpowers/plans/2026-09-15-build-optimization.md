@@ -52,15 +52,15 @@ the archived `run_long_after.py` and `audit_long.py`, and their validated manife
 Produces preserved `00-baseline/champsim`, `01-v2/champsim`, build metadata,
 regression/timing artifacts, and an explicit retain/reject verdict.
 
-- [ ] Preserve the current binary only after checking SHA256 equals
+- [x] Preserve the current binary only after checking SHA256 equals
   `fe657e62bb275213fda52348c18ef3f411c724e00d34d8243d962d38f5263e79`.
   Save `git rev-parse HEAD`, compiler version, response files, `ldd`, CPU/OS
   details, and current clean-tree status. Copy the exact trace manifests into
   the new evidence directory and verify their hashes through the harness.
-- [ ] Check the archived cache-guard long reference's binary hash against the
+- [x] Check the archived cache-guard long reference's binary hash against the
   preserved binary. If it differs, establish a fresh 5M/50M reference using the
   preserved baseline rather than assuming source equivalence is sufficient.
-- [ ] Build an isolated v2 candidate through the current interface:
+- [x] Build an isolated v2 candidate through the current interface:
 
   ```bash
   env -u CXXFLAGS -u CPPFLAGS -u LDFLAGS -u CFLAGS \
@@ -73,22 +73,22 @@ regression/timing artifacts, and an explicit retain/reject verdict.
   Capture the exact command and all build output. Verify compile commands retain
   `-O3` and assertions and add no unrelated options. Check the archived baseline
   and production `bin/champsim` did not change.
-- [ ] Run the existing performance-tool tests before using their verdicts:
+- [x] Run the existing performance-tool tests before using their verdicts:
   `python3 -m unittest discover -s tools/perf -v`.
-- [ ] Run short parity with `compare_optimization.py --regression --warmup
+- [x] Run short parity with `compare_optimization.py --regression --warmup
   100000 --instructions 500000 --repetitions 1`, supplying the preserved before
   and after binaries, protected trace manifest, both existing configuration
   files, CPU 14, and a new output directory.
-- [ ] Run the 15-case long successor comparison and its independent artifact
+- [x] Run the 15-case long successor comparison and its independent artifact
   audit. Confirm every expected trace appears exactly once and that complete
   phase/configuration fingerprints and retirement/cycle counts match.
-- [ ] Build/run the existing normal and memory-value test suites with the trial
+- [x] Build/run the existing normal and memory-value test suites with the trial
   ISA flags and isolated roots; run Python tests. Test builds currently append
   `-Og`, so do not present their timings as optimized simulator evidence.
-- [ ] Once all other own computation has stopped, run the protected paired KIPS
+- [x] Once all other own computation has stopped, run the protected paired KIPS
   comparison with defaults 1M/3M, three repetitions, CPU 14. Independently parse
   all 24 runs and compare fingerprints; record medians, ranges, and each pair.
-- [ ] Review the artifacts and record the decision before the next production
+- [x] Review the artifacts and record the decision before the next production
   optimization. A small or absent ISA speed gain does not invalidate the user's
   chosen support floor; distinguish an accepted platform policy from a measured
   performance improvement. Do not retain a behavior-changing ISA result.
@@ -106,11 +106,11 @@ Record the exhaustive assertion classification in the task report.
 evaluate once, print expression/file/line, and abort. Disabled assertions perform
 no evaluation. The header adds no link or vcpkg dependency.
 
-- [ ] Classify every owned `assert` as an internal invariant or operational
+- [x] Classify every owned `assert` as an internal invariant or operational
   validation. Read callers before changing decoder/error handling. Report any
   side effects, constant-evaluation use, vendored headers, and runtime diagnostic
   checks. Keep this audit read-only until Task 1's experiment is resolved.
-- [ ] Add subprocess-based compile/run tests before the helper exists. A real
+- [x] Add subprocess-based compile/run tests before the helper exists. A real
   C++17 probe must cover a valid constexpr use, one evaluation in enabled mode,
   zero evaluations when disabled, failure diagnostics, and enabled behavior with
   `-DNDEBUG`. The production break caught is a flag or macro implementation that
@@ -133,17 +133,17 @@ no evaluation. The header adds no link or vcpkg dependency.
   condition probe to require abnormal termination and expression/file diagnostics;
   suppress core-dump artifacts in the test subprocess. This test-only counter is
   deliberate; production asserted expressions must not own required side effects.
-- [ ] Implement a dependency-free header, with a cold failure path, preserving
+- [x] Implement a dependency-free header, with a cold failure path, preserving
   valid C++17 constexpr evaluation. Keep `static_assert` unchanged. Do not rewrite
   third-party or vendored code mechanically.
-- [ ] Add a real corrupt/truncated-trace reproducer for each changed decoder
+- [x] Add a real corrupt/truncated-trace reproducer for each changed decoder
   error path, then implement always-active errors that reach the CLI as a useful
   nonzero failure. Preserve valid concatenated frames and normal EOF. Read the
   stream exception/caller behavior rather than assuming an exception escapes.
-- [ ] Migrate only the audited owned sites. Run the new probes, affected C++
+- [x] Migrate only the audited owned sites. Run the new probes, affected C++
   tests, standalone-tool builds, and normal/payload suites. Capture warnings and
   resolve assertion-only unused variables without adding runtime work.
-- [ ] Compare enabled-policy release to its predecessor using the complete short
+- [x] Compare enabled-policy release to its predecessor using the complete short
   and long gates and fresh timing; keep the compiler ISA/optimization unchanged.
   Review and log the migration before enabling fast mode.
 
