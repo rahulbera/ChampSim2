@@ -5,7 +5,9 @@ remains legacy; the same enabled executable can select either backend at runtime
 The completed task reviews approved the driver/build boundary, request adapter,
 native default guard, reporting/replay, and CLI input protection. Portable Task 5
 oracle and one-/two-core integration checks and the final branch review also
-passed. Hosted CI execution remains pending.
+passed. An independent review of `74159f1e` and a pre-merge close-out followed;
+their evidence is in [Review and close-out evidence](#review-and-close-out-evidence).
+Hosted CI execution remains pending.
 
 For the architecture, interpretation of this evidence, and proposed stress tests
 before mainline, read the [integration writeup](ramulator2-integration.md).
@@ -144,7 +146,8 @@ their run used (500 unless set), a native run with an explicit value below the
 
 Artifacts were retained under `/tmp/champsim-ramulator-validation`; they include
 full argv, logs, TOML documents, snapshot observers and comparisons. Generated
-results are not committed. Historical comparison baseline:
+results are not committed, and that directory is local temporary storage, not an
+archive. Historical comparison baseline:
 `79cb5fdb2abd7e754b529eb235c6a69f61e45ea8`.
 
 | Check | Recorded result | Scope |
@@ -251,6 +254,80 @@ See the [final review and correction](superpowers/reviews/2026-09-13-ramulator2.
 
 Hosted GitHub Actions execution remains pending. Local validation does not claim
 that the hosted compiler matrix has run.
+
+## Review and close-out evidence
+
+An independent first-wave review of `74159f1e` (2026-09-13) and a pre-merge
+close-out (2026-09-14 and 15, code changes ending at `4e1bf028`) ran on the same
+kind of setup: one shared 32-core Linux x86-64 host, Ubuntu GCC 13.3.0 at
+`/usr/bin/g++` with inherited compiler variables removed, CMake 3.28.3, and a
+private copy of the pinned native root for every native build. Simulations pinned
+`hashed_perceptron` and `basic_btb` on every core unless a row says otherwise.
+No run used hosted CI. Raw outputs are in temporary session directories (see the
+[integration writeup](ramulator2-integration.md#6-what-must-survive-for-posterity)),
+not here.
+
+| Check | Recorded result | Scope |
+| --- | --- | --- |
+| First-wave adapter differential oracle | An untracked version of test 706 over the real driver, with an independent model, over 12 YAML variants: 10 seeds x 10,000 parents, 10 x 100,000, 50 more seeds x 5,000, a 3,000-packet backlog with bursts of 200, counters after every operate, finalization without drain, and 1- and 2-core 10 x 10,000 campaigns. About 2,000 seed runs, over 20M parents and over 500M native send attempts, no discrepancy. Mutants: 13 of 14, then 17 of 18 detected; M12 is equivalent | `74159f1e`, detached 1- and 2-core worktrees; synthetic traffic |
+| First-wave native sanitizers | An instrumented `RelWithDebInfo` `libramulator.so` swapped into private roots with a patched manifest; host `-O1 -fsanitize=address,undefined`. With ITTAGE suppressed: 1-core suite 860 cases, 859 passed, one skip, 17,414 assertions; 2-core suite 862, 861 passed, one skip, 17,988 assertions (with two lifecycle stress cases); direct oracle 1,065 / 705 attempts; both integration runners with the recorded leaf counts; v2 710.omnetpp_r and 723.llvm_r at `-w 100000 -i 2000000` on DDR4 and LPDDR5, plus small-cache, tiny-buffer, two-controller and CommandCounter/CmdTraceRecorder runs, all leaf-equal to unsanitized builds. No integration or native report. Positive control: upstream `External` with a source-1 read gives a native heap-buffer-overflow | `74159f1e`; not a supported build path, so `meta.ramulator2.build` still said Release; the stress harness's callback-copy check was vacuous |
+| First-wave 4- and 8-core runs | 4-core `-O3` enabled build, v2 mix 753.ns3_r, 777.zstd_r, 729.abc_r and 710.omnetpp_r at `-w 500000 -i 3000000` in up to five core permutations: legacy, DDR4 with 1, 2 and 4 controllers, LPDDR5 and LPDDR5 with 4-entry buffers, plus prefetcher and 15M / 10M runs. All exit 0; the 28 native documents satisfy every accounting invariant; a rerun and a replay give byte-identical phase sections and 575 equal config leaves; `run_integration.py` passes at four cores (575 config leaves; LPDDR5 409,295 rejected submissions). 8-core `-w 200000 -i 1000000` legacy, DDR4, DDR4 two-controller, LPDDR5 and LPDDR5 4-entry runs all finish with every invariant. Latin-square per-trace IPC spread: DDR4 1.78%, LPDDR5 1.82%, legacy 2.95% | `74159f1e`; one mix; queue-wait probes uncommitted |
+| First-wave real traces | Main checkout's enabled 1-core binary. 708.sqlite_r.sp0, 735.gem5_r.sp1, 777.zstd_r.sp1, 723.llvm_r.sp2 (v2) and 462.libquantum (v1) on legacy, DDR4 and LPDDR5 at `-w 1000000 -i 10000000 --toml-sim-stats`: 15 of 15 exit 0; accounting invariants in every document; LLC issued reads equal accepted reads within one in flight (17 documents); three identical zstd LPDDR5 runs; replay from another directory (574 phase / 164 config leaves). 735.gem5_r.sp1 `-w 5000000 -i 100000000` DDR4: RSS 65,016 -> 65,356 KiB over 70 samples; 47,226 reads and 24,269 writes, all completed. 1-entry native buffers: 137,702-458,681 rejected submissions per run | `74159f1e`; one core |
+| First-wave legacy regression | Legacy-only `-O3` builds of `79cb5fdb` and `74159f1e` at 1 and 2 cores, plus enabled builds: 13 one-core and 7 two-core configurations (non-default `pmem` with two channels, memory as the fastest clock, `-w 0`, `configs/lnc.toml` with its own `cbp6_tagescl64` and `ittage_64kb` predictors, vmem variations, replay of baseline documents). 89 comparisons over 58,718 phase leaves, 18,245 config leaves and 13,794 stdout lines: no undocumented difference. 58 documents byte-identical apart from their `build_id`, `command_line`, `config_files` and `dram-model` lines. Controls: a `pmem` change gives 164 differences, a fault-penalty change 140 | `-w 1000000 -i 10000000` (1 core), `-w 500000 -i 5000000` (2 cores) |
+| Suites at the integrated close-out | Disabled: 891 cases, 873 passed, 18 skipped, 53,018 assertions; `make pytest` `Ran 100 tests ... OK (skipped=8)`. Enabled: 891 cases, 890 passed, one intentional skip, 67,974 assertions (67,975 with `CHAMPSIM_EXPECT_RAMULATOR2=1` and the `cpp` job's flags); `make pytest` `Ran 100 tests ... OK`. Unconfigured, unbuilt checkout: `Ran 100 tests ... OK (skipped=38)`. `test_tools.py`: 23 tests OK. Enabled per file: 704 15 cases / 200 assertions, 705 22 / 436, 706 two passed and four hidden skipped / 27, 707 4 / 49,766, 708 2 / 303. Direct oracle 1,065 / 705 attempts and 44 / 48 leaves; `run_integration.py` 164 config and 568 / 576 / 648 / 568 phase leaves | `63c44f38` |
+| Suites after the review's fixes | Disabled: 893 cases, 873 passed, 20 skipped, 53,038 assertions; `make pytest` `OK (skipped=8)`. Enabled: 893 cases, 892 passed, one skip, 68,000 assertions; `make pytest` `OK`. `test_tools.py` 23 OK in both trees. A short oracle campaign (ddr4, lpddr5 and their tiny variants, 3 seeds x 3,000 parents, differential and recovery) reproduced the `63c44f38` totals | Tree identical to `4e1bf028`; `make pytest` with `TMPDIR` set to a short path |
+| Adapter differential oracle (test 706) | 1 core, 12 runs x 10 seeds x 10,000 parents: 120 seeds, 1,305,584 parents, 30,979,923 attempts, 1,633,679 accepted fragments, 637,406 responses, 53,142 out-of-range prefetches. 2 cores with `--require-all-cores`: identical totals, 816,956 / 816,723 fragments by core. 4 cores, 6 runs: 60 seeds, 652,187 parents, 19,471,302 attempts. Recovery at `DIFF_CYCLES=40`: 9,600 / 2,400 / 1,200 cycles at 1 / 2 / 4 cores. Further 1-core campaigns: finalization without drain (120 seeds), counters after every operate (1,439,043 comparisons), seeds 11-60, and 10 x 100,000 parents (309,404,766 attempts). Ten campaigns: 1,530 seeds, 33,476,840 parents, 893,828,614 attempts, 4,554 invalid-request cases, zero discrepancies. `run_mutants.py` (2 cores): 31 mutants, 30 detected, M12 equivalent; a 1-core control confirms M19 is equivalent there | Binaries at `6c3e409d` on the oracle branch (production sources of `3cbb6e2b`); mutation run on a copy of `f2ca5f96` |
+| `RAMULATOR2_SANITIZE` build path | Instrumented build in 3 min 23 s at `-j6`, 0 warnings: 302 instrumented objects (193 host, 109 native), a 207,008,248-byte library, and `meta.ramulator2.build` `RelWithDebInfo C++20 Python=OFF Sanitizers=address,undefined`. Full suite: 879 cases, 878 passed, one skip, 18,082 assertions, no ASan or UBSan report, exit 1 on 1,014 bytes in 10 allocations from native `RITAddrMapper`. 777.zstd_r.sp1 `-w 100000 -i 500000` on DDR4 equals the release build in all 285 phase leaves. Flipping 0 -> 1 -> 0 rebuilt all 193 host objects each way and restored release library SHA-256 `00df468bdd4386fd6951584f3612a6fa07d8c5db9bf415000bca051383bda157`; leaving the variable unset afterwards rebuilt nothing. Release `make -n` output is byte-identical with the old and new Makefile. Controls: a driver leaking native state unless finalized fails 708 in release; an adapter use-after-free is reported only by instrumented 705 and 708 | Implementer branch at `14f7e43f` |
+| Heavy instrumented traffic | 1-, 2- and 4-core `RAMULATOR2_SANITIZE=1` builds with the CI job's `ASAN_OPTIONS`, `UBSAN_OPTIONS` and `LSAN_OPTIONS`: 24 simulations (15 / 5 / 4), 44,700,055 measured instructions, 2,023,106 accepted reads, 459,824 writes, 3,536,932 fragments, 53,664,906 rejected submissions, up to 42 live parents at exit. No sanitizer report; every phase and config leaf equals an unsanitized build (285 / 289 one-core DDR4 / LPDDR5, 329 and 413 with two and four controllers, 237 legacy, 746 / 750 two-core, 2,388 four-core). Suite: 891 cases, 890 passed, one skip, 67,975 assertions (1 core) and 68,267 assertions (2 cores), exit 1 only on 2,028 bytes in 20 allocations under `RITAddrMapper::create_base_mapper()`. Instrumented oracle: 10 x 10,000 (120 / 120 seeds) and 40-cycle recovery (30 / 30) at 1 and 2 cores. Forced no-progress aborts with 1 and 6 live parents, SIGTERM and SIGINT: no report and no leak check; `handle_abort=1` turns the abort into an ASan ABRT report | `63c44f38`; at 200 MB/s the multi-core ROI was 250,000 or 100,000 per core (2 cores) and 50,000 or 100,000 (4 cores); mixes split by trace version; 20-30 times release wall time |
+| `native_sanitize` steps, run locally | Each step run with the job's `bash -eo pipefail` shell and environment: tests 704-708 without `[rit-addr-mapper]`, 50,742 assertions in 45 cases, exit 0 in 141 s; the instrumented generated-trace simulation, exit 0 in 29 s; `[rit-addr-mapper]~[.]`, 16 assertions in 2 cases, then 2,028 bytes in 20 allocations, exit 1. Before the split, a deliberate 32-byte leak added to test 705 left that step's exit status unchanged | Tree identical to `4e1bf028`; not hosted; the `vm.mmap_rnd_bits` step was not exercised |
+| Clock reference and guard tests | Test 707: 4 cases, 49,766 assertions enabled (disabled 3 passed, one skip, 35,692); seven source mutations each fail it. `test_ramulator2_cli.py`: the default guard on 9 machines x 3 explicit values, and the `ddr4_nbl16384.yaml` pause, which aborts by default and finishes with 218,580 and 21,858,000 ticks with identical leaves. Bisection: 54,698 ticks aborts, 54,699 passes. Enabled suite 881 cases, 880 passed, one skip, 67,544 assertions; `make pytest` 93 OK (disabled `OK (skipped=8)`). Test 707 has 49,786 assertions after `cf9eb618` | Clocks branch at `de53e50d` (production sources of `3cbb6e2b`) |
+| Real-trace clock sweep | 708.sqlite_r.sp0 and 777.zstd_r.sp1, `-w 1000000 -i 5000000 --hide-heartbeat`, DDR4 and LPDDR5, nine core/cache/LLC period sets each: 36 runs, 36 self-replays and 2 repeats exit 0; accounting invariants; replay equal in 285 / 289 phase and 164 config leaves, type-exact. `-i 0` and `-i 1` each run exactly one global tick. 708.sqlite_r.sp0 with `ddr4_nbl16384.yaml`, `-w 1000000 -i 20000`: the default guard aborts after warmup; 218,580 ticks finishes (20,002 instructions, 110 reads). Native `clock_ratio` 3 and 4 leave all 285 phase leaves unchanged | `de53e50d`, one core; trace SHA-256 unchanged |
+| Native counter bounds | Test 704 at `fbe9032b`: 15 cases, 199 assertions; with only the limits seam and no checks, 4 of 14 cases fail. Enabled suite 883 cases, 882 passed, one skip, 17,879 assertions; disabled 883, 869 passed, 14 skipped, 17,320. Against `3cbb6e2b` on 708.sqlite_r.sp0 `-w 500000 -i 5000000` DDR4: 9 pairs equal in 285 phase and 164 config leaves; `perf stat` user-mode instructions +34,458,590 (+0.0088%); task-clock unchanged within noise. Test 704 has 17 cases and 206 assertions after `e49bf310` and the `[rit-addr-mapper]` split | Counter branch at `fbe9032b`, integrated as `20430228` and `f3dca235`; lowered limits only |
+| Sustained overload | Native 1- and 4-core and legacy 1-core `-O3` builds, `-w 1000000`, `sim.livelock_period=1000000000000`; native nBL 381 and 92, stock, and 1-, 2- and 4-entry buffers; legacy `pmem.data_rate=25.207349`, `pmem.bankgroups=4`, `sim.deadlock_cycle=400000`. 76 simulations: 75 documents (69 native pass 14 / 14 invariants, 6 legacy 2 / 2), one stopped for time at 43.0M ROI instructions. 25,317,170 accepted fragments and 1,687,148,249 rejected submissions. libquantum 100M: VmRSS 127.2 -> 127.7 MiB. Rejection flood 50M: 127.3 -> 129.8 MiB. 14 instrumented drains end empty. 7 probe / unmodified pairs equal in 285 phase and 164 config leaves | `3cbb6e2b`; up to eight concurrent runs at load 6-26; 64-byte transactions only |
+| Regression across the close-out | `3cbb6e2b` against `63c44f38`, 708.sqlite_r.sp0 and 777.zstd_r.sp1, `-w 200000 -i 2000000 --toml-sim-stats`: legacy on disabled and enabled binaries and native DDR4 and LPDDR5 from one absolute YAML copy, 16 runs. Legacy 472 phase / 178 config leaves, DDR4 568 / 164, LPDDR5 576 / 164: all equal; `meta` differs only in `command_line` | Two supplied traces, one core |
+| Bandwidth calibration | Harness `bwcal.cc` over `champsim::make_memory_backend`, 64 pending 64-byte reads. Native `nBL` 1 (rejected) to 2,048 plus payload, controller, rank, tCK and spacing variants; legacy `pmem.data_rate` 12.5-12,800 at `pmem.bankgroups=4`. Measured / predicted native throughput 0.950-1.000 from nBL 8 to 2,048; the calibrated mapping in the integration writeup. End to end on 605.mcf_s: default guards abort legacy at 400 and 100 MB/s and native at 100 MB/s; with `sim.livelock_period=1000000000000`, and legacy `sim.deadlock_cycle=400000`, both complete | `3cbb6e2b`, 1-core enabled build |
+| Bandwidth sweep | 605.mcf_s, 654.roms_s and 727.cppcheck_r.sp1 at 200, 800, 1,600, 6,400 and 12,800 MB/s and stock, with and without L2C `spp_dev`, on both backends, `-w 10000000 -i 10000000`: 86 runs. Native/legacy IPC without a prefetcher 0.986-0.993 at 200 MB/s, 1.033-1.144 at 800-1,600, 1.101-1.388 at 6,400, 1.050-1.442 at stock. Row hits: native roms 45-52%, cppcheck 76-88%, mcf 5-7%; legacy 0-9%. `spp_dev` aborted four native roms runs (heap-buffer-overflow at `spp_dev.cc:77`; rerun with a one-line patch). `out_of_range_prefetches` 0 in all six `next_line` runs | `3cbb6e2b`, one core |
+| Bandwidth stress | 605.mcf_s read-only window `-w 100000 -i 100000`: native read+write throughput 95% of 76,830 / nBL at nBL 256, 99% at 1,024 and 100% at 4,096, 16,384 and 65,536. Guards: native nBL 5,500 finishes at 39,660 of 40,000 ticks and 5,800 aborts (`-w 1000000 -i 100000`); read-only windows abort from nBL 12,000; legacy `pmem.data_rate` 100 finishes and 64 aborts; nBL 5,800 finishes with 166,600 ticks. DDR5_5600B: 112-125% of nominal throughput at nBL 1,024-16,384 without `nRTW = nBL + 8`. Two controllers with 32-byte transactions equal one with 64-byte ones in every core and cache leaf | `3cbb6e2b`, one core |
+| Per-core bandwidth emulation | 1- and 4-core builds, `-w 2000000 -i 5000000` per core, LLC 8,192 sets at four cores; native nBL 4 / 16 / 64 / 256 against legacy 2,400 / 600 / 150 / 37.5 MT/s: 99 runs. Same trace on four cores, single-core error at 4.8 / 1.2 / 0.3 GB/s per core: 605.mcf_s +33.5 / -1.5 / +1.2%, 462.libquantum -7.7 / -9.6 / -1.9%. Mix of mcf, libquantum, roms and cactuBSSN: native per-core errors 8.4-123.5%, mean absolute 25.4 / 25.6 / 41.7%. `ip_stride` geomean 0.938 shared against 1.062 emulated at 1.2 GB/s. Shared 2 MiB LLC: +11.9% | `3cbb6e2b`; one mix of v1 traces; one run per configuration |
+| Refresh study | JESD79-4, Micron and ISSI datasheets and the Ramulator source history: native nREFI 7.8 µs (DDR4) and 3.906 µs (LPDDR5) are correct. 605.mcf_s, 708.sqlite_r.sp0 and 710.omnetpp_r.sp0 at `-w 10000000 -i 50000000`, exported fixtures against nREFI x 1,000: IPC +0.07% to +5.45%, adapter read latency -3.6% to -10.1%, p99 read latency roughly halved. With `sim.deadlock_cycle=500` both abort at their first refresh. Legacy on 605.mcf_s: 15,991 refreshes in 47.97 ms, one per 3.0 µs | `74159f1e` 1-core `-O3` binary; one rank, AllBank |
+
+### Reproducing the close-out checks
+
+Use separate checkouts and native roots for release and instrumented builds, and
+remove inherited compiler variables first (`env -u CXX -u CC -u CXXFLAGS -u
+CPPFLAGS -u LDFLAGS -u CFLAGS CXX=/usr/bin/g++ make ...`). A multi-core check
+needs its own checkout with `num_cpus` changed in `inc/defs.h`. Build
+`bin/champsim` in its own `make` invocation before `test/bin/000-test-main`
+when timing it: when one invocation builds both, shared objects can take the test
+target's `-g3 -Og`, which made one simulator 2.3 times slower with identical
+results.
+
+```bash
+# Oracle campaigns (enabled test binary; each output directory must be new)
+python3 test/ramulator2/oracle_variants.py --output-dir "$OUT/variants"
+python3 test/ramulator2/run_differential.py --binary test/bin/000-test-main \
+  --manifest "$OUT/variants/manifest.json" --output-dir "$OUT/diff" \
+  --seeds 10 --parents 10000            # add --require-all-cores on 2+ cores
+python3 test/ramulator2/run_differential.py --binary test/bin/000-test-main \
+  --manifest "$OUT/variants/manifest.json" --output-dir "$OUT/recovery" \
+  --campaign recovery --runs ddr4-tiny,lpddr5-tiny,ddr4-tiny-2feeders --env DIFF_CYCLES=40
+python3 test/ramulator2/run_mutants.py --native-root "$PRIVATE_ROOT" --output-dir "$OUT/mutants"
+
+# Instrumented build and the native_sanitize test selection
+make -j6 WITH_RAMULATOR2=1 RAMULATOR2_ROOT="$SAN_ROOT" RAMULATOR2_SANITIZE=1 all
+make -j6 WITH_RAMULATOR2=1 RAMULATOR2_ROOT="$SAN_ROOT" RAMULATOR2_SANITIZE=1 test/bin/000-test-main
+export ASAN_OPTIONS=halt_on_error=1:detect_leaks=1
+export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1:suppressions=$PWD/test/ramulator2/sanitizers/ubsan.supp
+export LSAN_OPTIONS=suppressions=$PWD/test/ramulator2/sanitizers/lsan.supp
+CHAMPSIM_EXPECT_RAMULATOR2=1 test/bin/000-test-main -# --order rand \
+  "[#704-ramulator2-driver]~[.]~[rit-addr-mapper],[#705-ramulator2-backend]~[.]~[rit-addr-mapper],[#706-ramulator2-differential]~[.]~[rit-addr-mapper],[#707-ramulator2-clocks]~[.]~[rit-addr-mapper],[#708-ramulator2-lifecycle]~[.]~[rit-addr-mapper]"
+CHAMPSIM_EXPECT_RAMULATOR2=1 test/bin/000-test-main --order rand "[rit-addr-mapper]~[.]"   # exits 1 on the native leak
+
+# Clock, guard and counter tests (enabled build)
+test/bin/000-test-main -# "[#707-ramulator2-clocks]"
+test/bin/000-test-main -# "[#704-ramulator2-driver]"
+PYTHONPATH=$PWD python3 -m unittest discover -v --start-directory=test/python -p test_ramulator2_cli.py
+```
 
 ## Validation input incident and recovery
 
