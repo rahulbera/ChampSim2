@@ -586,3 +586,73 @@ its observed variation and is not evidence of a reliable v1 speedup.
 **Evidence.** `07-refill/` beneath the second-pass root contains the archived
 `champsim`, `source-commit.txt`, before/after trace tests, normal/payload/Python
 logs, release assembly, `review.txt`, `regression/`, `timing/`, and `audit.json`.
+
+## 8. Remove raw trace-record copies
+
+**Issue.** After refill isolation, each refill still copied bytes from a character
+buffer into aligned records and passed each record by value through conversion.
+The v2 record is 512 bytes; the release had three argument-copy sequences and a
+second large refill buffer.
+
+**Fix.** Read through the character representation of the existing aligned trivial
+record array, retaining the exact read size and complete-record boundary. Pass
+records by const reference into the instruction constructors. Construct owned
+nonzero memory operands in their original order, retaining raw payload-slot
+interpretation, ASIDs, classification, branch lookahead and EOF behavior.
+
+**Files touched.**
+
+1. `inc/tracereader.h` — direct record-buffer input and reference conversion;
+   remove the redundant character buffer and memcpy.
+2. `inc/instruction.h` — borrow raw constructor inputs and build owned operand
+   vectors without modifying them.
+3. `test/cpp/src/087-tracereader-v2.cc` — characterize sparse operands, input
+   ownership and incomplete trailing records for v1, v2 and CloudSuite.
+4. `docs/research-log/Performance/2026-09-14-performance-optimization.md` — record
+   regression evidence, timing repeat and limitations.
+
+**Implementation commit.** `1655c953bf96d2326dc3ec008da1ade7d022d66d`.
+Step 7's accompanying log commit is `df1474b1`.
+
+**Regression verdict.** **Retained: inert over the checked scope.** The expanded
+trace characterizations pass on both old and new headers: **2,912 assertions /
+9 cases**. The full normal suite passes **32,695 assertions / 875 cases**, with
+7 native skips; the payload suite passes **34,788 assertions / 880 cases**, with
+7 native skips. Python passes 66 tests with 4 native skips. All **32 short
+regression + 24 initial timing + 40 repeated timing runs** preserve complete
+exported phase statistics, effective configuration and actual instruction/cycle
+counts. Independent saved-output auditing verifies all 96 runs and the binary
+hashes. Read-only source review found no blocker. The formatted release rebuild
+is byte-identical to the measured snapshot.
+
+**KIPS before/after.** The first timing batch coincided with external build bursts
+and has large ranges; it is retained as parity evidence but excluded from the
+speed verdict. The fresh repeat uses **five alternating pairs**, CPU 14, detailed
+PTW, legacy DRAM and 1M/3M. Our builds, reference runs and diagnostic probes had
+finished. Other users' simulations still shared the host. Medians (min–max):
+
+| Trace | Before | After | Change |
+|---|---:|---:|---:|
+| sqlite | 302.34 (298.29–304.72) | 305.87 (300.60–309.20) | +1.17% |
+| omnetpp | 335.24 (329.73–338.23) | 339.95 (336.57–342.80) | +1.40% |
+| gcc | 406.62 (397.53–411.86) | 416.91 (397.39–421.99) | +2.53% |
+| mcf | 117.94 (117.09–119.46) | 119.62 (116.11–120.27) | +1.42% |
+
+All five SQLite and all five omnetpp pairs favor the candidate; four of five GCC
+pairs do (the remaining pair is −0.034%). This supports a modest v2 improvement,
+but the precise magnitude needs a quieter-host repeat. mcf has overlapping ranges
+and mixed pair directions; its median shift is not treated as a reliable v1 gain.
+
+The v2 refill stack frame falls from roughly 128 KiB to 64 KiB, and the observed
+memcpy/argument-copy sequences disappear. Separate perf counter replays preserve
+full reported parity and have 100% active counters: host instructions fall 0.196%
+on SQLite and 0.265% on GCC. These four replays overlapped regression preparation
+and are mechanism evidence only, not KIPS measurements. Their initial scratch
+checker rejected matching NaN sentinels; canonical full-field comparison, already
+used by the main runner, corrected that checker without excluding any statistics.
+
+**Evidence.** `08-raw-trace/` contains the archived binary/source patch/commit,
+normal/payload/Python and before/after characterization logs, assembly, review,
+`format-verification.json`, the original `timing/`, fresh `timing-repeat/`, paired
+deltas, `instruction-counters/`, and `audit.json`. Completed campaign paths were
+kept intact because saved commands contain their absolute working directories.
