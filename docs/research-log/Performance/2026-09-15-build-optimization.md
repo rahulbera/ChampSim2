@@ -352,7 +352,7 @@ its predecessor is `01-v2/champsim` and its candidate is
 `02-assertions/candidate-fix1-bin/champsim`. Initial and corrected review reports
 are preserved at the campaign evidence root.
 
-## 3. Isolate named build modes and record compiler provenance (in progress)
+## 3. Isolate named build modes and record compiler provenance
 
 **Issue.** The old Make rules share production/test objects, append `-Og` for
 unit tests, and do not give mode/ISA/compiler choices distinct artifact paths.
@@ -609,15 +609,133 @@ assertions or promise this gain for every simulator configuration.
 **Evidence.** `04-fast/` under the campaign evidence root. The frozen inputs
 remain under `03-build-modes/candidate-{release,fast}-v2-final/`.
 
-## Later-profile reconnaissance
+## 5. Evaluate an explicit x86-64-v3 fast profile
 
-The ETH headnode currently reports Xeon Gold 5118 and GCC 11.3.0. Its effective
-`-march=native` and `-mtune=native` query resolves to `skylake-avx512`. Kratos10's
-EPYC 7742 reports loader support through v3, so unrestricted headnode-native
-compilation permits instructions beyond this fleet member's capabilities.
-Historical successful native binaries do not establish that every newly compiled
-code path will remain compatible. v3 is still supported across the audited CPU
-partition. Save this distinction for the later profile acceptance decision;
-no native-ISA performance or failure claim is made from this inspection.
+**Issue.** v2 excludes newer vector and integer instructions available on the
+inspected ETH CPU partition. Compiler eligibility alone does not show that v3
+improves simulator throughput or preserves every reported result.
 
-The exact headnode query and output are preserved under `eth-headnode-native/`.
+**Fix.** Trial an explicit `X86_ISA=x86-64-v3` selection with generic tuning and
+fast's existing assertion policy. Keep v2 as the default. Use the accepted v2
+fast binary as the immediate predecessor and apply the full acceptance gate.
+The profile requires CPU and OS support for the cumulative v3 features, as
+specified by the [x86-64 ABI](https://gitlab.com/x86-psABIs/x86-64-ABI/-/blob/master/x86-64-ABI/low-level-sys-info.tex).
+
+**Files touched.**
+
+1. `config/build_config.py`: add explicit v3 selection and verify its required
+   compiler features while retaining default v2 and rejecting excess extensions.
+2. `test/python/test_build_modes.py`: add real compiler/Make v3 coverage and
+   preserve the supported test-host/compiler boundaries.
+3. `CLAUDE.md`: document opt-in v3 requirements and the unchanged default.
+4. This campaign log: record the profile trial, gates and acceptance verdict.
+5. `docs/superpowers/plans/2026-09-15-build-optimization.md`: track profile gates.
+
+**Commit hashes.** Starts from fast acceptance `084f7a1d`; the profile
+implementation is `6b7e1641`; test-only compiler portability correction is
+`1f093c02`. Independent review approved the implementation. The performance
+gate rejects it; `7cf06993` restores all three changed files exactly to the
+accepted predecessor. The trial and restoration remain visible in history.
+
+**Regression verdict.** The frozen v3 candidate passes all 16 short cases
+(32 runs), all 15 long 5M/50M comparisons and their independent saved-artifact
+audits. Normal C++ passes 913 cases (7 skips, 81,840 assertions), payload passes
+918 (7 skips, 83,933 assertions), and corrected Python execution runs 108 tests
+with five expected skips and no failures. A first Python invocation selected Catch2 for a
+production CLI test; the failed setup is preserved, and correcting the executable
+selection required no source change. The test-only follow-up skips the two
+positive v3 fixtures when the selected compiler lacks named v3 support; the
+unsupported-profile diagnostic and v2 fallback remain tested. Four focused
+checks pass, and a transparent compiler driver rejecting only named v3 produces
+the two expected skips. This is capability coverage, not an actual GCC 9/10 run.
+
+The candidate is `05-profiles/candidate-fast-v3/champsim`, SHA256
+`3be0bedddee5673b35ca4c69081df26ce91e70c254be63fa87e5769643b36f06`, built from
+`6b7e1641`. The exact predecessor remains
+`03-build-modes/candidate-fast-v2-final/champsim`, SHA256
+`467161d7aaef15cf2fb70eae0b0a4fbc1c446538eda318af1f7f33c7c7ee5275`, with long
+reference `04-fast/validation/long-regression`.
+
+**KIPS before/after.** Three alternating pairs at 1M/3M, CPU 14, detailed PTW,
+legacy DRAM, identical compiler/libraries and unchanged assertion policy:
+
+| Workload | v2 fast | v3 fast | Change | Before range | After range |
+| --- | ---: | ---: | ---: | --- | --- |
+| sqlite | 450.20 | 431.62 | -4.13% | 448.85–453.43 | 430.70–432.93 |
+| omnetpp | 514.48 | 487.07 | -5.33% | 509.90–516.82 | 486.63–489.83 |
+| gcc | 611.31 | 578.26 | -5.41% | 611.10–612.51 | 577.84–580.41 |
+| mcf | 159.39 | 151.11 | -5.19% | 159.26–159.62 | 149.90–151.30 |
+
+All twelve individual pairs favor v2 fast; v3 loses 4.04–5.95% across pairs.
+The independent saved-output audit passes all 24 runs, including hashes, full
+reported parity, ordering, retired counts and recomputed KIPS. Process CPU/wall
+ratios are 0.999895–0.999934; sampled one-minute load is 0.54–1.09. All own
+builds, tests, profilers and remote experiments stopped before timing.
+
+**Decision.** Reject the explicit v3 profile as a performance optimization.
+Its observed simulation behavior is inert, and the tested fleet can execute it,
+but the consistent 4.13–5.41% median regression fails the acceptance bar.
+The trial source and frozen evidence remain available; the profile is removed
+from the retained build policy. No retiming is justified by these consistent
+results. The microarchitectural cause of this compiler-codegen regression has
+not been isolated; it is not attributed specifically to AVX frequency effects.
+Default v2 release and optional v2 fast remain the accepted configurations.
+
+Restoration checks pass: the committed tree equals `084f7a1d`; the build helper
+returns to SHA256 `3e2831c65498c7e8b3b96cdddc308ca246c8c49aec0bf013113dc97ba83a088c`.
+All 27 build-policy tests finish without failures (one skip), and Python runs
+105 tests without failures (five skips). The accepted release and fast binary
+hashes, rejected v3 binary and read-only receipts remain unchanged. Because the
+accepted production source and frozen bytes are restored exactly, the completed
+accepted C++ and long-regression evidence still applies; no new simulated
+behavior is introduced by the restoration. Evidence: `05-profiles/rejection-restoration/`. The scoped restoration review
+approves spec compliance and quality with no open findings.
+
+**Evidence.** New artifacts belong under `05-profiles/`; any separate ETH builds
+and synthetic smokes are compatibility checks, excluded from KIPS. Actual
+Clang 14 v2-fast and v3-fast builds from the exact committed source both pass
+five codec smokes on kratos13. The same v3 binary passes fifteen further smokes
+on kratos0, kratos10 and safari-nexus1: four CPU families and twenty v3 runs in
+total. Independent audits retain full phase/configuration/metadata/count parity
+with the established predecessor fingerprint. The actual Clang policies differ
+only in selected ISA and verified build identity. All four Slurm jobs completed
+successfully before timing; exact source, transfer, build, accounting and audit
+receipts are under `05-profiles/eth/`.
+
+## 6. Reject unrestricted ETH headnode-native ISA
+
+**Issue.** The headnode's native compiler target permits instructions that one
+member of the intended CPU fleet cannot execute. Historical successful binaries
+do not guarantee compatibility of future compiled paths.
+
+**Fix.** Resolve and record the native target, then reject fleet-wide adoption at
+the compatibility gate. The actual ETH headnode reports Xeon Gold 5118 and GCC
+11.3.0; its native query resolves both architecture and tuning to
+`skylake-avx512`, enabling AVX512F/BW/CD/DQ/VL. Kratos10's EPYC 7742 loader reports
+v2/v3 support, without v4. The ABI places those AVX-512 features in v4, while
+[GCC's target documentation](https://gcc.gnu.org/onlinedocs/gcc-13.3.0/gcc/x86-Options.html)
+confirms that `-march` permits instructions for the selected machine.
+
+**Files touched.**
+
+1. This campaign log: record the resolved target, incompatible fleet member and
+   rejection before a simulator trial.
+2. `docs/superpowers/plans/2026-09-15-build-optimization.md`: record the completed
+   native compatibility decision at stage closeout.
+
+**Commit hashes.** No production native-profile implementation is adopted.
+The decision accompanies the rejected-v3 stage record; the accepted production
+policy is restored by `7cf06993`. No native-profile source change was needed.
+
+**Regression verdict.** Not applicable: no native-ISA candidate is admitted to
+the regression gate. This is a compatibility rejection, not a demonstrated
+simulator statistics failure or an observed illegal-instruction crash.
+
+**KIPS before/after.** Not measured. No native-ISA speed claim is made.
+
+**Evidence and decision.** The exact headnode command/output is preserved under
+`eth-headnode-native/`; the nineteen-node ISA/loader audit is under sibling
+`2026-09-15-build-portability/eth-isa-audit-compact-20260915T111617.630091Z/`.
+Retain v2 as default; the separate v3 trial was rejected on throughput. A future native build needs an
+explicitly restricted destination set and its own validation; it is not a
+portable fleet profile in this campaign.

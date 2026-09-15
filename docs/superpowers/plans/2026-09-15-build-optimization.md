@@ -272,18 +272,18 @@ only when adding an explicit accepted profile, with focused failing tests first.
 **Interfaces:** a profile is an explicit named set of compiler/ISA/tuning options,
 kept separate from the v2 default, with a declared destination fleet.
 
-- [ ] Record the ETH headnode's CPU model, GCC version, and effective native
+- [x] Record the ETH headnode's CPU model, GCC version, and effective native
   target options using `c++ -march=native -Q --help=target`. Compare requirements
   against the destination-node audit. A successful historical native build is
   supporting context, not an immutable feature specification.
-- [ ] Build v3 with unchanged mode, compiler, tuning, assertions, and libraries;
+- [x] Build v3 with unchanged mode, compiler, tuning, assertions, and libraries;
   run the full short/long/performance gate against the accepted v2 predecessor.
   If testing a new host, rebuild both variants on that cluster and compare there.
-- [ ] Resolve the native candidate to explicit options and record them. Test it
+- [x] Resolve the native candidate to explicit options and record them. Test it
   separately against the accepted profile with the same full gate. If required
   CPU/OS features are absent on a fleet node, reject fleet-wide use or retain a
   visibly restricted experiment without raising the portable default.
-- [ ] Document each acceptance or rejection independently. Add no LTO, PGO, or
+- [x] Document each acceptance or rejection independently. Add no LTO, PGO, or
   fast-math to these comparisons. Do not adopt a specialized profile merely
   because the compiler accepts it or the executable starts.
 
