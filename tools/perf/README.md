@@ -174,6 +174,33 @@ CPU 8), rejecting any difference in complete phase statistics or effective confi
 covers both PTW modes, changed seeds/clocks, prefetching and DRAM geometry; its
 short-run timings are not performance claims. Build and run these sequentially.
 
+The harness *refuses* any difference in the complete `[phase]` statistics, the
+effective `[config]`, or the warmup/ROI retirement and cycle counts, so a non-inert
+change fails here rather than reaching a reader. The short control matrix is 16
+cases for the four protected traces: both PTW modes on every trace, plus changed
+page seeds, mixed core/PTW/L2C clocks, `next_line` prefetching and a two-channel
+legacy DRAM geometry on the first and last trace.
+
+A change to **DRAM address mapping or ROB traversal** needs the long gate as well:
+5M warmup / 50M simulation on the lowest simpoint of each of the 14 SPEC26
+workloads plus the v1 mcf control, each input hashed in `spec26-traces.json`,
+compared against the immediate accepted predecessor and excluded from reported
+KIPS. `--timeout` (seconds per simulation, default 900) exists for that window;
+`benchmark_ptw.py`'s own watchdog is still 600.
+
+The trace manifest must be a non-empty JSON list with a matching `sha256` per
+entry, checked before the output directory is created or affinity is set.
+Everything here runs `configs/perf-hermes.toml` over
+`configs/champsim_config.toml`, legacy DRAM and `WITH_RAMULATOR2=0`. Never overlap
+a build, a test campaign or a profile with a timing run.
+
+The four `test_*.py` files beside these scripts are the harness's own tests, and
+neither `make pytest` nor CI discovers them. Run
+`python3 -m unittest discover -s tools/perf -v` after touching any script here:
+that start directory is also what puts `benchmark_ptw` on `sys.path`, since
+`compare_optimization.py` imports it by bare name. The parity checks `raise`
+rather than `assert`, so an outer `python3 -O` cannot delete them.
+
 `malloc_counts.c` is an optional Linux/glibc diagnostic interposer, compiled with
 `gcc -std=c11 -O2 -fPIC -shared tools/perf/malloc_counts.c -o /absolute/counter.so`.
 Set `LD_PRELOAD=/absolute/counter.so` and

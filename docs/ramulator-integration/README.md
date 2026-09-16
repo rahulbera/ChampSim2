@@ -1,5 +1,10 @@
 # Ramulator 2 integration documents
 
+- [Backend reference](ramulator2-reference.md): the operating manual — build, ABI
+  and provenance rules, admitted components and every rejection reason, the adapter
+  contract, enforced counter limits, the sanitizer mode, the schema 2 statistics
+  layout and the bandwidth procedure. Start here when changing anything native.
+  (Split out of `CLAUDE.md`, which keeps the entry conditions and the hazards.)
 - [Integration writeup](ramulator2-integration.md): design, evidence, weak points
   and the path to mainline.
 - [Validation record](ramulator2-validation.md): commands, counts and the
