@@ -182,6 +182,13 @@ The environment is constructed **after** `CLI11_PARSE` for this reason, and
 `--config`/`--set` use CLI11 `->trigger_on_parse()` so their callbacks fire in argv
 order. `configs/sample.toml` is a commented example; `configs/lnc.toml` models Intel
 Lion Cove, tagging each value `disclosed`/`derived`/`default` with numbered references.
+`lnc.toml` is **core and caches only, deliberately**: it sets no memory key, so it
+composes with either backend — pair it with `configs/dram-legacy.toml` for the
+LPDDR5X-8533 platform figure or with `configs/ramulator2.toml` for native. On its own
+it runs the default legacy DRAM (`data_rate` 3200, not 5600), which is the one value
+that differs. A config that sets any `pmem.*` key cannot be combined with
+`dram-model = "ramulator2"`: the check is a prefix match with no allowlist
+(`src/memory_backend.cc:23`), so no subset survives the switch.
 
 **Every parameter the deleted `champsim_config.json` carried is still settable** — 143
 of its 147 leaf keys are runtime knobs, and the other four are compile-time by design

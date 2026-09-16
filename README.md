@@ -79,7 +79,16 @@ $ bin/champsim --knobs > my.toml
 ```
 
 `configs/sample.toml` is a commented example; `configs/lnc.toml` models Intel's
-Lion Cove, tagging each value as disclosed, derived, or default.
+Lion Cove, tagging each value as disclosed, derived, or default. `lnc.toml` covers
+the core and caches only and sets no memory key, so it pairs with whichever DRAM
+model you want:
+
+```
+$ bin/champsim --config configs/lnc.toml --config configs/dram-legacy.toml -- trace.xz
+$ bin/champsim --config configs/lnc.toml --config configs/ramulator2.toml    -- trace.xz
+```
+
+Used alone it runs the default legacy DRAM rather than the LPDDR5X-8533 data rate.
 
 Warmup (`-w`) and simulation (`-i`) counts are **instructions retired**, and the
 reported statistics cover the simulation phase only. Traces may be plain or

@@ -27,6 +27,21 @@ device configuration from an exported YAML file selected by TOML.
 JSON build bit-for-bit. All three target the standard single-core component
 names (`ooo_cpu.cpu0`, `cache.cpu0_l1d`, ...).
 
+`lnc.toml` is the one split along the memory boundary: it configures the core and
+caches and sets **no** memory key, so it composes with either backend.
+
+```
+bin/champsim --config configs/lnc.toml --config configs/dram-legacy.toml -- trace.xz
+bin/champsim --config configs/lnc.toml --config configs/ramulator2.toml    -- trace.xz
+```
+
+`dram-legacy.toml` is a generic legacy memory model at 5600 MT/s, not an LNC-only
+file: it spells out every `pmem.*` key, so it pairs with any core config and says
+exactly what it models. `data_rate` is the only value that is not the ChampSim
+default, so `lnc.toml` used alone differs from the pair in that one key (3200
+instead of 5600). `sample.toml` and `champsim_config.toml` still carry their own
+`pmem.*` keys and so remain legacy-only.
+
 Use `champsim_config.toml` for anything that must compare against a
 pre-migration number. It pins `ooo_cpu.cpu0.branch_predictor = "bimodal"` on
 purpose: the baked default changed with the migration, so a run that drops that
@@ -103,8 +118,11 @@ requests within that transaction. Homogeneous multi-channel configurations are
 supported. Mixed capacities, periods, or transaction sizes are rejected.
 
 `dram-model` defaults to `legacy`. Do not combine native selection with `pmem.*`
-keys from `sample.toml`/`lnc.toml` or a full legacy `--knobs` dump: inactive keys
-are errors. Remove `sim.deadlock_cycle` from such a file too, or start from native
+keys from `sample.toml`, `champsim_config.toml`, `dram-legacy.toml` or a full
+legacy `--knobs` dump: inactive keys are errors, and the check is a prefix match on
+`pmem.` with no allowlist (`src/memory_backend.cc:23`), so no subset of them is
+portable -- model the device in the YAML that `ramulator2.config` selects instead.
+(`lnc.toml` itself is safe to combine; its DRAM block lives in the separate file.) Remove `sim.deadlock_cycle` from such a file too, or start from native
 `--knobs`. A legacy dump or statistics document records the value its run used
 (500 unless set; `sample.toml` sets 1,000), and an explicit value replaces the
 native 10 µs no-progress default (40,000
