@@ -166,7 +166,59 @@ extra 32-byte-transaction controllers are the wrong knobs; a DDR5 `nBL` override
 needs `nRTW` too; and a single core at B/N matches N cores sharing B only on a
 saturated channel with identical workloads.
 
-## 8. Statistics schema
+## 8. Channel count
+
+**One controller is one channel.** `org.count[0]` is the channel level and the driver
+requires it to be 1 (`src/ramulator2_driver.cc:211`), so channels are never added by
+editing the org — you repeat the whole `- impl: GenericDDR` block. The count must be a
+power of two (`:374`), every controller must have identical capacity, tCK and
+transaction size (`:396`), and total capacity is per-channel capacity times the count
+(`:403`). Statistics then appear per channel as `…native.channel0`, `channel1`, ….
+
+`configs/ramulator2/channels.py` (driven by `make_channel_sweep.sh`) exports
+DDR4-3200 points at 1, 2 and 4 channels:
+
+```
+channels.py [--channels N ...] [--timing-preset {DDR4_3200W,DDR4_3200AA,DDR4_3200AC}]
+            [--org-preset NAME] [--iso-capacity] [--interleave-bits N]
+            --out-dir DIR [--quantum-ps PS] [--force]
+```
+
+It defaults to `--channels 1 2 4` and `DDR4_3200AA` (22-22-22), the middle of the
+three rate-3200 bins Ramulator ships (W is 20-20-20, AC 24-24-24; they differ only in
+nCL/nRCD/nRP and the dependent nRC). Output is `ddr4_3200aa_<N>ch.yaml` plus a
+manifest.csv carrying the channel count, both capacities, per-channel and aggregate
+nominal bandwidth, the deadlock guard and the ChampSim `--set` arguments.
+
+Three things are worth knowing before running a sweep.
+
+- **Select the 3200 preset by name; never fake it by overriding `rate` or `tCK_ps`
+  on a 2400 preset.** `resolve()` derives the secondary timings *before* it applies
+  overrides, so a faked 3200 keeps 2400's refresh and ACT windows — nRFC/nREFI
+  421/9363 where 3200 needs 560/12480, and with `rate` overridden too, nRRDL/nFAW
+  6/26 where it needs 8/34. The generator selects the preset, and still runs
+  `bandwidth.py`'s stale-derived-timing check, which refuses to write a YAML whose
+  exported timings disagree with their recomputation.
+- **Capacity is a choice, and neither option is a pure control.** By default the
+  per-channel device is fixed, so 1/2/4 channels of `DDR4_8Gb_x8` is 8/16/32 GiB —
+  physically what adding DIMMs does, but the physical address space, the vmem frame
+  pool and `out_of_range_prefetches` all move with the channel count. `--iso-capacity`
+  holds the total at the one-channel figure by dropping to a lower-density part per
+  channel (8Gb → 4Gb → 2Gb), which fixes the address space but changes tRFC with the
+  density. Export both and say which one a result came from.
+- **The nominal figure is the data bus, not an achievable rate.** At nBL 4 and
+  tCK 625 ps one 64-bit channel is 25,600 MB/s (102,400 / nBL, against DDR4-2400R's
+  76,831 / nBL), so 1/2/4 channels is 25.6/51.2/102.4 GB/s nominal. The ACT window —
+  nFAW 34 at 625 ps, four activates per 21.25 ns — caps random 64-byte reads near
+  12 GB/s per channel, essentially where 2400R already sat, because nFAW is nearly
+  constant in nanoseconds across the two rates. Moving 2400R → 3200 buys a third of
+  the bus and only a few percent of random-read throughput; **channel count is the
+  knob that actually scales it.**
+
+A new YAML is a new `ramulator2.config` hash, so these points are not comparable with
+the recorded DDR4-2400R sweep in [the bandwidth report](ramulator2-bandwidth-sweeps.md).
+
+## 9. Statistics schema
 
 Native TOML uses schema 2 and `phase.<name>.<roi|sim>.ramulator2.adapter`/`.native`,
 plus owned raw `native_yaml`. Counters are separate 64-bit fields, including

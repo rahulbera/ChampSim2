@@ -136,21 +136,32 @@ def resolve_with_derived_timings(ramulator, standard, overrides):
     return overrides, derived, org, exported
 
 
-def export_yaml(ramulator, standard, overrides):
+def export_yaml(ramulator, standard, overrides, channels=1, interleave_bits=0):
+    """One controller per channel: the driver requires org.count[0] == 1 and reads the
+    channel count off the controller list (src/ramulator2_memory_backend.cc's driver,
+    ramulator2_driver.cc:211 and :374). The defaults reproduce the shipped
+    single-channel export byte for byte -- CacheLineInterleave emits interleave_bits
+    whether or not it is passed, because its Param default is 0 -- so configs/ramulator2/ddr4.yaml
+    and the four fixtures pinned against it are unaffected. configs/ramulator2/channels.py
+    is what varies `channels`."""
     from ramulator.export import dict_to_yaml
 
+    def controller():
+        return ramulator.controller.GenericDDR(
+            dram=dram_component(ramulator, standard, overrides),
+            scheduler=ramulator.scheduler.FRFCFS(),
+            refresh_manager=ramulator.refresh_manager.AllBank(),
+            row_policy=ramulator.row_policy.Open(),
+            addr_mapper=ramulator.addr_mapper.RoBaRaCoCh(),
+        )
+
     frontend = ramulator.frontend.External(clock_ratio=1)
-    controller = ramulator.controller.GenericDDR(
-        dram=dram_component(ramulator, standard, overrides),
-        scheduler=ramulator.scheduler.FRFCFS(),
-        refresh_manager=ramulator.refresh_manager.AllBank(),
-        row_policy=ramulator.row_policy.Open(),
-        addr_mapper=ramulator.addr_mapper.RoBaRaCoCh(),
-    )
     memory = ramulator.memory_system.GenericDRAM(
         clock_ratio=1,
-        controllers=[controller],
-        channel_mapper=ramulator.channel_mapper.CacheLineInterleave(),
+        # A distinct object per channel: Ramulator's own multi-channel example does
+        # this, and to_config() is pure, so sharing one would be equivalent.
+        controllers=[controller() for _ in range(channels)],
+        channel_mapper=ramulator.channel_mapper.CacheLineInterleave(interleave_bits=interleave_bits),
     )
     return dict_to_yaml({"frontend": frontend.to_config(), "memory_system": memory.to_config()})
 

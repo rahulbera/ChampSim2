@@ -276,6 +276,11 @@ Five things cost a day each if you do not know them:
 - **`nBL` on DDR4_2400R is the bandwidth knob** (about 76,831 x A / nBL MB/s, A
   0.95-1.00), exported by `configs/ramulator2/bandwidth.py`. Low-bandwidth runs
   need `sim.livelock_period` raised and, below about 13 MB/s, `sim.deadlock_cycle`.
+- **Channels are controllers, not an org field.** `org.count[0]` must be 1; the
+  channel count is the length of the `controllers` list and must be a power of two
+  with identical entries. `configs/ramulator2/channels.py` exports DDR4-3200 at 1/2/4
+  channels, and decide capacity deliberately — the default scales it with the channel
+  count, `--iso-capacity` holds it by lowering the per-channel density.
 - **`RAMULATOR2_SANITIZE=1` needs its own native root.** Tests 704-708 are the
   native suite, and what the `native_sanitize` CI job runs.
 
