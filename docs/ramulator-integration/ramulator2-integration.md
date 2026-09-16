@@ -909,10 +909,14 @@ point; state that it models no contention among cores sharing a channel; and bac
 claims about shared channels, heterogeneous mixes or prefetching with N-core
 runs. For prefetcher studies also report native `rejected_submissions` and
 `queue_len_avg`: at 200-1,600 MB/s, 654.roms_s with `spp_dev` kept the 32-entry
-native read buffer full (average queue length 32.8-33.4). `spp_dev` itself reads
-past a vector (`prefetcher/spp_dev/spp_dev.cc:77`), which aborted four native
-runs and made results depend on command-line length; the later campaigns used
-`next_line`, `ip_stride` or `va_ampm_lite` instead.
+native read buffer full (average queue length 32.8-33.4). `spp_dev` itself had two
+defects at the time, both fixed afterwards and pinned by
+`test/cpp/src/454-spp-dev-behavior.cc`: its lookahead appended past
+`confidence_q`/`delta_q` (then `prefetcher/spp_dev/spp_dev.cc:77`), making results
+depend on the heap layout and so on the command line, and its GHR victim search
+found no victim once all eight entries held confidence 100, which aborted four
+native runs. The campaigns that followed used `next_line`, `ip_stride` or
+`va_ampm_lite` instead, so no recorded result carries the fix.
 
 ## 4. Weak points and the stress tests they need
 

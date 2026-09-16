@@ -201,9 +201,14 @@ module aborted (see below).
   - The row hits were measured, but their contribution was not separated from
     the backends' different core timings or from legacy serving one request per
     bank. Compare within one backend.
-- **`spp_dev` has its own bug.** It reads past `confidence_q`
-  (`prefetcher/spp_dev/spp_dev.cc:77`), which aborted four native roms runs and
-  made results depend on command-line length.
+- **`spp_dev` had two of its own bugs, both fixed after this sweep ran.** Its
+  lookahead appended past `confidence_q`/`delta_q` (then
+  `prefetcher/spp_dev/spp_dev.cc:77`), so results depended on the heap layout and
+  therefore on the command line, and its GHR victim search could not replace an
+  entry once all eight held confidence 100, which is what aborted the four native
+  roms runs. `test/cpp/src/454-spp-dev-behavior.cc` now pins both. Every number in
+  this section was measured with the unpatched module and is not comparable with a
+  run of the fixed one.
 
 ### Cost
 
@@ -285,8 +290,11 @@ with the LLC scaled per core:
 9. **Keep refresh at the preset.** Refresh sets A and the latency tail:
    refreshing a thousand times less often raised IPC by up to 5.45% and roughly
    halved p99 read latency.
-10. **Do not use unpatched `spp_dev`** as a baseline. The later campaigns used
-    `next_line`, `ip_stride` and `va_ampm_lite` instead.
+10. **Do not compare against the `spp_dev` numbers recorded here.** They come
+    from a module with two defects, fixed after this sweep ran; the campaigns
+    that followed used `next_line`, `ip_stride` and `va_ampm_lite` instead. The
+    fixed module is a usable baseline again, but re-measure rather than reusing
+    these points.
 
 ## Generator reference
 
