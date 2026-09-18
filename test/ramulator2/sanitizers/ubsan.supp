@@ -1,0 +1,10 @@
+# UndefinedBehaviorSanitizer suppressions for RAMULATOR2_SANITIZE=1 builds.
+#
+# Only known, pre-existing issues in vendored code belong here. Never add
+# ChampSim integration code or native Ramulator 2 sources.
+#
+# Vendored ITTAGE's MYRANDOM() left-shifts a negative int
+# (inc/ittage/ittage.hpp:246 and :248). GCC produces the two's-complement
+# result; recorded ittage_64kb results depend on it, so the vendored code is
+# left unchanged (see CLAUDE.md).
+shift-base:*/inc/ittage/ittage.hpp

@@ -1,0 +1,7 @@
+# Optional native backend; run from the repository root with an enabled build.
+# Do not combine with pmem.* settings. Paths resolve from the process working directory.
+dram-model = "ramulator2"
+
+[ramulator2]
+config = "configs/ramulator2/ddr4.yaml"
+# For 32-byte native transactions, use configs/ramulator2/lpddr5.yaml.

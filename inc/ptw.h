@@ -73,6 +73,9 @@ class PageTableWalker : public champsim::operable
 
   std::vector<channel_type*> upper_levels;
   channel_type* lower_level;
+  const std::optional<champsim::chrono::picoseconds> fixed_latency;
+
+  long operate_fixed();
 
   std::optional<mshr_type> handle_read(const request_type& pkt, channel_type* ul);
   std::optional<mshr_type> handle_fill(const mshr_type& fill_mshr);
@@ -92,6 +95,8 @@ public:
   const champsim::address CR3_addr;
 
   explicit PageTableWalker(champsim::ptw_builder builder);
+
+  [[nodiscard]] std::optional<champsim::chrono::picoseconds> fixed_translation_latency() const { return fixed_latency; }
 
   long operate() final;
 

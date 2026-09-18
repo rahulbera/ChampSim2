@@ -22,7 +22,7 @@
 #include <vector>
 
 #include "cache.h"
-#include "dram_controller.h"
+#include "memory_backend.h"
 #include "ooo_cpu.h"
 #include "operable.h"
 #include "ptw.h"
@@ -33,7 +33,7 @@ struct environment {
   virtual std::vector<std::reference_wrapper<O3_CPU>> cpu_view() = 0;
   virtual std::vector<std::reference_wrapper<CACHE>> cache_view() = 0;
   virtual std::vector<std::reference_wrapper<PageTableWalker>> ptw_view() = 0;
-  virtual MEMORY_CONTROLLER& dram_view() = 0;
+  virtual memory_backend& memory_view() = 0;
   virtual std::vector<std::reference_wrapper<operable>> operable_view() = 0;
 };
 

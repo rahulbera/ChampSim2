@@ -6,6 +6,27 @@
 
 using namespace champsim::data::data_literals;
 
+TEST_CASE("Runtime extent sizes use their current bounds")
+{
+  auto [upper, lower, expected] = GENERATE(as<std::tuple<champsim::data::bits, champsim::data::bits, std::size_t>>{}, std::tuple{0_b, 0_b, std::size_t{0}},
+                                           std::tuple{1_b, 0_b, std::size_t{1}}, std::tuple{32_b, 0_b, std::size_t{32}}, std::tuple{64_b, 0_b, std::size_t{64}},
+                                           std::tuple{23_b, 23_b, std::size_t{0}});
+
+  REQUIRE(champsim::size(champsim::dynamic_extent{upper, lower}) == expected);
+}
+
+TEMPLATE_TEST_CASE("Derived runtime extent sizes use their current bounds", "", champsim::page_number_extent, champsim::page_offset_extent,
+                   champsim::block_number_extent, champsim::block_offset_extent)
+{
+  TestType extent{};
+  extent.upper = 23_b;
+  extent.lower = 7_b;
+  REQUIRE(champsim::size(extent) == 16);
+
+  extent.upper = 7_b;
+  REQUIRE(champsim::size(extent) == 0);
+}
+
 TEMPLATE_TEST_CASE_SIG("The union of adjacent static extents is bounded by the maximum and minimum", "", ((champsim::data::bits V), V), 4_b, 8_b, 12_b, 16_b,
                        20_b, 24_b, 28_b)
 {

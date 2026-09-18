@@ -6,6 +6,8 @@
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
+#include "dram_controller.h"
+#include "ramulator2_driver.h"
 #include "runtime_config.h"
 #include "static_environment.h"
 
@@ -24,6 +26,108 @@ TEST_CASE("The environment builds the standard hierarchy")
   REQUIRE(std::size(env.ptw_view()) == champsim::defs::num_cpus);
   // LLC plus six per core: L1I, L1D, L2C, ITLB, DTLB, STLB.
   REQUIRE(std::size(env.cache_view()) == 1 + (champsim::defs::num_cpus * 6));
+}
+
+TEST_CASE("Omitted and explicit legacy selectors describe the same effective machine")
+{
+  champsim::runtime_config omitted, explicit_legacy;
+  explicit_legacy.set("dram-model=legacy");
+  champsim::static_environment omitted_env{omitted}, explicit_env{explicit_legacy};
+  REQUIRE(omitted.consulted() == explicit_legacy.consulted());
+  REQUIRE(omitted.unconsulted_keys().empty());
+  REQUIRE(explicit_legacy.unconsulted_keys().empty());
+  REQUIRE(omitted_env.memory_view().size() == champsim::data::bytes{17179869184});
+  REQUIRE(explicit_env.memory_view().size() == omitted_env.memory_view().size());
+  REQUIRE(omitted_env.memory_view().name() == "legacy");
+}
+
+TEST_CASE("The legacy controller itself remains the environment's single memory operable")
+{
+  champsim::runtime_config cfg;
+  champsim::static_environment env{cfg};
+  const auto operables = env.operable_view();
+  auto& memory = env.memory_view().clocked_component();
+  REQUIRE(&operables.back().get() == &memory);
+  REQUIRE(dynamic_cast<MEMORY_CONTROLLER*>(&memory) != nullptr);
+  REQUIRE(memory.clock_period == champsim::chrono::picoseconds{625});
+}
+
+TEST_CASE("The time quantum uses the selected memory clock without consulting legacy frequency")
+{
+  champsim::runtime_config cfg;
+  cfg.set("pmem.frequency=100000");
+  REQUIRE(champsim::static_environment::time_quantum(cfg, champsim::chrono::picoseconds{173}) == champsim::chrono::picoseconds{173});
+  REQUIRE(champsim::static_environment::time_quantum(cfg, champsim::chrono::picoseconds{1000}) == champsim::chrono::picoseconds{250});
+  REQUIRE(cfg.unconsulted_keys().size() == 1);
+}
+
+TEST_CASE("The native environment serves its shared LLC feeder with no legacy configuration", "[native-required]")
+{
+  if (!champsim::ramulator2_available()) {
+    SKIP("native build disabled");
+  }
+  struct native_configuration {
+    const char* name;
+    int64_t period_ps, capacity_bytes;
+  };
+  for (const auto fixture : {native_configuration{"ddr4", 833, 8589934592LL}, native_configuration{"lpddr5", 1453, 1073741824}}) {
+    CAPTURE(fixture.name);
+    champsim::runtime_config cfg;
+    cfg.set("dram-model=ramulator2");
+    cfg.set(std::string{"ramulator2.config=configs/ramulator2/"} + fixture.name + ".yaml");
+    champsim::static_environment env{cfg};
+    auto& backend = env.memory_view();
+    auto& memory = backend.clocked_component();
+    const auto operables = env.operable_view();
+    REQUIRE(backend.name() == "ramulator2");
+    REQUIRE(&operables.back().get() == &memory);
+    REQUIRE(operables.size() == env.cpu_view().size() + env.cache_view().size() + env.ptw_view().size() + 1);
+    REQUIRE(env.channels_built() == champsim::static_environment::channel_count(champsim::defs::num_cpus));
+    REQUIRE(backend.config_record().has_value());
+    REQUIRE(backend.size().count() == fixture.capacity_bytes);
+    REQUIRE(memory.clock_period.count() == fixture.period_ps);
+    REQUIRE(cfg.unconsulted_keys().empty());
+    for (const auto& [key, value] : cfg.consulted()) {
+      REQUIRE(key.compare(0, 5, "pmem.") != 0);
+    }
+    const auto fastest = std::min_element(operables.begin(), operables.end(), [](const champsim::operable& left, const champsim::operable& right) {
+      return left.clock_period < right.clock_period;
+    });
+    REQUIRE(champsim::static_environment::time_quantum(cfg, memory.clock_period) == fastest->get().clock_period);
+    auto caches = env.cache_view();
+    auto llc = std::find_if(caches.begin(), caches.end(), [](const CACHE& cache) { return cache.NAME == "LLC"; });
+    REQUIRE(llc != caches.end());
+    auto* feeder = llc->get().lower_level;
+    memory.warmup = false;
+    memory.begin_phase();
+    for (std::size_t cpu = 0; cpu < champsim::defs::num_cpus; ++cpu) {
+      champsim::channel::request_type request;
+      request.address = champsim::address{0x100000 + cpu * 4096};
+      request.v_address = champsim::address{0x200000 + cpu * 4096};
+      request.pf_metadata = static_cast<uint32_t>(cpu + 1);
+      request.cpu = static_cast<uint32_t>(cpu);
+      REQUIRE(feeder->add_rq(request));
+    }
+    for (int cycle = 0; cycle < 10000 && feeder->returned.size() < champsim::defs::num_cpus; ++cycle) {
+      memory._operate();
+    }
+    REQUIRE(feeder->RQ.empty());
+    REQUIRE(feeder->returned.size() == champsim::defs::num_cpus);
+    for (const auto& response : feeder->returned) {
+      const auto cpu = response.pf_metadata - 1;
+      REQUIRE(response.address == champsim::address{0x100000 + cpu * 4096});
+      REQUIRE(response.v_address == champsim::address{0x200000 + cpu * 4096});
+    }
+    memory.end_phase(0);
+    const auto stats = backend.statistics();
+    REQUIRE(stats.sim_dram.empty());
+    REQUIRE(stats.roi_dram.empty());
+    REQUIRE(stats.sim_ramulator2.has_value());
+    REQUIRE(stats.roi_ramulator2.has_value());
+    REQUIRE(stats.sim_ramulator2->completed_reads == champsim::defs::num_cpus);
+    REQUIRE(stats.roi_ramulator2->completed_reads == champsim::defs::num_cpus);
+    backend.finalize();
+  }
 }
 
 TEST_CASE("Cache order is the per-cycle operate order, LLC first then per-core alphabetical")
@@ -202,6 +306,39 @@ TEST_CASE("A geometry knob of zero is refused, not crashed on")
     {
       champsim::runtime_config cfg{};
       cfg.set(std::string{key} + "=0");
+      REQUIRE_THROWS_WITH(champsim::static_environment{cfg}, Catch::Matchers::ContainsSubstring(key));
+    }
+  }
+}
+
+TEST_CASE("Invalid nonzero operational geometry is refused with the responsible key")
+{
+  const auto invalid_values = {
+      "pmem.channels=3",
+      "pmem.ranks=3",
+      "pmem.bankgroups=3",
+      "pmem.banks=3",
+      "pmem.bank_rows=3",
+      "pmem.bank_columns=96",
+      "pmem.channel_width=3",
+      "pmem.channel_width=128",
+      "vmem.pte_page_size=512",
+      "vmem.pte_page_size=3072",
+      "vmem.pte_page_size=8192",
+      "cache.llc.max_fill=-1",
+      "ooo_cpu.cpu0.fetch_width=-1",
+      "ptw.cpu0_ptw.max_read=-1",
+      "ooo_cpu.cpu0.register_file_size=0",
+      "ooo_cpu.cpu0.register_file_size=32768",
+  };
+
+  for (const auto* assignment : invalid_values) {
+    DYNAMIC_SECTION(assignment)
+    {
+      champsim::runtime_config cfg{};
+      cfg.set(assignment);
+      const std::string key{assignment,
+                            static_cast<std::size_t>(std::find(assignment, assignment + std::char_traits<char>::length(assignment), '=') - assignment)};
       REQUIRE_THROWS_WITH(champsim::static_environment{cfg}, Catch::Matchers::ContainsSubstring(key));
     }
   }

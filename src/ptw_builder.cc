@@ -79,6 +79,12 @@ auto champsim::ptw_builder::latency(unsigned latency_) -> ptw_builder&
   return *this;
 }
 
+auto champsim::ptw_builder::fixed_latency(std::optional<chrono::picoseconds> latency_) -> ptw_builder&
+{
+  m_fixed_latency = latency_;
+  return *this;
+}
+
 auto champsim::ptw_builder::upper_levels(std::vector<champsim::channel*>&& uls_) -> ptw_builder&
 {
   m_uls = std::move(uls_);

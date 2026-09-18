@@ -37,7 +37,7 @@ private:
   std::map<std::pair<uint32_t, champsim::page_number>, champsim::page_number> vpage_to_ppage_map;
   std::map<std::tuple<uint32_t, uint32_t, champsim::address_slice<champsim::dynamic_extent>>, champsim::address> page_table;
   std::optional<uint64_t> randomization_seed;
-  MEMORY_CONTROLLER& dram;
+  const champsim::data::bytes physical_capacity;
 
 public:
   const champsim::chrono::clock::duration minor_fault_penalty;
@@ -66,10 +66,14 @@ public:
    * :param page_table_page_size: The size of one page table page. This value must be less than the size of a physical page.
    * :param page_table_levels: The number of levels in the virtual memory table hierarchy.
    * :param minor_penalty: The latency of a minor page fault.
-   * :param dram: The physical memory of the system.
-   *   This is currently only used to issue a warning if the physical memory is smaller than the virtual memory.
-   *   Future versions may perform major page faults through this reference.
+   * :param physical_capacity: The physical memory size, used to populate the free-page list.
    */
+  VirtualMemory(champsim::data::bytes page_table_page_size, std::size_t page_table_levels, champsim::chrono::clock::duration minor_penalty,
+                champsim::data::bytes physical_capacity_);
+  VirtualMemory(champsim::data::bytes page_table_page_size, std::size_t page_table_levels, champsim::chrono::clock::duration minor_penalty,
+                champsim::data::bytes physical_capacity_, std::optional<uint64_t> randomization_seed_);
+
+  // Compatibility overloads for callers that own a legacy memory controller.
   VirtualMemory(champsim::data::bytes page_table_page_size, std::size_t page_table_levels, champsim::chrono::clock::duration minor_penalty,
                 MEMORY_CONTROLLER& dram_);
   VirtualMemory(champsim::data::bytes page_table_page_size, std::size_t page_table_levels, champsim::chrono::clock::duration minor_penalty,

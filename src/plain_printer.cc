@@ -154,7 +154,7 @@ std::vector<std::string> champsim::plain_printer::format(CACHE::stats_type stats
   return lines;
 }
 
-std::vector<std::string> champsim::plain_printer::format(DRAM_CHANNEL::stats_type stats)
+std::vector<std::string> champsim::plain_printer::format(dram_stats stats)
 {
   std::vector<std::string> lines{};
   lines.push_back(fmt::format("{} RQ ROW_BUFFER_HIT: {:10}", stats.name, stats.RQ_ROW_BUFFER_HIT));
@@ -203,6 +203,11 @@ std::vector<std::string> champsim::plain_printer::format(champsim::phase_stats& 
       auto sublines = format(stat);
       std::move(std::begin(sublines), std::end(sublines), std::back_inserter(lines));
     }
+    if (stats.sim_ramulator2) {
+      lines.emplace_back("Ramulator2 Statistics");
+      auto sublines = toml_printer::format(*stats.sim_ramulator2, "ramulator2");
+      std::move(sublines.begin(), sublines.end(), std::back_inserter(lines));
+    }
   }
 
   lines.emplace_back("");
@@ -221,11 +226,17 @@ std::vector<std::string> champsim::plain_printer::format(champsim::phase_stats& 
   }
 
   lines.emplace_back("");
-  lines.emplace_back("DRAM Statistics");
-  for (const auto& stat : stats.roi_dram_stats) {
-    auto sublines = format(stat);
-    lines.emplace_back("");
-    std::move(std::begin(sublines), std::end(sublines), std::back_inserter(lines));
+  if (stats.roi_ramulator2) {
+    lines.emplace_back("Ramulator2 Statistics");
+    auto sublines = toml_printer::format(*stats.roi_ramulator2, "ramulator2");
+    std::move(sublines.begin(), sublines.end(), std::back_inserter(lines));
+  } else {
+    lines.emplace_back("DRAM Statistics");
+    for (const auto& stat : stats.roi_dram_stats) {
+      auto sublines = format(stat);
+      lines.emplace_back("");
+      std::move(std::begin(sublines), std::end(sublines), std::back_inserter(lines));
+    }
   }
 
   return lines;

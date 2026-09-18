@@ -1,0 +1,24 @@
+# A generic legacy DRAM backend mimicking 5600 MTPS
+#
+# Should be paired with a core model as follows:
+#
+#     bin/champsim --config configs/lnc.toml --config configs/dram-legacy.toml -- trace.xz
+#
+[pmem]
+data_rate = 5600            # @rbera override 
+frequency = 1600            # default  (controller clock)
+tcas = 24                   # default  (24 cycles @ 1600 MHz = 15.0 ns)
+trcd = 24                   # default
+trp = 24                    # default
+tras = 52                   # default  (32.5 ns)
+channels = 1                # default
+ranks = 1                   # default
+bankgroups = 8              # default
+banks = 4                   # default
+bank_rows = 65536           # default
+bank_columns = 1024         # default
+channel_width = 8           # default
+wq_size = 64                # default
+rq_size = 64                # default
+refresh_period = 32         # default
+refreshes_per_period = 8192 # default

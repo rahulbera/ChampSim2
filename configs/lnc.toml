@@ -1,7 +1,17 @@
 # Intel Lion Cove (LNC) P-core -- Lunar Lake instantiation.
 #
+# Core and cache model only: this file sets NO memory keys, so it composes with
+# whichever DRAM model you pair it with.
+#
 #     ./config.sh && make
-#     bin/champsim --config configs/lnc.toml [--set KEY=VALUE ...] trace.xz
+#     bin/champsim --config configs/lnc.toml --config configs/dram-legacy.toml -- trace.xz
+#     bin/champsim --config configs/lnc.toml --config configs/ramulator2.toml    -- trace.xz
+#
+# WITHOUT a DRAM config this runs ChampSim's default legacy memory
+# (`data_rate = 3200`), not the LPDDR5X-8533 platform figure. The `[pmem]` block
+# that used to live at the end of this file is now `configs/dram-legacy.toml`
+# -- it was the one thing here that made the file legacy-only, because native
+# mode refuses every `pmem.*` key.
 #
 # Tags: disclosed = stated by a reference below; derived = computed from one
 # (capacity/associativity -> set count, load-to-use -> per-level latency);
@@ -37,8 +47,8 @@
 #    set count, which ChampSim requires. Arrow Lake is 3 MB / 84-cycle L3 [3].
 #  * Load/store queue and register-file sizes are NOT disclosed for LNC ([4]
 #    lists them as unknown); values circulating online are Golden Cove's.
-#  * This file stands alone -- there is no JSON. NUM_CPUS, BLOCK_SIZE and
-#    PAGE_SIZE live in inc/defs.h; everything else is here.
+#  * There is no JSON. NUM_CPUS, BLOCK_SIZE and PAGE_SIZE live in inc/defs.h;
+#    memory is whichever DRAM config you pair this with; everything else is here.
 
 [ooo_cpu.cpu0]
 frequency = 4000                # @rbera override (was 5100, disclosed [6])
@@ -202,27 +212,3 @@ latency = 1                     # default
 sets = 256                      # derived [1]
 ways = 16                       # derived [1]  (256 x 16 = the 4096 entries)
 latency = 7                     # disclosed [1]
-
-# Platform, not core: LPDDR5X-8533 [6]
-#
-# Only the data rate is disclosed, and it is the only thing changed here: it
-# sets the data-bus transfer period, so a burst returns faster. The DRAM CORE
-# timings below are NOT LNC figures -- no reference gives them -- and are the
-# stock DDR-3200-era values, spelled out rather than left implicit so this file
-# says what it does and does not model.
-#
-# DO NOT raise `frequency` to "match" the data rate. tCAS/tRCD/tRP/tRAS are
-# counts of MEMORY-CONTROLLER CYCLES, scaled by 1/frequency in the channel
-# constructor, so raising the clock without rescaling them shortens absolute
-# core latency by the same factor: at 4266 MHz these become a 5.6 ns tCAS, and
-# LLC miss latency drops 186 -> 67 cycles. The 2:1 data-rate-to-clock ratio
-# that would suggest 4266 is a DDR4 relation; LPDDR5X does not use it, and [6]
-# is a product page, not a timing specification.
-[pmem]
-data_rate = 5600                # @rbera override (was 8533, disclosed [6])
-frequency = 1600                # default  (controller clock; see the note above)
-tcas = 24                       # default  (24 cycles @ 1600 MHz = 15.0 ns)
-trcd = 24                       # default
-trp = 24                        # default
-tras = 52                       # default  (32.5 ns)
-channels = 1                    # default

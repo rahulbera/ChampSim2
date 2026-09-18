@@ -1,8 +1,9 @@
 # configs
 
 Runtime configuration files, applied at startup with `--config <file>`. These
-are the only configuration ChampSim has: there is no JSON, and `config.sh`
-does nothing but discover modules.
+select simulator parameters and modules. There is no JSON configuration layer,
+and `config.sh` only discovers modules. The optional native DRAM backend reads its
+device configuration from an exported YAML file selected by TOML.
 
 - One `--config` may be followed by more, and by `--set key=value`; sources
   apply strictly in command-line order, and the last definition of a key wins.
@@ -26,6 +27,21 @@ does nothing but discover modules.
 JSON build bit-for-bit. All three target the standard single-core component
 names (`ooo_cpu.cpu0`, `cache.cpu0_l1d`, ...).
 
+`lnc.toml` is the one split along the memory boundary: it configures the core and
+caches and sets **no** memory key, so it composes with either backend.
+
+```
+bin/champsim --config configs/lnc.toml --config configs/dram-legacy.toml -- trace.xz
+bin/champsim --config configs/lnc.toml --config configs/ramulator2.toml    -- trace.xz
+```
+
+`dram-legacy.toml` is a generic legacy memory model at 5600 MT/s, not an LNC-only
+file: it spells out every `pmem.*` key, so it pairs with any core config and says
+exactly what it models. `data_rate` is the only value that is not the ChampSim
+default, so `lnc.toml` used alone differs from the pair in that one key (3200
+instead of 5600). `sample.toml` and `champsim_config.toml` still carry their own
+`pmem.*` keys and so remain legacy-only.
+
 Use `champsim_config.toml` for anything that must compare against a
 pre-migration number. It pins `ooo_cpu.cpu0.branch_predictor = "bimodal"` on
 purpose: the baked default changed with the migration, so a run that drops that
@@ -37,3 +53,120 @@ The loader recognises the document by `[meta].schema_version` and reads its
 `[config]` table, ignoring the results. It reproduces only what is
 configurable -- `[meta].build_id` must match too, or the binaries are
 different machines.
+
+
+## Native memory example
+
+`ramulator2.toml` selects native memory in a build made with
+`WITH_RAMULATOR2=1 RAMULATOR2_ROOT=/absolute/path/to/ramulator2`:
+
+```toml
+dram-model = "ramulator2"
+
+[ramulator2]
+config = "configs/ramulator2/ddr4.yaml"
+```
+
+Use `bin/champsim --config configs/ramulator2.toml --trace-version 2 -w 100000
+-i 500000 --toml run.toml -- trace.champsim2.zst` from the repository root. YAML
+paths resolve relative to the process working directory, not the TOML file.
+`ramulator2/ddr4.py` and `ramulator2/lpddr5.py` are readable configuration sources;
+the adjacent YAML files are their fully expanded exports for the pinned native
+revision. Re-export from source without installing the native Python extension:
+
+```bash
+PYTHONPATH=/absolute/path/to/ramulator2/python python3 -m ramulator export \
+  configs/ramulator2/ddr4.py -o configs/ramulator2/ddr4.yaml
+```
+
+Export requires Python 3.10+ and PyYAML; the regression tools need Python 3.11+
+for `tomllib`. Both fixtures use External, GenericDRAM and CacheLineInterleave:
+
+| Fixture | Native controller | Native transaction | Clock period | Capacity |
+| --- | --- | ---: | ---: | ---: |
+| DDR4 | GenericDDR | 64 B | 833 ps | 8 GiB |
+| LPDDR5 | LPDDR5 | 32 B | 1,453 ps | 1 GiB |
+
+For a DRAM bandwidth sweep, `ramulator2/bandwidth.py` exports DDR4 (calibrated)
+or DDR5 points with `nBL` overridden and derived timings resolved, plus a
+manifest of the matching `--set` arguments; `ramulator2/make_bandwidth_sweep.sh`
+runs it for the default points. See the
+[bandwidth sweep report](../docs/ramulator-integration/ramulator2-bandwidth-sweeps.md).
+
+Other exports must keep that frontend, memory system and channel mapper. Each
+controller `impl` must be `GenericDDR`, `LPDDR5`, `LPDDR6`, `GDDR7`, `HBM12`,
+`HBM34` or `PRAC`. Each controller `addr_mapper` must be `RoBaRaCoCh`,
+`ChRaBaRoCo` or `MOP4CLXOR`. `RITAddrMapper` is accepted only when its nested
+`addr_mapper` is one of those three and `reserved_rows_per_bank` is absent or 0.
+Other components fail with a configuration error naming the rejected `impl`.
+The error comes before any native component is constructed. Examples are
+`BlockHammer`, which needs Ramulator's own BHO3 CPU frontend, and
+`PassThroughAddrMapper`, which expects a frontend to fill the address vector.
+An admitted component can still fail the geometry and timing checks.
+
+The controller and the DRAM model are not checked against each other. A
+mismatched pair can be rejected by native code, stall until the no-progress
+guard aborts the run (an `HBM12` controller over DDR4 DRAM does), or run with
+the generic controller's semantics (`GenericDDR` over LPDDR5 or HBM3 DRAM does).
+The stock LPDDR6 exports have a 12-bit `channel_width`, which the byte-aligned
+channel-width check rejects; LPDDR6 runs only with that width edited to a
+multiple of 8, which changes the modeled device.
+
+A 64-byte cache block becomes two LPDDR5 transactions; it returns only after both
+complete. A native transaction larger than a block can serve separate block
+requests within that transaction. Homogeneous multi-channel configurations are
+supported. Mixed capacities, periods, or transaction sizes are rejected.
+
+`dram-model` defaults to `legacy`. Do not combine native selection with `pmem.*`
+keys from `sample.toml`, `champsim_config.toml`, `dram-legacy.toml` or a full
+legacy `--knobs` dump: inactive keys are errors, and the check is a prefix match on
+`pmem.` with no allowlist (`src/memory_backend.cc:23`), so no subset of them is
+portable -- model the device in the YAML that `ramulator2.config` selects instead.
+(`lnc.toml` itself is safe to combine; its DRAM block lives in the separate file.) Remove `sim.deadlock_cycle` from such a file too, or start from native
+`--knobs`. A legacy dump or statistics document records the value its run used
+(500 unless set; `sample.toml` sets 1,000), and an explicit value replaces the
+native 10 µs no-progress default (40,000
+ticks at 250 ps); one observed DDR4 refresh stalled demand for 350,693 ps. A
+native run keeps the explicit value but warns on stderr when it allows less than
+10 µs. Native `--knobs` reports only the selected backend's keys. For example:
+
+```bash
+bin/champsim --config configs/ramulator2.toml --knobs > native-knobs.toml
+bin/champsim --config native-knobs.toml --trace-version 2 -w 100000 -i 500000 \
+  --toml run.toml -- trace.champsim2.zst
+bin/champsim --config run.toml --trace-version 2 -w 100000 -i 500000 \
+  --toml replay.toml -- trace.champsim2.zst
+```
+
+Schema 2 archives the exact input YAML in `meta.ramulator2.yaml`, with canonical
+absolute path, `config_hash`, pinned `revision`, and build provenance. Effective
+`ramulator2.config_hash` participates in `meta.build_id`. A replay still reads the
+file at its effective path; a missing or changed file fails before simulation.
+To relocate an unchanged YAML, override `ramulator2.config` after `--config`.
+Original supplied path spelling remains in `config_override`. Run lengths and
+trace format are command-line inputs, so repeat them when replaying.
+
+Use a named output followed by `--` before input paths. The output checks apply
+to the file the name reaches as `open()` resolves it, so a name such as
+`missing/../machine.toml` cannot be opened, whatever it would fold to as text.
+An output that is an input trace (including through symlinks and hardlinks) is
+rejected at startup, and so is an existing non-empty regular file that does not
+begin like a ChampSim statistics document: a trace an optional `--toml` value
+consumed, a `--config` source or the native YAML. An existing output must be
+writable, and a non-empty one readable, so that its first bytes can be checked;
+a new name must be creatable. Nothing is written to or truncated in a named
+output until the run succeeds, so a failed replay (for example `--config
+run.toml --toml run.toml` after a `config_hash` mismatch) leaves `run.toml`
+unchanged. After the run the output is checked again and the document is written
+in place: an existing file keeps its inode, hard links, owner, group, ACLs and
+permissions, and a new file gets default permissions. If that final write fails,
+the output may be empty or partial; the error says so and the run exits 1. The
+write is not atomic: give concurrent runs distinct output names. A
+name that reaches standard output or standard error (`/dev/stdout`, or the log
+stdout is redirected to) receives the document on that stream, after the plain
+report. FIFOs and devices are written in place; a device that cannot be opened
+is refused at startup.
+An omitted `--toml` filename appends the TOML document after ordinary stdout;
+use a named file when a standalone parseable document is needed. See the
+[validation record](../docs/ramulator-integration/ramulator2-validation.md) for native statistics and
+phase semantics.

@@ -53,13 +53,15 @@
 #define INC_BLBP_BLBP_H
 
 #include <algorithm>
-#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <optional>
+#include <stdexcept>
 #include <utility>
 #include <vector>
+
+#include "champsim_assert.h"
 
 namespace champsim::blbp
 {
@@ -93,7 +95,9 @@ public:
       : cfg_(std::move(cfg)), weights_(static_cast<std::size_t>(cfg_.N) * static_cast<std::size_t>(cfg_.M) * static_cast<std::size_t>(cfg_.K), 0),
         theta_(static_cast<std::size_t>(cfg_.K), cfg_.theta_init), theta_counter_(static_cast<std::size_t>(cfg_.K), 0)
   {
-    assert(static_cast<int>(cfg_.transfer.size()) == cfg_.weight_max + 1);
+    if (static_cast<int>(cfg_.transfer.size()) != cfg_.weight_max + 1) {
+      throw std::invalid_argument{"BLBP transfer length must equal weight_max + 1"};
+    }
   }
 
   const engine_config& config() const { return cfg_; }
@@ -102,7 +106,7 @@ public:
   // each sub-predictor selected. `rows` holds one row index per sub-predictor.
   std::vector<int> compute_yout(const std::vector<int>& rows) const
   {
-    assert(static_cast<int>(rows.size()) == cfg_.N);
+    CHAMPSIM_ASSERT(static_cast<int>(rows.size()) == cfg_.N);
     std::vector<int> y(static_cast<std::size_t>(cfg_.K), 0);
     for (int i = 0; i < cfg_.N; ++i) {
       for (int k = 0; k < cfg_.K; ++k) {
@@ -120,7 +124,7 @@ public:
   // section 3.7 and Figure 4 -- NOT a +/-1 dot product.
   static int similarity(const std::vector<int>& yout, const std::vector<uint8_t>& bits)
   {
-    assert(bits.size() == yout.size());
+    CHAMPSIM_ASSERT(bits.size() == yout.size());
     int s = 0;
     for (std::size_t k = 0; k < bits.size(); ++k) {
       if (bits[k]) {
@@ -153,7 +157,7 @@ public:
   bool train(const std::vector<int>& rows, const std::vector<int>& yout, const std::vector<uint8_t>& actual_bits, bool mispredicted,
              const std::vector<std::vector<uint8_t>>& candidates)
   {
-    assert(static_cast<int>(rows.size()) == cfg_.N);
+    CHAMPSIM_ASSERT(static_cast<int>(rows.size()) == cfg_.N);
     bool moved = false;
     for (int k = 0; k < cfg_.K; ++k) {
       if (cfg_.selective_bits && !bit_differs(candidates, k)) {
@@ -288,7 +292,9 @@ class predictor
 public:
   explicit predictor(predictor_config cfg) : cfg_(std::move(cfg)), engine_(cfg_.engine)
   {
-    assert(static_cast<int>(cfg_.intervals.size()) == cfg_.engine.N - 1);
+    if (static_cast<int>(cfg_.intervals.size()) != cfg_.engine.N - 1) {
+      throw std::invalid_argument{"BLBP intervals length must equal engine.N - 1"};
+    }
     ghist_.assign(static_cast<std::size_t>(cfg_.ghist_bits), 0);
     local_.assign(static_cast<std::size_t>(cfg_.local_entries), 0);
     ibtb_.assign(static_cast<std::size_t>(cfg_.ibtb_sets) * static_cast<std::size_t>(cfg_.ibtb_ways), {});

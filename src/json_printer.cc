@@ -15,7 +15,10 @@
  */
 
 #include <algorithm>
+#include <cmath>
+#include <type_traits>
 #include <utility>
+#include <fmt/core.h>
 #include <nlohmann/json.hpp>
 
 #include "stats_printer.h"
@@ -76,7 +79,7 @@ void to_json(nlohmann::json& j, const CACHE::stats_type& stats)
   j = statsmap;
 }
 
-void to_json(nlohmann::json& j, const DRAM_CHANNEL::stats_type stats)
+void to_json(nlohmann::json& j, const dram_stats stats)
 {
   j = nlohmann::json{{"RQ ROW_BUFFER_HIT", stats.RQ_ROW_BUFFER_HIT},
                      {"RQ ROW_BUFFER_MISS", stats.RQ_ROW_BUFFER_MISS},
@@ -88,18 +91,65 @@ void to_json(nlohmann::json& j, const DRAM_CHANNEL::stats_type stats)
 
 namespace champsim
 {
+void to_json(nlohmann::json& j, const ramulator2_statistics& stats)
+{
+  j = {{"adapter",
+        {{"accepted_reads", stats.accepted_reads},
+         {"accepted_writes", stats.accepted_writes},
+         {"completed_reads", stats.completed_reads},
+         {"completed_writes", stats.completed_writes},
+         {"accepted_fragments", stats.accepted_fragments},
+         {"completed_fragments", stats.completed_fragments},
+         {"rejected_submissions", stats.rejected_submissions},
+         {"out_of_range_prefetches", stats.out_of_range_prefetches},
+         {"outstanding_parents", stats.outstanding_parents},
+         {"outstanding_fragments", stats.outstanding_fragments},
+         {"total_read_latency_ps", stats.total_read_latency_ps},
+         {"read_latency_samples", stats.read_latency_samples}}},
+       {"native_yaml", stats.native.yaml},
+       {"native", nlohmann::json::object()}};
+  for (const auto& statistic : stats.native.values) {
+    auto* node = &j["native"];
+    for (const auto& component : statistic.path) {
+      node = &(*node)[component];
+    }
+    std::visit(
+        [node](const auto& value) {
+          using type = std::decay_t<decltype(value)>;
+          if constexpr (std::is_same_v<type, double>) {
+            // JSON has no nonfinite number literals. Preserve their identity as
+            // strings instead of collapsing NaN and both infinities to null.
+            if (!std::isfinite(value)) {
+              *node = fmt::format("{}", value);
+              return;
+            }
+          }
+          *node = value;
+        },
+        statistic.value);
+  }
+}
+
 void to_json(nlohmann::json& j, const champsim::phase_stats stats)
 {
   std::map<std::string, nlohmann::json> roi_stats;
   roi_stats.emplace("cores", stats.roi_cpu_stats);
-  roi_stats.emplace("DRAM", stats.roi_dram_stats);
+  if (stats.roi_ramulator2) {
+    roi_stats.emplace("ramulator2", *stats.roi_ramulator2);
+  } else {
+    roi_stats.emplace("DRAM", stats.roi_dram_stats);
+  }
   for (auto x : stats.roi_cache_stats) {
     roi_stats.emplace(x.name, x);
   }
 
   std::map<std::string, nlohmann::json> sim_stats;
   sim_stats.emplace("cores", stats.sim_cpu_stats);
-  sim_stats.emplace("DRAM", stats.sim_dram_stats);
+  if (stats.sim_ramulator2) {
+    sim_stats.emplace("ramulator2", *stats.sim_ramulator2);
+  } else {
+    sim_stats.emplace("DRAM", stats.sim_dram_stats);
+  }
   for (auto x : stats.sim_cache_stats) {
     sim_stats.emplace(x.name, x);
   }

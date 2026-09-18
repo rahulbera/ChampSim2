@@ -1,297 +1,48 @@
-override ROOT_DIR = $(patsubst %/,%,$(dir $(abspath $(firstword $(MAKEFILE_LIST)))))
-
-# Customization points:
-#  - BIN_ROOT: at make-time, override the binary directory
-#  - OBJ_ROOT: at make-time, override the object file directory
-#  - DEP_ROOT: at make-time, override the dependency file directory
-BIN_ROOT:=bin
-OBJ_ROOT:=.csconfig
-DEP_ROOT:=$(OBJ_ROOT)
-
-override MODULE_ROOT += $(ROOT_DIR)
-override BRANCH_ROOT += $(addsuffix /branch,$(MODULE_ROOT))
-override BTB_ROOT += $(addsuffix /btb,$(MODULE_ROOT))
-override PREFETCH_ROOT += $(addsuffix /prefetcher,$(MODULE_ROOT))
-override REPLACEMENT_ROOT += $(addsuffix /replacement,$(MODULE_ROOT))
-
-# vcpkg integration
-TRIPLET_DIR = $(patsubst %/,%,$(firstword $(filter-out $(ROOT_DIR)/vcpkg_installed/vcpkg/, $(wildcard $(ROOT_DIR)/vcpkg_installed/*/))))
-override CPPFLAGS += -I$(OBJ_ROOT)
-override LDFLAGS  += -L$(TRIPLET_DIR)/lib -L$(TRIPLET_DIR)/lib/manual-link
-override LDLIBS   += -lCLI11 -llzma -lz -lbz2 -lzstd -lfmt
-
-.PHONY: all clean compile_commands compile_commands_clean configclean test pytest maketest
-
-test_main_name=test/bin/000-test-main
-# The main object's key. One executable now, so it is fixed; the test binary
-# keeps its own because it compiles a different main source.
-sim_key:=SIM
-executable_name:=
-
-# List all subdirectories of a given directory
-# $1 - parent directory
-ls_dirs = $(patsubst %/,%,$(filter %/,$(wildcard $1/*/)))
-
-# Migrate names from a source directory (and suffix) to a target directory (and suffix)
-# $1 - source directory
-# $2 - target directory
-# $3 - unique build id
-migrate = $(patsubst $1/%.cc,$2/%.o,$(join $(dir $4),$(patsubst %main.cc,$3_%main.cc,$(notdir $4))))
-get_object_list = $(call migrate,$1,$2,$3,$(wildcard $1/*.cc)) $(foreach subdir,$(call ls_dirs,$1),$(call $0,$(subdir),$(patsubst $1/%,$2/%,$(subdir)),$3))
-
-# Return the trailing portion of a word sequence
-# $1 - the sequence
-tail = $(wordlist 2,$(words $1),$1)
-
-# Split a path into a series of words that are path componenents
-# $1 - the path to split
-_root_standin=__ROOT__
-split_path = $(subst /, ,$(patsubst /%,$(_root_standin)/%,$1))
-
-# Join a series of words into a path
-# $1 - the path componenents
-join_path = $(subst $(eval) $(eval),,$(filter-out $(_root_standin),$(firstword $1) $(addprefix /,$(call tail,$1))))
-
-# Return the common prefix between two paths
-# $1 - the first path
-# $2 - the second path
-common_prefix_impl = $(if $(and $1,$2),$(if $(findstring $(firstword $1),$(firstword $2)),$(firstword $1) $(call $0,$(call tail,$1),$(call tail,$2))))
-common_prefix = $(call join_path,$(call $0_impl,$(call split_path,$1),$(call split_path,$2)))
-
-# Remove the given prefix from each word
-# $1 - the prefix to remove
-# $2 - the words to remove from
-remove_prefix_impl = $(if $1,$(if $(findstring $(firstword $1),$(firstword $2)),$(call $0,$(call tail,$1),$(call tail,$2))),$2)
-remove_prefix = $(call join_path,$(call $0_impl,$(call split_path,$1),$(call split_path,$2)))
-
-# Given a prefix, return the relative prefix of the same length
-# $1 - the prefix
-make_relative_prefix = $(call join_path,$(patsubst %,..,$(call split_path,$1)))
-
-# Return the relative path from one path to another
-# $1 - the destination path
-# $2 - the origin path
-#relative_path_impl = $(if $2,$(call make_relative_prefix,$2)/$1,$1)
-#relative_path = $(call $0_impl,$(call remove_prefix,$(call common_prefix,$1,$2),$1),$(call remove_prefix,$(call common_prefix,$1,$2),$2))
-relative_path = $(shell python3 -c "import os.path; print(os.path.relpath(\"$1\", start=\"$2\"))")
-
-# Recursively find all files matching a pattern within a directory
-# $1 - the directory to search
-# $2 - the pattern to match
-rwildcard = $(foreach d,$(wildcard $(1:=/*)),$(call rwildcard,$d,$2) $(filter $(subst *,%,$2),$d))
-
-# Get the parent directory of a path
-# $1 - the path
-parent_dir = $(patsubst %/,%,$(dir $1))
-
+override ROOT_DIR := $(patsubst %/,%,$(dir $(abspath $(firstword $(MAKEFILE_LIST)))))
 .DEFAULT_GOAL := all
+BUILD_MODE ?= release
+BUILD_FLAVOR ?= sim
+WITH_RAMULATOR2 ?= 0
+RAMULATOR2_ROOT ?=
+RAMULATOR2_SANITIZE ?= 0
+OBJ_ROOT ?= .csconfig
+DEP_ROOT ?= $(OBJ_ROOT)
+VCPKG_INSTALLED_DIR ?= $(ROOT_DIR)/vcpkg_installed
+CHAMPSIM_LIBRARIES ?= -lCLI11 -llzma -lz -lbz2 -lzstd -lfmt
+CHAMPSIM_TEST_LIBRARIES ?= -lCatch2Main -lCatch2
+test_main_name ?= test/bin/000-test-main
+shellquote = '$(subst ','"'"',$1)'
+make_short_flags := $(if $(findstring =,$(firstword $(MAKEFLAGS))),,$(filter-out --%,$(firstword $(MAKEFLAGS))))
+make_no_execute := $(strip $(foreach flag,n q t,$(findstring $(flag),$(make_short_flags))))
 
-module_dirs = $(foreach d,$(BRANCH_ROOT) $(BTB_ROOT) $(PREFETCH_ROOT) $(REPLACEMENT_ROOT),$(call relative_path,$(abspath $d),$(ROOT_DIR)))
-
-# Remove all intermediate files
-clean:
-	@-find src test .csconfig $(OBJ_ROOT) $(DEP_ROOT) $(module_dirs) \( -name '*.o' -o -name '*.d' \) -delete &> /dev/null
-	@-$(RM) inc/champsim_constants.h
-	@-$(RM) inc/cache_modules.h
-	@-$(RM) inc/ooo_cpu_modules.h
-	@-$(RM) src/core_inst.cc
-	@-$(RM) $(test_main_name)
-	@-$(RM) $(executable_name)
-
-# Remove all compile_commands.json files
-compile_commands_clean:
-	@find $(ROOT_DIR) $(module_dirs) -type f -name 'compile_commands.json' -delete &> /dev/null
-	@find $(ROOT_DIR) $(module_dirs) -type d -name '.cache' -exec rm -r {} \; &> /dev/null
-
-# Remove all configuration files
-configclean: clean compile_commands_clean
-	@-$(RM) _configuration.mk
-	@-$(RM) $(OBJ_ROOT)/registry.inc $(OBJ_ROOT)/registry.cc.inc
-
-reverse = $(if $(wordlist 2,2,$(1)),$(call reverse,$(call tail,$1)) $(firstword $(1)),$(1))
-
-absolute.options:
-	@echo "-I$(realpath inc) -isystem $(realpath $(TRIPLET_DIR)/include)" > $@
-
-attach_options = $(call reverse, $(addprefix @,$(filter %.options, $^)))
-
-# All .o files should be made like .cc files
-define obj_recipe
-	$(CXX) $(attach_options) $(CPPFLAGS) $(CXXFLAGS) -c -o $@ $(filter %.cc, $^)
-endef
-
-# All .d files should be preprocessed only.
-# -MP emits a phony target for every header, so a dependency file that names a
-# header which has since been deleted -- what switching to a branch with a
-# different module set leaves behind -- makes the translation unit rebuild
-# instead of aborting make with "No rule to make target".
-DEPFLAGS = -MM -MP -MT $@ -MT $(@:.d=.o)
-define dep_recipe
-	$(CXX) $(attach_options) $(DEPFLAGS) $(CPPFLAGS) -MF $@ $(filter %.cc, $^)
-endef
-
-### Module support
-
-get_module_obj_dir=$(OBJ_ROOT)/modules/$(patsubst ..%,externUPdir%,$(subst /..,_UPdir,$1))
-get_module_src_dir=$(patsubst externUPdir%,..%,$(subst _UPdir,/..,$(patsubst $(DEP_ROOT)/modules/%,%,$(patsubst $(OBJ_ROOT)/modules/%,%,$1))))
-
-# Get a list of module objects descended from the given directories
-# $1 - list of directories to traverse
-get_module_list = $(foreach mod_type,$1,$(call get_object_list,$(mod_type),$(call get_module_obj_dir,$(mod_type))))
-
-# The base modules shipped with ChampSim
-base_module_objs = $(call get_module_list, $(module_dirs))
-
-# The module objects that are not base
-nonbase_module_objs =
-
-# Secondary expansion is required to pass the build ID into executables
-.SECONDEXPANSION:
-
-### Object Files
-
-base_source_dir = src
-base_include_dir = inc
-test_source_dir = test/cpp/src
-base_options = absolute.options global.options
-
-ifeq (,$(OBJ_ROOT))
-	$(error The value of OBJ_ROOT cannot be empty)
+# One inner Make owns exactly one mode and one production/test flavor. Recursive
+# Make preserves the jobserver and independently honors -n/-q/-t.
+ifndef CHAMPSIM_INNER
+named_goals := $(filter debug release fast,$(MAKECMDGOALS))
+ifneq (,$(named_goals))
+ifneq (,$(filter-out debug release fast,$(MAKECMDGOALS)))
+$(error Do not mix named modes and ordinary targets; use BUILD_MODE=fast all test)
 endif
-
-# Generated configuration makefile contains:
-#  - $(executable_name), the list of all executables in the configuration
-#  - All dependencies and flags assigned according to the modules
-ifeq (,$(filter clean compile_commands_clean configclean pytest maketest, $(MAKECMDGOALS)))
-include _configuration.mk
-else
-# The clean targets need $(executable_name) from the fragment, but must still
-# work when it has already been removed -- hence the soft include here and the
-# hard one above.
--include _configuration.mk
+ifneq ($(origin BUILD_MODE),file)
+ifneq (,$(filter-out $(BUILD_MODE),$(named_goals)))
+$(error BUILD_MODE conflicts with the named mode target)
 endif
-
-all: $(executable_name)
-
-# Get the base object files, with the 'main' file mangled
-# $1 - A unique key identifying the build
-get_base_objs = $(call get_object_list,$(base_source_dir),$(OBJ_ROOT),$1)
-test_base_objs = $(call get_object_list,$(test_source_dir),$(OBJ_ROOT)/test,TEST)
-
-# Connect the main sources to the src/ directory
-base_main_prereqs = $(base_source_dir)/main.cc $(base_options)
-$(OBJ_ROOT)/%_main.o: $(base_main_prereqs) | $(@:$(OBJ_ROOT)/%.o=$(DEP_ROOT)/%.d) $$(dir $$@)
-	$(obj_recipe)
-$(DEP_ROOT)/%_main.d: $(base_main_prereqs) | $$(dir $$@)
-	$(dep_recipe)
-
-# Connect non-main sources to the src/ directory
-base_nonmain_prereqs = $(base_source_dir)/$*.cc $(base_options)
-$(OBJ_ROOT)/%.o: $$(base_nonmain_prereqs) | $(@:$(OBJ_ROOT)/%.o=$(DEP_ROOT)/%.d) $$(dir $$@)
-	$(obj_recipe)
-$(DEP_ROOT)/%.d: $$(base_nonmain_prereqs) | $$(dir $$@)
-	$(dep_recipe)
-
-# Connect the test main to the test/cpp/src/ directory
-test_main_prereqs = $(test_source_dir)/000-test-main.cc $(base_options)
-$(OBJ_ROOT)/test/TEST_000-test-main.o: $(test_main_prereqs) | $(@:$(OBJ_ROOT)/%.o=$(DEP_ROOT)/%.d) $$(dir $$@)
-	$(obj_recipe)
-$(DEP_ROOT)/test/TEST_000-test-main.d: $(test_main_prereqs) | $$(dir $$@)
-	$(dep_recipe)
-
-# Connect non-main test sources to the test/cpp/src/ drirctory
-test_nonmain_prereqs = $(test_source_dir)/$*.cc $(base_options)
-$(OBJ_ROOT)/test/%.o: $$(test_nonmain_prereqs) | $(@:$(OBJ_ROOT)/%.o=$(DEP_ROOT)/%.d) $$(dir $$@)
-	$(obj_recipe)
-$(DEP_ROOT)/test/%.d: $$(test_nonmain_prereqs) | $$(dir $$@)
-	$(dep_recipe)
-
-# Connect module objects to their sources
-base_module_prereqs = $(call get_module_src_dir,$(@D))/$(basename $(@F)).cc module.options $(base_options)
-$(OBJ_ROOT)/modules/%.o: $$(base_module_prereqs) | $(@:$(OBJ_ROOT)/%.o=$(DEP_ROOT)/%.d) $$(dir $$@)
-	$(obj_recipe)
-$(DEP_ROOT)/modules/%.d: $$(base_module_prereqs) | $$(dir $$@)
-	$(dep_recipe)
-
-$(sort $(OBJ_ROOT)/ $(DEP_ROOT)/ $(BIN_ROOT)/ test/bin/):
-	mkdir -p $@
-
-$(OBJ_ROOT)/test/ $(OBJ_ROOT)/modules/: | $(OBJ_ROOT)/
-	mkdir $@
-
-$(OBJ_ROOT)/test/%/: | $(OBJ_ROOT)/test/
-	mkdir -p $@
-
-$(OBJ_ROOT)/modules/%/: | $(OBJ_ROOT)/modules/
-	mkdir -p $@
-
-ifneq ($(OBJ_ROOT),$(DEP_ROOT))
-ifeq (,$(DEP_ROOT))
-	$(error The value of DEP_ROOT cannot be empty)
 endif
-
-$(DEP_ROOT)/test/ $(DEP_ROOT)/modules/: | $(DEP_ROOT)/
-	mkdir $@
-
-$(DEP_ROOT)/test/%/: | $(DEP_ROOT)/test/
-	mkdir -p $@
-
-$(DEP_ROOT)/modules/%/: | $(DEP_ROOT)/modules/
-	mkdir -p $@
 endif
-
-# Give the test executable some additional options
-$(test_main_name): override CPPFLAGS += -DCHAMPSIM_TEST_BUILD
-$(test_main_name): override CXXFLAGS += -g3 -Og
-$(test_main_name): override LDLIBS += -lCatch2Main -lCatch2
-
-# Associate objects with executables
-$(test_main_name): $(call get_base_objs,TEST) $(test_base_objs) $(base_module_objs) $(nonbase_module_objs) | $$(dir $$@)
-$(executable_name): $(call get_base_objs,$(sim_key)) $(base_module_objs) $(nonbase_module_objs) | $$(dir $$@)
-
-# Link main executables
-$(executable_name) $(test_main_name):
-	$(CXX) $(LDFLAGS) -o $@ $^ $(LOADLIBES) $(LDLIBS)
-
-# compile_commands: Create compile_commands.json file
-#
-# Include ALL modules by default, and creates a separate compile_commands.json
-# file for each module, src, and tests.
-src_compile_commands_file = $(base_source_dir)/compile_commands.json
-inc_compile_commands_file = $(base_include_dir)/compile_commands.json
-test_compile_commands_file = $(test_source_dir)/compile_commands.json
-module_compile_commands_files = $(foreach mod,$(module_dirs),$(foreach subdir,$(call ls_dirs,$(mod)),$(subdir)/compile_commands.json))
-
-$(src_compile_commands_file): $(call rwildcard,$(base_source_dir),*.cc)
-	python3 $(ROOT_DIR)/config/compile_commands/src.py --build-id $(sim_key) --champsim-dir $(ROOT_DIR) --config-dir $(OBJ_ROOT)
-
-$(inc_compile_commands_file): $(call rwildcard,$(base_include_dir),*.h)
-	python3 $(ROOT_DIR)/config/compile_commands/inc.py --champsim-dir $(ROOT_DIR) --config-dir $(OBJ_ROOT)
-
-$(test_compile_commands_file): $(call rwildcard,$(test_source_dir),*.cc)
-	python3 $(ROOT_DIR)/config/compile_commands/test.py --champsim-dir $(ROOT_DIR) --config-dir $(OBJ_ROOT)
-
-$(module_compile_commands_files): $(call rwildcard,$(call parent_dir,$@),*.cc)
-	python3 $(ROOT_DIR)/config/compile_commands/module.py --module-dir $(call parent_dir,$@) --champsim-dir $(ROOT_DIR) --config-dir $(OBJ_ROOT)
-
-compile_commands: $(src_compile_commands_file) $(inc_compile_commands_file) $(test_compile_commands_file) $(module_compile_commands_files)
-
-# Tests: build and run
-ifdef TEST_NUM
-selected_test = -\# "[$(addprefix \#,$(filter $(addsuffix %,$(TEST_NUM)), $(patsubst %.cc,%,$(notdir $(wildcard $(test_source_dir)/*.cc)))))]"
-endif
-test: $(test_main_name)
-	$(test_main_name) $(selected_test)
-
+.PHONY: all test debug release fast clean compile_commands print-build-paths ramulator2 pytest configclean compile_commands_clean maketest
+all test clean compile_commands print-build-paths ramulator2:
+	+@$(MAKE) --no-print-directory CHAMPSIM_INNER=1 BUILD_FLAVOR=$(if $(filter test,$@),test,$(BUILD_FLAVOR)) $@
+debug release fast:
+	+@$(MAKE) --no-print-directory CHAMPSIM_INNER=1 BUILD_MODE=$@ BUILD_FLAVOR=sim PUBLISH_ALIAS=0 all
+# Explicit compatibility paths (notably CI's test executable) are ordinary builds.
+other_goals := $(filter-out all test clean compile_commands print-build-paths ramulator2 debug release fast pytest configclean compile_commands_clean maketest,$(MAKECMDGOALS))
+.PHONY: $(other_goals)
+$(other_goals):
+	+@$(MAKE) --no-print-directory CHAMPSIM_INNER=1 BUILD_FLAVOR=$(if $(filter $(test_main_name),$@),test,$(BUILD_FLAVOR)) $@
 pytest:
-	PYTHONPATH=$(PYTHONPATH):$(ROOT_DIR) python3 -m unittest discover -v --start-directory='test/python'
-
-ifeq (,$(filter clean compile_commands compile_commands_clean configclean pytest maketest, $(MAKECMDGOALS)))
--include $(patsubst $(OBJ_ROOT)/%.o,$(DEP_ROOT)/%.d,$(foreach key,TEST $(sim_key),$(call get_base_objs,$(key))) $(test_base_objs) $(base_module_objs))
+	PYTHONPATH=$(PYTHONPATH):$(ROOT_DIR) python3 -m unittest discover -v --start-directory=test/python
+configclean compile_commands_clean maketest:
+	+@$(MAKE) --no-print-directory CHAMPSIM_INNER=1 $@
+else
+include $(ROOT_DIR)/config/build_rules.mk
 endif
-
-ifeq (maketest,$(findstring maketest,$(MAKECMDGOALS)))
-include $(ROOT_DIR)/test/make/Makefile.test
-endif
-
-.NOTINTERMEDIATE: $(dir $(base_module_objs) $(nonbase_module_objs))

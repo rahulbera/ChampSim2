@@ -160,15 +160,15 @@ private:
   using has_reserved = decltype(std::declval<U>().reserved);
 
   template <typename T>
-  ooo_model_instr(T instr, std::array<uint8_t, 2> local_asid) : ip(instr.ip), is_branch(instr.is_branch), branch_taken(instr.branch_taken), asid(local_asid)
+  ooo_model_instr(const T& instr, std::array<uint8_t, 2> local_asid)
+      : ip(instr.ip), is_branch(instr.is_branch), branch_taken(instr.branch_taken), asid(local_asid)
   {
     std::remove_copy(std::begin(instr.destination_registers), std::end(instr.destination_registers), std::back_inserter(this->destination_registers), 0);
     std::remove_copy(std::begin(instr.source_registers), std::end(instr.source_registers), std::back_inserter(this->source_registers), 0);
 
-    // Extract the v2 payload BEFORE the std::remove calls below: those compact
-    // instr's operand arrays in place, destroying the slot indices the payload
-    // is addressed by. Compacting here in the same order keeps payload index i
-    // aligned with source_memory[i] / destination_memory[i].
+    // Extract the v2 payload in raw-slot order. Compacting here in the same
+    // order keeps payload index i aligned with source_memory[i] /
+    // destination_memory[i].
 #if CHAMPSIM_TRACE_MEMORY_VALUES
     if constexpr (champsim::is_detected_v<has_v2_payload, T>) {
       std::size_t compacted = 0;
@@ -197,11 +197,16 @@ private:
     }
 #endif
 
-    auto dmem_end = std::remove(std::begin(instr.destination_memory), std::end(instr.destination_memory), uint64_t{0});
-    std::transform(std::begin(instr.destination_memory), dmem_end, std::back_inserter(this->destination_memory), [](auto x) { return champsim::address{x}; });
-
-    auto smem_end = std::remove(std::begin(instr.source_memory), std::end(instr.source_memory), uint64_t{0});
-    std::transform(std::begin(instr.source_memory), smem_end, std::back_inserter(this->source_memory), [](auto x) { return champsim::address{x}; });
+    for (auto address : instr.destination_memory) {
+      if (address != 0) {
+        destination_memory.push_back(champsim::address{address});
+      }
+    }
+    for (auto address : instr.source_memory) {
+      if (address != 0) {
+        source_memory.push_back(champsim::address{address});
+      }
+    }
 
     bool writes_sp = std::count(std::begin(destination_registers), std::end(destination_registers), champsim::REG_STACK_POINTER);
     bool writes_ip = std::count(std::begin(destination_registers), std::end(destination_registers), champsim::REG_INSTRUCTION_POINTER);
@@ -284,11 +289,11 @@ private:
   }
 
 public:
-  ooo_model_instr(uint8_t cpu, input_instr instr) : ooo_model_instr(instr, {cpu, cpu}) {}
+  ooo_model_instr(uint8_t cpu, const input_instr& instr) : ooo_model_instr(instr, {cpu, cpu}) {}
   // A v2 record names every field the shared constructor reads, so classification
   // and operand extraction are identical to v1 by construction.
-  ooo_model_instr(uint8_t cpu, input_instr_v2 instr) : ooo_model_instr(instr, {cpu, cpu}) {}
-  ooo_model_instr(uint8_t /*cpu*/, cloudsuite_instr instr) : ooo_model_instr(instr, {instr.asid[0], instr.asid[1]}) {}
+  ooo_model_instr(uint8_t cpu, const input_instr_v2& instr) : ooo_model_instr(instr, {cpu, cpu}) {}
+  ooo_model_instr(uint8_t /*cpu*/, const cloudsuite_instr& instr) : ooo_model_instr(instr, {instr.asid[0], instr.asid[1]}) {}
 
   [[nodiscard]] std::size_t num_mem_ops() const { return std::size(destination_memory) + std::size(source_memory); }
 };

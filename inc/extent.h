@@ -19,11 +19,11 @@
 
 #include <algorithm>
 #include <array>
-#include <cassert>
 #include <cstddef>
 #include <limits>
 #include <type_traits>
 
+#include "champsim_assert.h"
 #include "util/to_underlying.h"
 #include "util/units.h"
 
@@ -46,7 +46,7 @@ struct dynamic_extent {
   /**
    * Initialize the extent with the given upper and lower extents. The upper must be greater than or equal to the lower.
    */
-  constexpr dynamic_extent(champsim::data::bits up, champsim::data::bits low) : upper(up), lower(low) { assert(upper >= lower); }
+  constexpr dynamic_extent(champsim::data::bits up, champsim::data::bits low) : upper(up), lower(low) { CHAMPSIM_ASSERT(upper >= lower); }
 
   /**
    * Initialize the extent with a lower extent and size.

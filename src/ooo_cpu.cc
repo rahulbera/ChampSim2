@@ -27,6 +27,7 @@
 
 #include "cache.h"
 #include "champsim.h"
+#include "champsim_assert.h"
 #include "deadlock.h"
 #include "event_listeners.h"
 #include "instruction.h"
@@ -99,7 +100,7 @@ void O3_CPU::initialize_instruction()
     stop_fetch = do_init_instruction(input_queue.front());
 
     // Add to IFETCH_BUFFER
-    IFETCH_BUFFER.push_back(input_queue.front());
+    IFETCH_BUFFER.push_back(std::move(input_queue.front()));
     input_queue.pop_front();
 
     IFETCH_BUFFER.back().ready_time = current_time;
@@ -496,16 +497,20 @@ void O3_CPU::do_execution(ooo_model_instr& instr)
   instr.ready_time = current_time + (warmup ? champsim::chrono::clock::duration{} : EXEC_LATENCY);
 
   // Mark LQ entries as ready to translate
-  for (auto& lq_entry : LQ) {
-    if (lq_entry.has_value() && lq_entry->instr_id == instr.instr_id) {
-      lq_entry->ready_time = current_time + (warmup ? champsim::chrono::clock::duration{} : EXEC_LATENCY);
+  if (!std::empty(instr.source_memory)) {
+    for (auto& lq_entry : LQ) {
+      if (lq_entry.has_value() && lq_entry->instr_id == instr.instr_id) {
+        lq_entry->ready_time = current_time + (warmup ? champsim::chrono::clock::duration{} : EXEC_LATENCY);
+      }
     }
   }
 
   // Mark SQ entries as ready to translate
-  for (auto& sq_entry : SQ) {
-    if (sq_entry.instr_id == instr.instr_id) {
-      sq_entry.ready_time = current_time + (warmup ? champsim::chrono::clock::duration{} : EXEC_LATENCY);
+  if (!std::empty(instr.destination_memory)) {
+    for (auto& sq_entry : SQ) {
+      if (sq_entry.instr_id == instr.instr_id) {
+        sq_entry.ready_time = current_time + (warmup ? champsim::chrono::clock::duration{} : EXEC_LATENCY);
+      }
     }
   }
 
@@ -519,7 +524,7 @@ void O3_CPU::do_memory_scheduling(ooo_model_instr& instr)
   // load
   for (auto& smem : instr.source_memory) {
     auto q_entry = std::find_if_not(std::begin(LQ), std::end(LQ), [](const auto& lq_entry) { return lq_entry.has_value(); });
-    assert(q_entry != std::end(LQ));
+    CHAMPSIM_ASSERT(q_entry != std::end(LQ));
     q_entry->emplace(smem, instr.instr_id, instr.ip, instr.asid); // add it to the load queue
 
     // Check for forwarding
@@ -531,9 +536,9 @@ void O3_CPU::do_memory_scheduling(ooo_model_instr& instr)
         (*q_entry)->finish(instr);
         q_entry->reset();
       } else {
-        assert(sq_it->instr_id < instr.instr_id);      // The found SQ entry is a prior store
-        sq_it->lq_depend_on_me.emplace_back(*q_entry); // Forward the load when the store finishes
-        (*q_entry)->producer_id = sq_it->instr_id;     // The load waits on the store to finish
+        CHAMPSIM_ASSERT(sq_it->instr_id < instr.instr_id); // The found SQ entry is a prior store
+        sq_it->lq_depend_on_me.emplace_back(*q_entry);     // Forward the load when the store finishes
+        (*q_entry)->producer_id = sq_it->instr_id;         // The load waits on the store to finish
 
         if constexpr (champsim::debug_print) {
           fmt::print("[DISPATCH] {} instr_id: {} waits on: {}\n", __func__, instr.instr_id, sq_it->instr_id);
@@ -602,8 +607,8 @@ void O3_CPU::do_finish_store(const LSQ_ENTRY& sq_entry)
 
   // Release dependent loads
   for (std::optional<LSQ_ENTRY>& dependent : sq_entry.lq_depend_on_me) {
-    assert(dependent.has_value()); // LQ entry is still allocated
-    assert(dependent->producer_id == sq_entry.instr_id);
+    CHAMPSIM_ASSERT(dependent.has_value()); // LQ entry is still allocated
+    CHAMPSIM_ASSERT(dependent->producer_id == sq_entry.instr_id);
 
     dependent->finish(std::begin(ROB), std::end(ROB));
     dependent.reset();
@@ -757,7 +762,7 @@ long O3_CPU::retire_rob()
 {
   auto [retire_begin, retire_end] =
       champsim::get_span_p(std::cbegin(ROB), std::cend(ROB), champsim::bandwidth{RETIRE_WIDTH}, [](const auto& x) { return x.completed; });
-  assert(std::distance(retire_begin, retire_end) >= 0); // end succeeds begin
+  CHAMPSIM_ASSERT(std::distance(retire_begin, retire_end) >= 0); // end succeeds begin
   if constexpr (champsim::debug_print) {
     std::for_each(retire_begin, retire_end, [cycle = current_time.time_since_epoch() / clock_period](const auto& x) {
       fmt::print("[ROB] retire_rob instr_id: {} is retired cycle: {}\n", x.instr_id, cycle);
@@ -879,16 +884,16 @@ LSQ_ENTRY::LSQ_ENTRY(champsim::address addr, champsim::program_ordered<LSQ_ENTRY
 void LSQ_ENTRY::finish(std::deque<ooo_model_instr>::iterator begin, std::deque<ooo_model_instr>::iterator end) const
 {
   auto rob_entry = std::partition_point(begin, end, ooo_model_instr::precedes(this->instr_id));
-  assert(rob_entry != end);
+  CHAMPSIM_ASSERT(rob_entry != end);
   finish(*rob_entry);
 }
 
 void LSQ_ENTRY::finish(ooo_model_instr& rob_entry) const
 {
-  assert(rob_entry.instr_id == this->instr_id);
+  CHAMPSIM_ASSERT(rob_entry.instr_id == this->instr_id);
 
   ++rob_entry.completed_mem_ops;
-  assert(rob_entry.completed_mem_ops <= rob_entry.num_mem_ops());
+  CHAMPSIM_ASSERT(rob_entry.completed_mem_ops <= rob_entry.num_mem_ops());
 
   if constexpr (champsim::debug_print) {
     fmt::print("[LSQ] {} instr_id: {} full_address: {} remain_mem_ops: {}\n", __func__, instr_id, virtual_address,

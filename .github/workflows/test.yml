@@ -31,6 +31,7 @@ jobs:
     runs-on: ${{ matrix.config.os }}
     env:
       CXX: ${{ matrix.config.cxx }}
+      WITH_RAMULATOR2: "0"
 
     strategy:
       fail-fast: false
@@ -311,10 +312,11 @@ jobs:
         assert re.fullmatch(r"0x[0-9a-f]{16}", meta["build_id"]), meta
 
         cfg = doc["config"]
-        # Only components exist at the root now: there is no configuration file
+        # Components and the backend selector exist at the root: no configuration file
         # for the document to echo, so an "executable_name" or "block_size" key
         # here would mean the printer had invented one.
-        assert set(cfg) == {"cache", "ooo_cpu", "pmem", "ptw", "sim", "vmem"}, sorted(cfg)
+        assert set(cfg) == {"cache", "dram-model", "ooo_cpu", "pmem", "ptw", "sim", "vmem"}, sorted(cfg)
+        assert cfg["dram-model"] == "legacy", cfg
         assert cfg["ooo_cpu"]["cpu0"]["branch_predictor"], cfg["ooo_cpu"]["cpu0"]
         assert cfg["ooo_cpu"]["cpu0"]["btb"], cfg["ooo_cpu"]["cpu0"]
         # Module selections are consulted keys like any other, so every cache
@@ -428,7 +430,7 @@ jobs:
         status=$?
         set -e
         test "$status" -ne 0 || { echo "--knobs accepted an unknown key"; exit 1; }
-        python3 -c "import tomllib; d = tomllib.load(open('knobs.toml','rb')); assert sorted(d) == ['cache','ooo_cpu','pmem','ptw','sim','vmem'], sorted(d)"
+        python3 -c "import tomllib; d = tomllib.load(open('knobs.toml','rb')); assert sorted(d) == ['cache','dram-model','ooo_cpu','pmem','ptw','sim','vmem'], sorted(d); assert d['dram-model'] == 'legacy'"
         # And what it emits is accepted straight back as configuration.
         ./bin/champsim -w5000 -i5000 --config knobs.toml \
           -- <(curl -s https://dpc3.compas.cs.stonybrook.edu/champsim-traces/speccpu/400.perlbench-41B.champsimtrace.xz | xz -dc)
@@ -482,6 +484,212 @@ jobs:
       with:
         name: lcov-stats
         path: lcov_stats.info
+
+  native:
+    name: Ubuntu 24.04 GCC 13 with Ramulator 2.1
+    runs-on: ubuntu-24.04
+    env:
+      CXX: /usr/bin/g++-13
+      WITH_RAMULATOR2: "1"
+      RAMULATOR2_ROOT: ${{ github.workspace }}/native-source
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: 'true'
+
+    - uses: actions/checkout@v6
+      with:
+        repository: CMU-SAFARI/ramulator2
+        ref: 72427a1bba3771564c4fb0e494ba02242fd1eaa7
+        path: native-source
+
+    - name: Set up native build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y g++-13 cmake curl zip unzip tar python3-venv
+        python3 -m venv "$RUNNER_TEMP/native-python"
+        "$RUNNER_TEMP/native-python/bin/python" -m pip install PyYAML
+        echo "$RUNNER_TEMP/native-python/bin" >> "$GITHUB_PATH"
+        vcpkg/bootstrap-vcpkg.sh
+        vcpkg/vcpkg install
+
+    # Keep this job separate from legacy coverage flags and compiler versions.
+    # The helper checks native/source/dependency revisions and the effective ABI.
+    - name: Build simulator and run enabled C++ tests
+      run: |
+        ./config.sh
+        env -u CXXFLAGS -u CPPFLAGS -u LDFLAGS -u CFLAGS make -j6 all test
+
+    - name: Run Python and CLI regression tests
+      run: |
+        make pytest
+        python3 -m unittest discover -s test/ramulator2 -p test_tools.py -v
+
+    # These generate bounded local inputs; no private or downloaded benchmark
+    # traces are required. One source root is built and executed serially.
+    - name: Compare driver with direct native replay
+      run: |
+        native_objects=$(make --no-print-directory print-build-paths | python3 -c 'import json,sys; print(json.load(sys.stdin)["obj"])')
+        python3 test/ramulator2/run_oracle.py \
+          --native-root "$RAMULATOR2_ROOT" --build-dir "$native_objects" \
+          --dependency-dir vcpkg_installed/x64-linux \
+          --output-dir "$RUNNER_TEMP/native-oracle" --cxx "$CXX"
+
+    - name: Exercise native simulations and result replay
+      run: |
+        python3 test/ramulator2/run_integration.py --binary bin/champsim \
+          --output-dir "$RUNNER_TEMP/native-integration"
+
+    # Non-PIE code takes a native function's address through a PLT stub in the
+    # executable, which once made the provenance check fingerprint the program.
+    # Separate object/binary roots leave the main build alone and reuse the
+    # same verified native library owned by its source root.
+    - name: Check library provenance from a non-PIE executable
+      run: |
+        obj="$RUNNER_TEMP/nopie-obj"
+        bin="$RUNNER_TEMP/nopie-bin"
+        mkdir -p "$obj"
+        cp .csconfig/registry.inc .csconfig/registry.cc.inc "$obj/"
+        env -u CXXFLAGS -u CPPFLAGS -u LDFLAGS -u CFLAGS make -j6 OBJ_ROOT="$obj" BIN_ROOT="$bin" \
+          CXXFLAGS='-fno-pie -no-pie' LDFLAGS=-no-pie "$bin/champsim"
+        readelf -h "$bin/champsim" | grep -q 'Type: *EXEC'
+        "$bin/champsim" --config configs/ramulator2.toml --knobs > "$RUNNER_TEMP/nopie-knobs.toml"
+        grep -q '^dram-model = "ramulator2"$' "$RUNNER_TEMP/nopie-knobs.toml"
+
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: native-validation
+        path: |
+          ${{ runner.temp }}/native-oracle
+          ${{ runner.temp }}/native-integration
+          .csconfig/**/ramulator2-native/build.log
+          native-source/.champsim-native/build.log
+          native-source/.champsim-native/manifest.json
+
+  # The native library and every host object are built with ASan and UBSan
+  # through RAMULATOR2_SANITIZE=1, so native allocations, callbacks and
+  # teardown are checked along with the adapter. Its own runner and native
+  # checkout keep the instrumented library away from the release job's.
+  native_sanitize:
+    name: Ubuntu 24.04 GCC 13 with Ramulator 2.1, ASan and UBSan
+    runs-on: ubuntu-24.04
+    env:
+      CXX: /usr/bin/g++-13
+      WITH_RAMULATOR2: "1"
+      RAMULATOR2_SANITIZE: "1"
+      RAMULATOR2_ROOT: ${{ github.workspace }}/native-source
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: 'true'
+
+    - uses: actions/checkout@v6
+      with:
+        repository: CMU-SAFARI/ramulator2
+        ref: 72427a1bba3771564c4fb0e494ba02242fd1eaa7
+        path: native-source
+
+    - name: Set up native build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y g++-13 cmake curl zip unzip tar python3-venv
+        python3 -m venv "$RUNNER_TEMP/native-python"
+        "$RUNNER_TEMP/native-python/bin/python" -m pip install PyYAML
+        echo "$RUNNER_TEMP/native-python/bin" >> "$GITHUB_PATH"
+        vcpkg/bootstrap-vcpkg.sh
+        vcpkg/vcpkg install
+
+    # GCC 13's AddressSanitizer cannot place its shadow memory under the
+    # 32-bit mmap randomization some hosted kernels use, and then fails every
+    # instrumented program at startup.
+    - name: Limit mmap randomization for AddressSanitizer
+      run: sudo sysctl -w vm.mmap_rnd_bits=28
+
+    - name: Build instrumented simulator and tests
+      id: build
+      run: |
+        ./config.sh
+        env -u CXXFLAGS -u CPPFLAGS -u LDFLAGS -u CFLAGS make -j6 all test/bin/000-test-main
+
+    # Suppressions cover only vendored ITTAGE (the last step's file covers only
+    # the known native RITAddrMapper leak); see test/ramulator2/README.md.
+    # Tests are selected by file tag, without hidden cases: the driver (704),
+    # adapter (705), differential oracle smoke (706), global clock (707) and
+    # lifecycle (708) tests, each of which must exist. Cases tagged
+    # [rit-addr-mapper] run in the last step instead, so the native leak they
+    # report cannot hide a new one here. Each step after the build runs
+    # whatever the others' outcomes, so every one is reported.
+    - name: Run native C++ tests under sanitizers
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      env:
+        CHAMPSIM_EXPECT_RAMULATOR2: "1"
+      run: |
+        export ASAN_OPTIONS=halt_on_error=1:detect_leaks=1
+        export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1:suppressions=$PWD/test/ramulator2/sanitizers/ubsan.supp"
+        export LSAN_OPTIONS="suppressions=$PWD/test/ramulator2/sanitizers/lsan.supp"
+        for required in 704 705 706 707 708; do
+          ls test/cpp/src/"$required"-*.cc > /dev/null
+        done
+        spec=""
+        for file in test/cpp/src/70[4-8]-*.cc; do
+          spec="$spec${spec:+,}[#$(basename "$file" .cc)]~[.]~[rit-addr-mapper]"
+        done
+        test/bin/000-test-main -# --order rand "$spec"
+
+    - name: Simulate a generated trace with the instrumented binary
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      run: |
+        export ASAN_OPTIONS=halt_on_error=1:detect_leaks=1
+        export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1:suppressions=$PWD/test/ramulator2/sanitizers/ubsan.supp"
+        export LSAN_OPTIONS="suppressions=$PWD/test/ramulator2/sanitizers/lsan.supp"
+        python3 test/ramulator2/generate_trace.py --output "$RUNNER_TEMP/sanitized.champsim2" --instructions 32768
+        # Small data caches force LLC reads and writebacks, as in run_integration.py.
+        bin/champsim --trace-version 2 --config configs/ramulator2.toml -w 2000 -i 10000 \
+          --set ooo_cpu.cpu0.branch_predictor=hashed_perceptron --set ooo_cpu.cpu0.btb=basic_btb \
+          --set cache.cpu0_l1d.sets=16 --set cache.cpu0_l1d.ways=4 \
+          --set cache.cpu0_l2c.sets=16 --set cache.cpu0_l2c.ways=4 \
+          --set cache.llc.sets=32 --set cache.llc.ways=4 \
+          --toml "$RUNNER_TEMP/sanitized.toml" -- "$RUNNER_TEMP/sanitized.champsim2"
+        python3 - "$RUNNER_TEMP/sanitized.toml" <<'PY'
+        import json, sys, tomllib
+        doc = tomllib.load(open(sys.argv[1], "rb"))
+        mode = json.loads(doc["meta"]["ramulator2"]["build"])["mode"]
+        assert mode == "RelWithDebInfo C++20 Python=OFF Sanitizers=address,undefined", mode
+        adapter = doc["phase"]["simulation"]["roi"]["ramulator2"]["adapter"]
+        assert adapter["accepted_reads"] > 0 and adapter["accepted_writes"] > 0, adapter
+        print("instrumented native simulation validated:", mode)
+        PY
+
+    # The pinned native RITAddrMapper never frees the nested mapper it creates
+    # (rit_addr_mapper.cpp:55 calls Factory::create_implementation without
+    # add_child). These cases build four such controllers, which LeakSanitizer
+    # reports as 2,028 bytes in 20 allocations. lsan-rit.supp suppresses only
+    # allocations under RITAddrMapper::create_base_mapper, so any other leak in
+    # these cases still fails the step. Catch2 exits non-zero if the tag matches
+    # no test case.
+    - name: Run RITAddrMapper test cases under sanitizers (known native leak suppressed)
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      env:
+        CHAMPSIM_EXPECT_RAMULATOR2: "1"
+      run: |
+        export ASAN_OPTIONS=halt_on_error=1:detect_leaks=1
+        export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1:suppressions=$PWD/test/ramulator2/sanitizers/ubsan.supp"
+        export LSAN_OPTIONS="suppressions=$PWD/test/ramulator2/sanitizers/lsan-rit.supp"
+        test/bin/000-test-main --order rand "[rit-addr-mapper]~[.]"
+
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: native-sanitize-validation
+        include-hidden-files: true
+        path: |
+          ${{ runner.temp }}/sanitized.toml
+          .csconfig/**/ramulator2-native/build.log
+          native-source/.champsim-native/build.log
+          native-source/.champsim-native/manifest.json
 
   upload_coveralls:
     runs-on: ubuntu-latest

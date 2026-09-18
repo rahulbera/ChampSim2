@@ -1,6 +1,7 @@
 #include "ip_stride.h"
 
 #include "cache.h"
+#include "champsim_assert.h"
 
 uint32_t ip_stride::prefetcher_cache_operate(champsim::address addr, champsim::address ip, uint8_t cache_hit, bool useful_prefetch, access_type type,
                                              uint32_t metadata_in)
@@ -31,7 +32,7 @@ void ip_stride::prefetcher_cycle_operate()
   // If a lookahead is active
   if (active_lookahead.has_value()) {
     auto [old_pf_address, stride, degree] = active_lookahead.value();
-    assert(degree > 0);
+    CHAMPSIM_ASSERT(degree > 0);
 
     champsim::address pf_address{champsim::block_number{old_pf_address} + stride};
 

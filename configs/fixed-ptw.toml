@@ -1,0 +1,7 @@
+# Overlay on a machine configuration for the first performance experiment:
+# bin/champsim --config configs/champsim_config.toml --config configs/fixed-ptw.toml ...
+dram-model = "legacy"
+
+[ptw.cpu0_ptw]
+model = "fixed"       # "detailed" is the backward-compatible default
+fixed_latency = 200   # CPU cycles per admitted STLB miss; replaces walk/fault latency

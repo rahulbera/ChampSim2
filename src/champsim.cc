@@ -18,6 +18,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
+#include <iostream>
 #include <numeric>
 #include <vector>
 #include <fmt/chrono.h>
@@ -36,9 +38,9 @@ std::chrono::seconds elapsed_time() { return std::chrono::duration_cast<std::chr
 
 namespace champsim
 {
-long do_cycle(environment& env, std::vector<tracereader>& traces, std::vector<std::size_t> trace_index, champsim::chrono::clock& global_clock)
+long do_cycle(std::vector<std::reference_wrapper<operable>>& operables, const std::vector<std::reference_wrapper<O3_CPU>>& cpus,
+              std::vector<tracereader>& traces, const std::vector<std::size_t>& trace_index, champsim::chrono::clock& global_clock)
 {
-  auto operables = env.operable_view();
   std::sort(std::begin(operables), std::end(operables),
             [](const champsim::operable& lhs, const champsim::operable& rhs) { return lhs.current_time < rhs.current_time; });
 
@@ -49,7 +51,7 @@ long do_cycle(environment& env, std::vector<tracereader>& traces, std::vector<st
   }
 
   // Read from trace
-  for (O3_CPU& cpu : env.cpu_view()) {
+  for (O3_CPU& cpu : cpus) {
     auto& trace = traces.at(trace_index.at(cpu.cpu));
     for (auto pkt_count = cpu.IN_QUEUE_SIZE - static_cast<long>(std::size(cpu.input_queue)); !trace.eof() && pkt_count > 0; --pkt_count) {
       cpu.input_queue.push_back(trace());
@@ -71,6 +73,10 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
     op.begin_phase();
   }
 
+  // The environment owns a fixed component set throughout a phase.
+  const auto cpus = env.cpu_view();
+  auto cycle_operables = operables;
+
   const auto time_quantum = std::accumulate(std::cbegin(operables), std::cend(operables), champsim::chrono::clock::duration::max(),
                                             [](const auto acc, const operable& y) { return std::min(acc, y.clock_period); });
 
@@ -79,16 +85,20 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
   uint64_t livelock_timer{0};
   //                                   die | critical | warning
   std::vector<double> livelock_threshold{0.01, 0.02, 0.05};
-  std::vector<uint64_t> livelock_instr(std::size(env.cpu_view()), 0);
+  std::vector<uint64_t> livelock_instr(std::size(cpus), 0);
 
   // Perform phase
   int stalled_cycle{0};
-  std::vector<bool> phase_complete(std::size(env.cpu_view()), false);
+  std::vector<bool> phase_complete(std::size(cpus), false);
+  auto next_phase_complete = phase_complete;
   while (!std::accumulate(std::begin(phase_complete), std::end(phase_complete), true, std::logical_and{})) {
-    auto next_phase_complete = phase_complete;
+    next_phase_complete = phase_complete;
     global_clock.tick(time_quantum);
 
-    auto progress = do_cycle(env, traces, trace_index, global_clock);
+    // Restore canonical order before sorting: retaining last cycle's sorted
+    // order changes how equal-time operables are visited.
+    std::copy(std::begin(operables), std::end(operables), std::begin(cycle_operables));
+    auto progress = do_cycle(cycle_operables, cpus, traces, trace_index, global_clock);
 
     if (progress == 0) {
       ++stalled_cycle;
@@ -100,7 +110,7 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
     livelock_timer++;
     if (livelock_timer >= livelock_period) {
       // for each cpu
-      for (O3_CPU& cpu : env.cpu_view()) {
+      for (O3_CPU& cpu : cpus) {
         // for each threshold
         for (auto thres = std::begin(livelock_threshold); thres != std::end(livelock_threshold); thres++) {
           double livelock_ipc = std::ceil(cpu.sim_instr() - livelock_instr[cpu.cpu]) / std::ceil(livelock_period);
@@ -122,7 +132,12 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
     }
 
     if (stalled_cycle >= knobs.deadlock_cycle || livelock_trigger) {
-      std::for_each(std::begin(operables), std::end(operables), [](champsim::operable& c) { c.print_deadlock(); });
+      print_deadlock_diagnostics(operables);
+      // abort() flushes nothing. With stdout a pipe or a file, as in a batch
+      // job, the buffered tail of these diagnostics -- the memory backend's,
+      // printed last -- would otherwise be lost.
+      std::cout.flush();
+      std::fflush(stdout);
       abort();
     }
 
@@ -132,12 +147,12 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
     }
 
     // Check for phase finish
-    for (O3_CPU& cpu : env.cpu_view()) {
+    for (O3_CPU& cpu : cpus) {
       // Phase complete
       next_phase_complete[cpu.cpu] = next_phase_complete[cpu.cpu] || (cpu.sim_instr() >= length);
     }
 
-    for (O3_CPU& cpu : env.cpu_view()) {
+    for (O3_CPU& cpu : cpus) {
       if (next_phase_complete[cpu.cpu] != phase_complete[cpu.cpu]) {
         for (champsim::operable& op : operables) {
           op.end_phase(cpu.cpu);
@@ -151,7 +166,7 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
     phase_complete = next_phase_complete;
   }
 
-  for (O3_CPU& cpu : env.cpu_view()) {
+  for (O3_CPU& cpu : cpus) {
     fmt::print("{} complete CPU {} instructions: {} cycles: {} cumulative IPC: {:.4g} (Simulation time: {:%H hr %M min %S sec})\n", phase_name, cpu.cpu,
                cpu.sim_instr(), cpu.sim_cycle(), std::ceil(cpu.sim_instr()) / std::ceil(cpu.sim_cycle()), elapsed_time());
   }
@@ -163,7 +178,6 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
     stats.trace_names.push_back(trace_names.at(trace_index.at(i)));
   }
 
-  auto cpus = env.cpu_view();
   std::transform(std::begin(cpus), std::end(cpus), std::back_inserter(stats.sim_cpu_stats), [](const O3_CPU& cpu) { return cpu.sim_stats; });
   std::transform(std::begin(cpus), std::end(cpus), std::back_inserter(stats.roi_cpu_stats), [](const O3_CPU& cpu) { return cpu.roi_stats; });
 
@@ -171,11 +185,11 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
   std::transform(std::begin(caches), std::end(caches), std::back_inserter(stats.sim_cache_stats), [](const CACHE& cache) { return cache.sim_stats; });
   std::transform(std::begin(caches), std::end(caches), std::back_inserter(stats.roi_cache_stats), [](const CACHE& cache) { return cache.roi_stats; });
 
-  auto dram = env.dram_view();
-  std::transform(std::begin(dram.channels), std::end(dram.channels), std::back_inserter(stats.sim_dram_stats),
-                 [](const DRAM_CHANNEL& chan) { return chan.sim_stats; });
-  std::transform(std::begin(dram.channels), std::end(dram.channels), std::back_inserter(stats.roi_dram_stats),
-                 [](const DRAM_CHANNEL& chan) { return chan.roi_stats; });
+  auto memory_stats = env.memory_view().statistics();
+  stats.sim_dram_stats = std::move(memory_stats.sim_dram);
+  stats.roi_dram_stats = std::move(memory_stats.roi_dram);
+  stats.sim_ramulator2 = std::move(memory_stats.sim_ramulator2);
+  stats.roi_ramulator2 = std::move(memory_stats.roi_ramulator2);
 
   return stats;
 }
@@ -200,6 +214,7 @@ std::vector<phase_stats> main(environment& env, std::vector<phase_info>& phases,
     }
   }
 
+  env.memory_view().finalize();
   return results;
 }
 } // namespace champsim

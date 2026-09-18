@@ -1,13 +1,14 @@
 #ifndef STATIC_ENVIRONMENT_H
 #define STATIC_ENVIRONMENT_H
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "cache.h"
 #include "defs.h"
-#include "dram_controller.h"
 #include "environment.h"
+#include "memory_backend.h"
 #include "ooo_cpu.h"
 #include "ptw.h"
 #include "runtime_config.h"
@@ -24,8 +25,8 @@ namespace champsim
  * run with no configuration file behaves exactly as the stock machine.
  *
  * Member declaration order is the construction order and is load-bearing:
- * channels first (everything points into them), then DRAM, vmem (holds a
- * DRAM reference), PTWs, caches, cores. Each vector is built completely
+ * channels first (everything points into them), then memory, vmem (uses its
+ * capacity), PTWs, caches, cores. Each vector is built completely
  * before any pointer into it is handed out -- reallocation would dangle them.
  */
 class static_environment final : public environment
@@ -36,7 +37,7 @@ public:
   std::vector<std::reference_wrapper<O3_CPU>> cpu_view() final;
   std::vector<std::reference_wrapper<CACHE>> cache_view() final;
   std::vector<std::reference_wrapper<PageTableWalker>> ptw_view() final;
-  MEMORY_CONTROLLER& dram_view() final;
+  memory_backend& memory_view() final;
   std::vector<std::reference_wrapper<operable>> operable_view() final;
 
   // The per-core component names, which are also the runtime-configuration
@@ -55,11 +56,13 @@ public:
 
   // The clock tick do_phase() will use: the SMALLEST clock_period among the
   // operables. Durations given in cycles (the minor fault penalty) must be
-  // scaled by it, so it is computed from the configuration before any
-  // component exists. Exposed so a test can pin it against the constructed
-  // machine's actual minimum -- if this sweep ever misses a component, the
+  // scaled by it. Construction supplies the selected memory's actual period;
+  // the remaining frequencies come from configuration. Exposed so a test can
+  // pin it against the constructed machine's actual minimum -- if this sweep ever misses a component, the
   // two diverge silently and only cycle-denominated durations are wrong.
+  // The one-argument compatibility overload uses the legacy memory frequency.
   static chrono::picoseconds time_quantum(const runtime_config& cfg);
+  static chrono::picoseconds time_quantum(const runtime_config& cfg, chrono::picoseconds memory_period);
 
 private:
   // Runtime module selection, run once at the end of construction: before any
@@ -68,7 +71,7 @@ private:
   void select_modules(const runtime_config& cfg);
 
   std::vector<channel> channels;
-  MEMORY_CONTROLLER DRAM;
+  std::unique_ptr<memory_backend> memory;
   VirtualMemory vmem;
   std::vector<PageTableWalker> ptws;
   std::vector<CACHE> caches;

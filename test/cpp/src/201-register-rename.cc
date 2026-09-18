@@ -1,4 +1,7 @@
 #include <catch.hpp>
+#include <limits>
+#include <stdexcept>
+#include <utility>
 
 #include "instr.h"
 #include "mocks.hpp"
@@ -283,6 +286,93 @@ SCENARIO("The register allocator correctly recycles physical registers when no l
           writes.at(i).completed = true;
         }
         THEN("10 physical registers should be occupied") { REQUIRE(ra.count_free_registers() == PHYSICALREGS - 10); }
+      }
+    }
+  }
+}
+
+TEST_CASE("Counting register dependencies does not throw for an instruction that has not been renamed")
+{
+  // Only the deadlock printer counts dependencies, and it does so for IFETCH,
+  // DECODE and DISPATCH entries too. Those still hold the trace's architectural
+  // register IDs, which real traces place past the physical register file
+  // (706.stockfish_r uses 155). Such an ID names no physical register, so the
+  // instruction waits on nothing there.
+  constexpr int PHYSICALREGS = 128;
+  RegisterAllocator ra{PHYSICALREGS};
+  auto unrenamed = champsim::test::instruction_with_ip(0);
+  unrenamed.source_registers = {155, 255, PHYSICALREGS, 3};
+  int dependencies = -1;
+  REQUIRE_NOTHROW(dependencies = ra.count_reg_dependencies(unrenamed));
+  // Physical register 3 exists and has not been produced yet.
+  REQUIRE(dependencies == 1);
+}
+
+TEST_CASE("Register allocator construction rejects unusable physical-file sizes")
+{
+  REQUIRE_THROWS_WITH(RegisterAllocator{0}, Catch::Matchers::ContainsSubstring("between 1"));
+  REQUIRE_THROWS_WITH(RegisterAllocator{32768}, Catch::Matchers::ContainsSubstring("32767"));
+  REQUIRE_NOTHROW(RegisterAllocator{32767});
+}
+
+SCENARIO("The register allocator public queries preserve mapping and physical-file state.")
+{
+  GIVEN("A small physical register file")
+  {
+    RegisterAllocator registers{2};
+    const auto& allocator = std::as_const(registers);
+
+    THEN("physical-register queries reject the first index outside a nonempty file") { REQUIRE_THROWS_AS(allocator.isValid(2), std::out_of_range); }
+
+    WHEN("an unallocated architectural source is renamed")
+    {
+      const auto source = registers.rename_src_register(7);
+
+      THEN("the source is allocated once and is valid")
+      {
+        REQUIRE(allocator.isAllocated(7));
+        REQUIRE(allocator.isValid(source));
+        REQUIRE(allocator.count_free_registers() == 1);
+        REQUIRE(registers.rename_src_register(7) == source);
+        REQUIRE(allocator.count_free_registers() == 1);
+      }
+
+      AND_WHEN("a replacement destination is renamed, completed, and retired")
+      {
+        const auto replacement = registers.rename_dest_register(7, 1);
+
+        THEN("the replacement begins invalid and consumes the final free register")
+        {
+          REQUIRE_FALSE(allocator.isValid(replacement));
+          REQUIRE(allocator.count_free_registers() == 0);
+        }
+
+        AND_WHEN("the replacement completes")
+        {
+          registers.complete_dest_register(replacement);
+
+          THEN("the replacement becomes valid") { REQUIRE(allocator.isValid(replacement)); }
+
+          AND_WHEN("the replacement retires")
+          {
+            registers.retire_dest_register(replacement);
+
+            THEN("retirement frees and invalidates the committed mapping it replaced")
+            {
+              REQUIRE(allocator.count_free_registers() == 1);
+              REQUIRE_FALSE(allocator.isValid(source));
+            }
+
+            AND_WHEN("the frontend mapping is reset")
+            {
+              const auto speculative = registers.rename_dest_register(7, 2);
+              REQUIRE(speculative != replacement);
+              REQUIRE(registers.rename_src_register(7) == speculative);
+              registers.reset_frontend_RAT();
+              THEN("the frontend mapping returns to the committed replacement") { REQUIRE(registers.rename_src_register(7) == replacement); }
+            }
+          }
+        }
       }
     }
   }
