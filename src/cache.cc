@@ -31,6 +31,7 @@
 #include "util/algorithm.h"
 #include "util/bits.h"
 #include "util/span.h"
+#include "vmem.h"
 
 CACHE::CACHE(CACHE&& other)
     : operable(other),
@@ -40,7 +41,7 @@ CACHE::CACHE(CACHE&& other)
       cpu(other.cpu), NAME(std::move(other.NAME)), NUM_SET(other.NUM_SET), NUM_WAY(other.NUM_WAY), MSHR_SIZE(other.MSHR_SIZE), PQ_SIZE(other.PQ_SIZE),
       HIT_LATENCY(other.HIT_LATENCY), FILL_LATENCY(other.FILL_LATENCY), OFFSET_BITS(other.OFFSET_BITS), block(std::move(other.block)), MAX_TAG(other.MAX_TAG),
       MAX_FILL(other.MAX_FILL), prefetch_as_load(other.prefetch_as_load), match_offset_bits(other.match_offset_bits), virtual_prefetch(other.virtual_prefetch),
-      perfect(other.perfect), pref_activate_mask(std::move(other.pref_activate_mask)),
+      perfect(other.perfect), vmem(other.vmem), pref_activate_mask(std::move(other.pref_activate_mask)),
 
       sim_stats(std::move(other.sim_stats)), roi_stats(std::move(other.roi_stats)),
 
@@ -79,6 +80,7 @@ auto CACHE::operator=(CACHE&& other) -> CACHE&
   this->match_offset_bits = other.match_offset_bits;
   this->virtual_prefetch = other.virtual_prefetch;
   this->perfect = other.perfect;
+  this->vmem = other.vmem;
   this->pref_activate_mask = std::move(other.pref_activate_mask);
 
   this->sim_stats = std::move(other.sim_stats);
@@ -261,9 +263,13 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
   // RRIP policies index their state with .at(), so an out-of-range way would
   // throw rather than be ignored.
   //
-  // The response echoes the request's own data, which for a v2 trace is the
-  // value that operand actually held -- a cache with no line has nothing else
-  // truthful to return.
+  // A data cache has no line to answer from, so it echoes the request's data
+  // field, which nothing above it reads. A TLB cannot do that: its response
+  // data IS the translation, and the core never sets a request's data, so an
+  // echoing TLB mapped every page to physical page 0. A perfect TLB therefore
+  // answers with the real translation from the virtual memory it caches --
+  // the same va_to_pa the page table walker's last step uses -- without the
+  // walk and without the minor-fault penalty.
   //
   // Requests still arrive translated (the tag-check stage requires it), so a
   // perfect data cache still exercises the TLBs and the page table walker. To
@@ -271,7 +277,14 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
   if (perfect) {
     sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
 
-    response_type response{handle_pkt.address, handle_pkt.v_address, handle_pkt.data, handle_pkt.pf_metadata, handle_pkt.instr_depend_on_me};
+    auto data = handle_pkt.data;
+    if (vmem != nullptr) {
+      // A TLB lookup's address is the virtual address. v_address is not: a
+      // TLB's own prefetch leaves it empty, and the walker translates address
+      // for the same reason.
+      data = champsim::address{vmem->va_to_pa(handle_pkt.cpu, champsim::page_number{handle_pkt.address}).first};
+    }
+    response_type response{handle_pkt.address, handle_pkt.v_address, data, handle_pkt.pf_metadata, handle_pkt.instr_depend_on_me};
     for (auto* ret : handle_pkt.to_return) {
       ret->push_back(response);
     }

@@ -30,6 +30,7 @@
 #include "util/to_underlying.h"
 
 class CACHE;
+class VirtualMemory;
 namespace champsim
 {
 class channel;
@@ -63,6 +64,7 @@ struct cache_builder_base {
   std::vector<champsim::channel*> m_uls{};
   champsim::channel* m_ll{};
   champsim::channel* m_lt{nullptr};
+  VirtualMemory* m_vmem{nullptr};
 };
 } // namespace detail
 
@@ -232,7 +234,12 @@ public:
    * never filled or evicted and the level below sees no traffic at all. The
    * configured hit latency and bandwidth still apply, requests are still
    * translated, and this cache's own prefetcher and replacement hooks are
-   * bypassed because neither can affect a cache that never misses.
+   * bypassed because neither can affect a cache that never misses. A perfect
+   * TLB -- one given virtual_memory() -- answers with the real translation,
+   * without the walk and without the minor-fault penalty. It allocates no
+   * page-table pages and takes each data frame at lookup time rather than at
+   * walk completion, so physical page placement differs from a walking run;
+   * compare against a baseline with vmem.randomization on.
    */
   self_type& perfect(bool perfect_);
 
@@ -273,6 +280,14 @@ public:
    * Specify the translator (TLB) for this cache.
    */
   self_type& lower_translate(champsim::channel* lt_);
+
+  /**
+   * Specify the virtual memory whose translations this cache holds. Give it
+   * only to a TLB -- a cache whose lookups are virtual page numbers and whose
+   * block data is the physical page. A perfect TLB answers every lookup with
+   * the real translation from it; see perfect(bool).
+   */
+  self_type& virtual_memory(VirtualMemory* vmem_);
 
   /**
    * Specify the cache prefetcher.
@@ -594,6 +609,13 @@ template <typename P, typename R>
 auto champsim::cache_builder<P, R>::lower_translate(champsim::channel* lt_) -> self_type&
 {
   m_lt = lt_;
+  return *this;
+}
+
+template <typename P, typename R>
+auto champsim::cache_builder<P, R>::virtual_memory(VirtualMemory* vmem_) -> self_type&
+{
+  m_vmem = vmem_;
   return *this;
 }
 

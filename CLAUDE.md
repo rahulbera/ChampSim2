@@ -635,7 +635,10 @@ overwrite that one.
   perfect cache is zero) and that IPC actually moves. `test/cpp/src/446-perfect-cache.cc`
   pins only the first — 64 distinct blocks, all hits, `mock_ll.packet_count() == 0` —
   and carries a non-perfect control scenario so the file would fail if the flag did
-  nothing. The IPC half is a whole-run check and is in no test; run it yourself.
+  nothing. The IPC half is a whole-run check and is in no test; run it yourself, and
+  check the size of the change as well as its direction. A perfect DTLB once lifted
+  mcf 11.5x over its baseline because it mapped every page to physical page 0; a
+  correct one lifts it 15% (see `cache.<name>.perfect` below).
 - **A "perfect predictor" reporting 0 MPKI proves nothing.** `branch/perfect_branch` +
   `btb/perfect_btb` read the outcome out of the trace at prediction time — the same field
   ChampSim's mispredict rule compares — so 0 MPKI follows structurally even from a corrupt
@@ -750,6 +753,22 @@ hooks are bypassed, since neither can affect a cache that cannot miss and there 
 way index to hand a replacement policy; and the level below is *not* silenced
 outright — it keeps serving its other clients, so an L2C under a perfect L1D still
 sees the L1I's misses.
+
+**A perfect TLB returns the real translation.** A TLB's response data *is* the
+translation, so the three TLBs are built with `.virtual_memory(&vmem)` and a perfect
+one answers with `vmem->va_to_pa(...)`, the call the walker's last step makes, without
+the walk and without the minor-fault penalty. A perfect TLB allocates no PTE pages and
+takes each data frame at lookup time, so physical placement differs from a walking
+run: unrandomized, a perfect DTLB lifted mcf 23%, against 17% under the default seed.
+Compare perfect-TLB runs against a baseline with `vmem.randomization` on. Data caches
+get no virtual memory and echo the request's data field, which nothing above them
+reads. Until this was fixed, perfect TLBs echoed that data field too. The core never
+sets it, so every page mapped to physical page 0, and a workload's whole data footprint
+collapsed into 64 cache blocks. At `-w 1000000 -i 3000000`, 605.mcf with a perfect
+DTLB ran at IPC 3.04; with the real translation it runs at 0.30, against a 0.26
+baseline. Perfect-TLB results from before the fix are invalid.
+`test/cpp/src/447-perfect-tlb.cc` pins the real translation, and
+`501-static-environment.cc` pins that only the TLBs hold the virtual memory.
 
 DIB accounting lives in `cpu_stats` (`inc/core_stats.h`) and is charged in
 `O3_CPU::do_check_dib`, which runs once per instruction, gated by `dib_checked`. Only

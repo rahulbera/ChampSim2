@@ -184,10 +184,12 @@ SCENARIO("A perfect cache never sends a request down, however many distinct bloc
   }
 }
 
-SCENARIO("A perfect cache returns the data the request carried")
+SCENARIO("A perfect data cache returns the data the request carried")
 {
-  // A block that was never filled has no stored data, so the response echoes
-  // the request's own value -- which for a v2 trace is what that operand held.
+  // A block that was never filled has no stored data, so a data cache echoes
+  // the request's own data field; nothing above a data cache reads it. A TLB
+  // cannot echo, because its response data is the translation: a perfect TLB
+  // answers from the virtual memory instead (447-perfect-tlb).
   GIVEN("An empty perfect cache")
   {
     constexpr auto hit_latency = 3;

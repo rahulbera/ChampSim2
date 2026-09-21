@@ -235,6 +235,27 @@ TEST_CASE("Every component is wired: no cache has a null lower level except the 
   REQUIRE(std::size(env.ptw_view()) == champsim::defs::num_cpus);
 }
 
+TEST_CASE("The TLBs, and only the TLBs, hold the page table walker's virtual memory")
+{
+  // A perfect TLB answers with the real translation from this virtual memory
+  // (447-perfect-tlb). Without it a perfect TLB echoes the request's data and
+  // maps every page to physical page 0; given to a data cache it would
+  // translate an address that is already physical.
+  champsim::runtime_config cfg{};
+  champsim::static_environment env{cfg};
+
+  const VirtualMemory* walker_vmem = env.ptw_view().front().get().vmem;
+  REQUIRE(walker_vmem != nullptr);
+  for (const CACHE& cache : env.cache_view()) {
+    INFO("cache " << cache.NAME);
+    if (cache.NAME.find("TLB") != std::string::npos) {
+      REQUIRE(cache.vmem == walker_vmem);
+    } else {
+      REQUIRE(cache.vmem == nullptr);
+    }
+  }
+}
+
 TEST_CASE("The computed time quantum is the machine's actual smallest clock period")
 {
   // do_phase() ticks the shared clock by min(clock_period) over the operables,

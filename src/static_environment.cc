@@ -324,7 +324,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .prefetch_activate(prefetch_activate(cfg, dtlb))
                             .clock_period(period(cfg, dtlb + ".frequency", 4000))
                             .prefetch_as_load(cfg.value<bool>(dtlb + ".prefetch_as_load", false))
-                            .perfect(cfg.value<bool>(dtlb + ".perfect", false)));
+                            .perfect(cfg.value<bool>(dtlb + ".perfect", false))
+                            .virtual_memory(&vmem));
 
     caches.emplace_back(champsim::cache_builder{champsim::defaults::default_itlb}
                             .name(cache_name(cpu, "ITLB"))
@@ -341,7 +342,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .prefetch_activate(prefetch_activate(cfg, itlb))
                             .clock_period(period(cfg, itlb + ".frequency", 4000))
                             .prefetch_as_load(cfg.value<bool>(itlb + ".prefetch_as_load", false))
-                            .perfect(cfg.value<bool>(itlb + ".perfect", false)));
+                            .perfect(cfg.value<bool>(itlb + ".perfect", false))
+                            .virtual_memory(&vmem));
 
     caches.emplace_back(champsim::cache_builder{champsim::defaults::default_l1d}
                             .name(cache_name(cpu, "L1D"))
@@ -415,7 +417,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .prefetch_activate(prefetch_activate(cfg, stlb))
                             .clock_period(period(cfg, stlb + ".frequency", 4000))
                             .prefetch_as_load(cfg.value<bool>(stlb + ".prefetch_as_load", false))
-                            .perfect(cfg.value<bool>(stlb + ".perfect", false)));
+                            .perfect(cfg.value<bool>(stlb + ".perfect", false))
+                            .virtual_memory(&vmem));
   }
 
   cores.reserve(defs::num_cpus);
