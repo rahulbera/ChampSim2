@@ -14,7 +14,10 @@ struct fixed_ptw_fixture {
   champsim::runtime_config cfg;
   std::unique_ptr<champsim::static_environment> env;
 
-  explicit fixed_ptw_fixture(std::initializer_list<std::string_view> overrides = {})
+  // Not a default argument: GCC 11 and older then stop treating the constructor
+  // below as an initializer-list constructor, and fixed_ptw_fixture{"a", "b"} fails.
+  fixed_ptw_fixture() : fixed_ptw_fixture(std::initializer_list<std::string_view>{}) {}
+  explicit fixed_ptw_fixture(std::initializer_list<std::string_view> overrides)
   {
     cfg.set("dram-model=legacy");
     cfg.set("pmem.bank_rows=64");

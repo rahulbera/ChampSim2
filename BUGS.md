@@ -38,7 +38,7 @@ Line numbers are at `81275433` unless an entry says otherwise.
 | [B7](#b7-the-v2-branch-type-probe-consumes-pipe-input) | The v2 branch-type probe consumes pipe input | Medium | Open |
 | [B8](#b8-trace-end-of-file-handling) | Trace end-of-file handling: FIFO hang, no drain, N−1 laps, `-` | Low–Medium | Open |
 | [B9](#b9-small-defects) | Small defects (no-op flag, wrong overload, dead declaration, path parsing, register counts, no CI bounds checks) | Low | Open |
-| [B10](#b10-ci-on-master-fails-in-five-independent-ways) | CI on `master` fails in five independent ways | Medium | Open |
+| [B10](#b10-ci-on-master-fails-in-four-independent-ways) | CI on `master` fails in four independent ways | Medium | Open |
 
 ---
 
@@ -282,43 +282,27 @@ non-inert and needs its own decision.
 
 ---
 
-## B10. CI on `master` fails in five independent ways
+## B10. CI on `master` fails in four independent ways
 
-**Status: open.** Severity: medium. Every push to `master` has failed both workflows
-since at least 2026-09-21, the first recorded "Run Tests" run, and "Update
-Documentation" since 2026-08-05. A red build cannot show a new regression, and the
-failing matrix jobs stop at their compile error, so their test suites never run.
-Each failure stops its own job, so fixing one can reveal another behind it. The
-failures are identical before and after `fcd13089`–`ed01cca7`.
+**Status: open.** Severity: medium. Every "Run Tests" run on `master` has failed
+since at least 2026-09-21, the first one recorded, and every "Update Documentation"
+run since 2026-08-05. A red build cannot show a new regression, and a job that fails
+to build never runs its tests. Each failure stops its own job, so fixing one can
+reveal another behind it.
 
-Four causes are identified, one is not:
+Three causes are identified, one is not:
 
-1. **GCC 9, 10 and 11 cannot compile `test/cpp/src/601-fixed-ptw.cc`** (from
-   `78d24061`): `no matching function for call to
-   fixed_ptw_fixture(<brace-enclosed initializer list>)`. The trigger is the default
-   argument on its only constructor,
-   `explicit fixed_ptw_fixture(std::initializer_list<std::string_view> overrides = {})`
-   (`:17`). These compilers do not treat a constructor whose `initializer_list`
-   parameter has a default as an initializer-list constructor; GCC 12 and later do. A
-   minimal repro fails on `g++-11` and compiles on `g++-13`, with or without
-   `explicit`, and with `const char*` in place of `string_view`.
-   - **Fix:** drop the default and add `fixed_ptw_fixture() :
-     fixed_ptw_fixture(std::initializer_list<std::string_view>{}) {}`. The pattern
-     compiles cleanly on `g++-11`, 13 and 14 under the project's warning flags.
-   - With `g++-11`, every other test, core source and module compiles, so this is its
-     only blocker. GCC 9 and 10 were not available locally; their CI errors are the
-     same 8 in 601.
-2. **Clang 12–15 cannot compile `test/cpp/src/706-ramulator2-differential.cc`**
+1. **Clang 12–15 cannot compile `test/cpp/src/706-ramulator2-differential.cc`**
    (from `9047baec`): `reference to local binding 'pid' declared in enclosing
    function` at `:495` and `:497`, and the same for `fragment`. The lambdas passed to
    `require` refer to the structured bindings of
    `const auto [pid, fragment] = owner[attempt];` (`:493`). That is C++20; Clang
    accepts it from 16, and GCC accepts it already.
    - **Fix:** plain variables, `const auto pid = owner[attempt].first;` and
-     `const auto fragment = owner[attempt].second;`. No Clang is installed locally,
-     so this is unverified; confirm it on a Clang 15 runner.
+     `const auto fragment = owner[attempt].second;`. Clang 12.0.1 and 15.0.7
+     (conda-forge) reproduce these errors and compile the fix cleanly.
    - Clang 12–15 compile 601 without error.
-3. **The `python` job fails
+2. **The `python` job fails
    `test_ramulator2_build.RamulatorBuildTests.test_make_dry_run_does_not_prepare_build_artifacts`**
    (from `73f317fc`). It runs `make -n ramulator2` at the repository root. That goal
    hard-includes `_configuration.mk` (`config/build_rules.mk:88-92`), which only
@@ -332,7 +316,7 @@ Four causes are identified, one is not:
      test to dry-run beside a stub fragment, as its neighbour
      `test_fresh_enabled_dry_run_prints_missing_dependencies_without_building`
      already does for the same reason.
-4. **`publish-wiki` ("Update Documentation") fails** because
+3. **`publish-wiki` ("Update Documentation") fails** because
    `.github/workflows/docs.yml` checks out `ref: gh-pages`, a branch this fork does not
    have (`git ls-remote origin 'refs/heads/gh-pages*'` is empty). The fetch fails
    three times and the job stops, on every push to `master`.
@@ -340,12 +324,21 @@ Four causes are identified, one is not:
      wanted), or skip the job outside upstream with
      `if: github.repository == 'ChampSim/ChampSim'`, or drop `master` from its
      triggers.
-5. **macOS Clang: cause not identified.** `make test/bin/000-test-main` exits 2 after
-   about 225 compiles, with no compiler error and no inner-make message, identically
-   before and after this series. The log names no failing command. Reproduce on a Mac
-   with `make --debug=j`, or with `-j1` and `SHELL='sh -x'`. The runner's make version
-   is not in the log; Apple's `/usr/bin/make` is GNU Make 3.81, which may not support
-   everything the build rules use (inferred, not verified).
+4. **macOS Clang: cause not identified.** `make test/bin/000-test-main` exits 2
+   after about 225 compiles, with no compiler error and no inner-make message,
+   identically before and after `fcd13089`–`ed01cca7`. The log names no failing
+   command. Reproduce on a Mac with `make --debug=j`, or with `-j1` and
+   `SHELL='sh -x'`. The runner's make version is not in the log; Apple's
+   `/usr/bin/make` is GNU Make 3.81, which may not support everything the build
+   rules use (inferred, not verified).
+
+**Next in line: `upload_coveralls`** (`.github/workflows/test.yml:694`). It `needs`
+every cpp job, so it has been skipped in every run, and it runs for the first time
+once the matrix passes. It is expected to fail then (inferred; it has never run):
+`coverallsapp/github-action@master` uploads to a Coveralls project that exists only
+for upstream (`coveralls.io/github/rahulbera/ChampSim2` is 404). Guard it with
+`if: github.repository == 'ChampSim/ChampSim'`, register the repository on
+Coveralls, or remove the job.
 
 **Acceptance.** All "Run Tests" matrix jobs, `python`, `stats_output` and "Update
 Documentation" (or its deliberate removal) are green on a push to `master`, and the
