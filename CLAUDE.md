@@ -973,6 +973,16 @@ one runs under `make pytest`, takes the binary from `CHAMPSIM_BINARY` or
 
 - C++17 (only `ramulator2_driver.cc` uses C++20 in enabled builds), warnings-heavy (`global.options`: `-Wall -Wextra -Wshadow -Wpedantic -Wconversion`; optimization comes from `BUILD_MODE`).
   Modules additionally get `-Wno-unused-parameter -DCHAMPSIM_MODULE` (`module.options`).
+- **C++17 here means what GCC 9 and Clang 12 accept**, the oldest compilers in the CI
+  matrix, and a local GCC 13 build does not check that. Two constructs have broken
+  those jobs: a default argument on an `initializer_list` constructor (GCC 11 and
+  older then stop treating it as one, so `T{"a", "b"}` fails) and a lambda that
+  refers to a structured binding (C++20; Clang 15 and older reject it). Check new
+  code with both floor compilers, which conda-forge installs without root
+  (`gxx_linux-64=9`, `clangxx=12`): each accepts the construct the other rejects, and
+  newer stand-ins let more through (g++-11 has floating-point `std::from_chars`, which
+  GCC 9's library lacks). Pass one as `CXX` to `make compile_commands
+  BUILD_FLAVOR=test` and run its commands with `-fsyntax-only`.
 - Invariant checks are `CHAMPSIM_ASSERT` (`inc/champsim_assert.h`), never `assert`.
   It is gated on `CHAMPSIM_ENABLE_ASSERTIONS` (default 1, so the standalone `tools/`
   harnesses keep it), is independent of `NDEBUG`, is `constexpr`-safe, evaluates its

@@ -490,7 +490,10 @@ public:
   void complete(uint64_t attempt, std::vector<std::vector<expected_response>>& expected)
   {
     require(attempt < owner.size() && owner[attempt].first != 0, [&] { return fmt::format("callback for attempt {} that was never accepted", attempt); });
-    const auto [pid, fragment] = owner[attempt];
+    // Not a structured binding: the lambdas below refer to these, which Clang
+    // accepts only from 16 (C++20 allows it; C++17 does not).
+    const auto pid = owner[attempt].first;
+    const auto fragment = owner[attempt].second;
     auto found = parents.find(pid);
     require(found != parents.end(), [&] { return fmt::format("callback for attempt {} of already completed parent {}", attempt, pid); });
     auto& p = found->second;
