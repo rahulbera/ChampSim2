@@ -1,4 +1,6 @@
 #include <catch.hpp>
+// NB: expected sequences include the "Branch type executed" block added by
+// commit 4f492ab4; this test asserts exact output and must track the printer.
 
 #include "core_stats.h"
 #include "stats_printer.h"
@@ -9,14 +11,23 @@ TEST_CASE("An empty core stats prints zero")
   given.name = "test_cpu";
 
   std::vector<std::string> expected{"test_cpu cumulative IPC: - instructions: 0 cycles: 0",
+                                    "test_cpu DIB lookups: 0 hits: 0 misses: 0 hit rate: -%",
                                     "test_cpu Branch Prediction Accuracy: -% MPKI: - Average ROB Occupancy at Mispredict: -",
+                                    "test_cpu Cycles on wrong path: 0 CycWPKI: - Average cycles per mispredict: -",
                                     "Branch type MPKI",
                                     "BRANCH_DIRECT_JUMP: -",
                                     "BRANCH_INDIRECT: -",
                                     "BRANCH_CONDITIONAL: -",
                                     "BRANCH_DIRECT_CALL: -",
                                     "BRANCH_INDIRECT_CALL: -",
-                                    "BRANCH_RETURN: -"};
+                                    "BRANCH_RETURN: -",
+                                    "Branch type executed",
+                                    "BRANCH_DIRECT_JUMP: 0",
+                                    "BRANCH_INDIRECT: 0",
+                                    "BRANCH_CONDITIONAL: 0",
+                                    "BRANCH_DIRECT_CALL: 0",
+                                    "BRANCH_INDIRECT_CALL: 0",
+                                    "BRANCH_RETURN: 0"};
 
   REQUIRE_THAT(champsim::plain_printer::format(given), Catch::Matchers::RangeEquals(expected));
 }
@@ -31,8 +42,17 @@ TEST_CASE("The number of instructions and cycles modifies the IPC")
   given.end_cycles = 50;
 
   std::vector<std::string> expected{"test_cpu cumulative IPC: 2 instructions: 100 cycles: 50",
+                                    "test_cpu DIB lookups: 0 hits: 0 misses: 0 hit rate: -%",
                                     "test_cpu Branch Prediction Accuracy: -% MPKI: 0 Average ROB Occupancy at Mispredict: -",
+                                    "test_cpu Cycles on wrong path: 0 CycWPKI: 0 Average cycles per mispredict: -",
                                     "Branch type MPKI",
+                                    "BRANCH_DIRECT_JUMP: 0",
+                                    "BRANCH_INDIRECT: 0",
+                                    "BRANCH_CONDITIONAL: 0",
+                                    "BRANCH_DIRECT_CALL: 0",
+                                    "BRANCH_INDIRECT_CALL: 0",
+                                    "BRANCH_RETURN: 0",
+                                    "Branch type executed",
                                     "BRANCH_DIRECT_JUMP: 0",
                                     "BRANCH_INDIRECT: 0",
                                     "BRANCH_CONDITIONAL: 0",
@@ -47,10 +67,10 @@ TEST_CASE("The number of mispredictions modifies the MPKI")
 {
   auto num_misses = 255;
   auto [line_index, miss_type, expected_line] =
-      GENERATE(as<std::tuple<std::size_t, branch_type, std::string>>{}, std::tuple{3, branch_type::BRANCH_DIRECT_JUMP, "BRANCH_DIRECT_JUMP: 255"},
-               std::tuple{4, branch_type::BRANCH_INDIRECT, "BRANCH_INDIRECT: 255"}, std::tuple{5, branch_type::BRANCH_CONDITIONAL, "BRANCH_CONDITIONAL: 255"},
-               std::tuple{6, branch_type::BRANCH_DIRECT_CALL, "BRANCH_DIRECT_CALL: 255"},
-               std::tuple{7, branch_type::BRANCH_INDIRECT_CALL, "BRANCH_INDIRECT_CALL: 255"}, std::tuple{8, branch_type::BRANCH_RETURN, "BRANCH_RETURN: 255"});
+      GENERATE(as<std::tuple<std::size_t, branch_type, std::string>>{}, std::tuple{5, branch_type::BRANCH_DIRECT_JUMP, "BRANCH_DIRECT_JUMP: 255"},
+               std::tuple{6, branch_type::BRANCH_INDIRECT, "BRANCH_INDIRECT: 255"}, std::tuple{7, branch_type::BRANCH_CONDITIONAL, "BRANCH_CONDITIONAL: 255"},
+               std::tuple{8, branch_type::BRANCH_DIRECT_CALL, "BRANCH_DIRECT_CALL: 255"},
+               std::tuple{9, branch_type::BRANCH_INDIRECT_CALL, "BRANCH_INDIRECT_CALL: 255"}, std::tuple{10, branch_type::BRANCH_RETURN, "BRANCH_RETURN: 255"});
 
   cpu_stats given{};
   given.name = "test_cpu";
@@ -62,8 +82,17 @@ TEST_CASE("The number of mispredictions modifies the MPKI")
   given.branch_type_misses.set(miss_type, num_misses);
 
   std::vector<std::string> expected{"test_cpu cumulative IPC: 2 instructions: 1000 cycles: 500",
+                                    "test_cpu DIB lookups: 0 hits: 0 misses: 0 hit rate: -%",
                                     "test_cpu Branch Prediction Accuracy: 50% MPKI: 255 Average ROB Occupancy at Mispredict: 0",
+                                    "test_cpu Cycles on wrong path: 0 CycWPKI: 0 Average cycles per mispredict: 0",
                                     "Branch type MPKI",
+                                    "BRANCH_DIRECT_JUMP: 0",
+                                    "BRANCH_INDIRECT: 0",
+                                    "BRANCH_CONDITIONAL: 0",
+                                    "BRANCH_DIRECT_CALL: 0",
+                                    "BRANCH_INDIRECT_CALL: 0",
+                                    "BRANCH_RETURN: 0",
+                                    "Branch type executed",
                                     "BRANCH_DIRECT_JUMP: 0",
                                     "BRANCH_INDIRECT: 0",
                                     "BRANCH_CONDITIONAL: 0",
@@ -71,6 +100,14 @@ TEST_CASE("The number of mispredictions modifies the MPKI")
                                     "BRANCH_INDIRECT_CALL: 0",
                                     "BRANCH_RETURN: 0"};
   expected.at(line_index) = expected_line;
+  // The executed-counts block mirrors the MPKI block 7 lines below it
+  // ("Branch type executed" header + same type order); this case sets
+  // total_branch_types to 2*num_misses, so the same type's executed line
+  // must read 510.
+  {
+    const auto type_name = expected_line.substr(0, expected_line.find(':'));
+    expected.at(line_index + 7) = type_name + ": 510";
+  }
 
   REQUIRE_THAT(champsim::plain_printer::format(given), Catch::Matchers::RangeEquals(expected));
 }
@@ -90,9 +127,18 @@ TEST_CASE("The ROB occupancy modifies the flush penalty")
   given.total_rob_occupancy_at_branch_mispredict = (uint64_t)(10 * num_misses);
 
   std::vector<std::string> expected{"test_cpu cumulative IPC: 2 instructions: 1000 cycles: 500",
+                                    "test_cpu DIB lookups: 0 hits: 0 misses: 0 hit rate: -%",
                                     "test_cpu Branch Prediction Accuracy: 50% MPKI: 100 Average ROB Occupancy at Mispredict: 10",
+                                    "test_cpu Cycles on wrong path: 0 CycWPKI: 0 Average cycles per mispredict: 0",
                                     "Branch type MPKI",
                                     "BRANCH_DIRECT_JUMP: 100",
+                                    "BRANCH_INDIRECT: 0",
+                                    "BRANCH_CONDITIONAL: 0",
+                                    "BRANCH_DIRECT_CALL: 0",
+                                    "BRANCH_INDIRECT_CALL: 0",
+                                    "BRANCH_RETURN: 0",
+                                    "Branch type executed",
+                                    "BRANCH_DIRECT_JUMP: 200",
                                     "BRANCH_INDIRECT: 0",
                                     "BRANCH_CONDITIONAL: 0",
                                     "BRANCH_DIRECT_CALL: 0",
@@ -100,4 +146,42 @@ TEST_CASE("The ROB occupancy modifies the flush penalty")
                                     "BRANCH_RETURN: 0"};
 
   REQUIRE_THAT(champsim::plain_printer::format(given), Catch::Matchers::RangeEquals(expected));
+}
+
+TEST_CASE("Wrong-path cycles are reported as a total, per KI, and per mispredict")
+{
+  cpu_stats given{};
+  given.name = "test_cpu";
+  given.begin_instrs = 0;
+  given.begin_cycles = 0;
+  given.end_instrs = 1000;
+  given.end_cycles = 500;
+  given.total_branch_types.set(branch_type::BRANCH_CONDITIONAL, 200);
+  given.branch_type_misses.set(branch_type::BRANCH_CONDITIONAL, 100);
+  given.cycles_on_wrong_path = 2000;
+
+  // 2000 cycles over 1000 instructions is CycWPKI 2000; over 100 mispredicts,
+  // 20 cycles each.
+  const auto lines = champsim::plain_printer::format(given);
+  REQUIRE_THAT(lines.at(3), Catch::Matchers::Equals("test_cpu Cycles on wrong path: 2000 CycWPKI: 2000 Average cycles per mispredict: 20"));
+}
+
+TEST_CASE("DIB lookups are reported as a total, a hit count, a miss count, and a rate")
+{
+  cpu_stats given{};
+  given.name = "test_cpu";
+  given.begin_instrs = 0;
+  given.begin_cycles = 0;
+  given.end_instrs = 1000;
+  given.end_cycles = 500;
+  given.dib_hits = 900;
+  given.dib_misses = 123;
+
+  // 1023 lookups against 1000 instructions, deliberately unequal: the rate's
+  // denominator is the LOOKUP count, not the retired instruction count, and a
+  // real run's two never match. 900/1023 = 87.9765...; against `instrs()` the
+  // same data would read 90%. The counts are reported alongside the rate
+  // because a percentage cannot be pooled across traces on its own.
+  const auto lines = champsim::plain_printer::format(given);
+  REQUIRE_THAT(lines.at(1), Catch::Matchers::Equals("test_cpu DIB lookups: 1023 hits: 900 misses: 123 hit rate: 87.98%"));
 }

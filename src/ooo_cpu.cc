@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <numeric>
 #include <fmt/chrono.h>
 #include <fmt/core.h>
@@ -26,6 +27,7 @@
 
 #include "cache.h"
 #include "champsim.h"
+#include "champsim_assert.h"
 #include "deadlock.h"
 #include "event_listeners.h"
 #include "instruction.h"
@@ -98,7 +100,7 @@ void O3_CPU::initialize_instruction()
     stop_fetch = do_init_instruction(input_queue.front());
 
     // Add to IFETCH_BUFFER
-    IFETCH_BUFFER.push_back(input_queue.front());
+    IFETCH_BUFFER.push_back(std::move(input_queue.front()));
     input_queue.pop_front();
 
     IFETCH_BUFFER.back().ready_time = current_time;
@@ -157,6 +159,13 @@ bool O3_CPU::do_predict_branch(ooo_model_instr& arch_instr)
         fetch_resume_time = champsim::chrono::clock::time_point::max();
         stop_fetch = true;
         arch_instr.branch_mispredicted = true;
+
+        // Only the first freeze starts the clock: a second misprediction can be
+        // detected while fetch is already frozen, and the lost cycles overlap.
+        if (!fetch_stalled_on_mispredict) {
+          fetch_stalled_on_mispredict = true;
+          fetch_stall_begin = current_time;
+        }
       }
     } else {
       stop_fetch = arch_instr.branch_taken; // if correctly predicted taken, then we can't fetch anymore instructions this cycle
@@ -194,7 +203,14 @@ void O3_CPU::do_check_dib(ooo_model_instr& instr)
 {
   // Check DIB to see if we recently fetched this line
   auto dib_result = DIB.check_hit(instr.ip);
+
+  // Every instruction is checked exactly once -- `dib_checked` below gates
+  // re-entry -- so this is the only site that charges a DIB lookup, and the
+  // hit/miss counts sum to one lookup per fetched instruction. The fill is at
+  // decode (`do_dib_update`), not here, so a whole cold fetch group misses.
   if (dib_result) {
+    sim_stats.dib_hits++;
+
     // The cache line is in the L0, so we can mark this as complete
     instr.fetch_completed = true;
 
@@ -203,6 +219,8 @@ void O3_CPU::do_check_dib(ooo_model_instr& instr)
 
     // It can be acted on immediately
     instr.ready_time = current_time;
+  } else {
+    sim_stats.dib_misses++;
   }
 
   instr.dib_checked = true;
@@ -285,9 +303,12 @@ long O3_CPU::promote_to_decode()
   auto mark_for_decode = [time = current_time, lat = DECODE_LATENCY, warmup = warmup](auto& x) {
     return x.ready_time = time + (warmup ? champsim::chrono::clock::duration{} : lat);
   };
-  // to DIB_HIT_BUFFER
+  // to DIB_HIT_BUFFER. Warmup is free here for the same reason it is free in
+  // mark_for_decode: warmup exists to populate structures, not to be timed, and
+  // charging one path but not the other made the two front-end routes
+  // asymmetric during warmup in a way nothing intended.
   auto mark_for_dib = [time = current_time, lat = DIB_HIT_LATENCY, warmup = warmup](auto& x) {
-    return x.ready_time = time + lat;
+    return x.ready_time = time + (warmup ? champsim::chrono::clock::duration{} : lat);
   };
 
   std::for_each(window_begin, decoded_window_end, mark_for_dib); // assume DECODE_LATENCY = DIB_HIT_LATENCY
@@ -347,6 +368,13 @@ long O3_CPU::decode_instruction()
   auto do_decode = [&, this](auto& db_entry) {
     this->do_dib_update(db_entry);
 
+    // Report each architectural destination register while the numbers are
+    // still architectural: rename_dest_register() overwrites this vector with
+    // physical IDs at dispatch, so by execute the original is gone.
+    for (auto dreg : db_entry.destination_registers) {
+      this->impl_branch_decode_notify(db_entry.instr_id, static_cast<uint8_t>(dreg));
+    }
+
     // Resume fetch
     if (db_entry.branch_mispredicted) {
       // These branches detect the misprediction at decode
@@ -355,7 +383,7 @@ long O3_CPU::decode_instruction()
         // clear the branch_mispredicted bit so we don't attempt to resume fetch again at execute
         db_entry.branch_mispredicted = 0;
         // pay misprediction penalty
-        this->fetch_resume_time = this->current_time + BRANCH_MISPREDICT_PENALTY;
+        this->resume_fetch_after_mispredict();
       }
     }
     // Add to dispatch
@@ -469,16 +497,20 @@ void O3_CPU::do_execution(ooo_model_instr& instr)
   instr.ready_time = current_time + (warmup ? champsim::chrono::clock::duration{} : EXEC_LATENCY);
 
   // Mark LQ entries as ready to translate
-  for (auto& lq_entry : LQ) {
-    if (lq_entry.has_value() && lq_entry->instr_id == instr.instr_id) {
-      lq_entry->ready_time = current_time + (warmup ? champsim::chrono::clock::duration{} : EXEC_LATENCY);
+  if (!std::empty(instr.source_memory)) {
+    for (auto& lq_entry : LQ) {
+      if (lq_entry.has_value() && lq_entry->instr_id == instr.instr_id) {
+        lq_entry->ready_time = current_time + (warmup ? champsim::chrono::clock::duration{} : EXEC_LATENCY);
+      }
     }
   }
 
   // Mark SQ entries as ready to translate
-  for (auto& sq_entry : SQ) {
-    if (sq_entry.instr_id == instr.instr_id) {
-      sq_entry.ready_time = current_time + (warmup ? champsim::chrono::clock::duration{} : EXEC_LATENCY);
+  if (!std::empty(instr.destination_memory)) {
+    for (auto& sq_entry : SQ) {
+      if (sq_entry.instr_id == instr.instr_id) {
+        sq_entry.ready_time = current_time + (warmup ? champsim::chrono::clock::duration{} : EXEC_LATENCY);
+      }
     }
   }
 
@@ -492,7 +524,7 @@ void O3_CPU::do_memory_scheduling(ooo_model_instr& instr)
   // load
   for (auto& smem : instr.source_memory) {
     auto q_entry = std::find_if_not(std::begin(LQ), std::end(LQ), [](const auto& lq_entry) { return lq_entry.has_value(); });
-    assert(q_entry != std::end(LQ));
+    CHAMPSIM_ASSERT(q_entry != std::end(LQ));
     q_entry->emplace(smem, instr.instr_id, instr.ip, instr.asid); // add it to the load queue
 
     // Check for forwarding
@@ -504,9 +536,9 @@ void O3_CPU::do_memory_scheduling(ooo_model_instr& instr)
         (*q_entry)->finish(instr);
         q_entry->reset();
       } else {
-        assert(sq_it->instr_id < instr.instr_id);      // The found SQ entry is a prior store
-        sq_it->lq_depend_on_me.emplace_back(*q_entry); // Forward the load when the store finishes
-        (*q_entry)->producer_id = sq_it->instr_id;     // The load waits on the store to finish
+        CHAMPSIM_ASSERT(sq_it->instr_id < instr.instr_id); // The found SQ entry is a prior store
+        sq_it->lq_depend_on_me.emplace_back(*q_entry);     // Forward the load when the store finishes
+        (*q_entry)->producer_id = sq_it->instr_id;         // The load waits on the store to finish
 
         if constexpr (champsim::debug_print) {
           fmt::print("[DISPATCH] {} instr_id: {} waits on: {}\n", __func__, instr.instr_id, sq_it->instr_id);
@@ -575,8 +607,8 @@ void O3_CPU::do_finish_store(const LSQ_ENTRY& sq_entry)
 
   // Release dependent loads
   for (std::optional<LSQ_ENTRY>& dependent : sq_entry.lq_depend_on_me) {
-    assert(dependent.has_value()); // LQ entry is still allocated
-    assert(dependent->producer_id == sq_entry.instr_id);
+    CHAMPSIM_ASSERT(dependent.has_value()); // LQ entry is still allocated
+    CHAMPSIM_ASSERT(dependent->producer_id == sq_entry.instr_id);
 
     dependent->finish(std::begin(ROB), std::end(ROB));
     dependent.reset();
@@ -620,8 +652,49 @@ void O3_CPU::do_complete_execution(ooo_model_instr& instr)
 
   instr.completed = true;
 
+  // A branch has now resolved, out of program order. This is the structural
+  // analogue of CBP6's execute-time update (cbp2025/lib/uarchsim.cc:352);
+  // ChampSim's own last_branch_result already fired for it back at fetch.
+  if (instr.is_branch) {
+    impl_branch_execute_resolve(instr.instr_id, instr.ip, instr.branch_target, instr.branch_taken, instr.branch);
+  }
+
+  // Deliver the value this instruction's destination register received, where
+  // it is knowable. Only a load is unambiguous: its destination register takes
+  // the data it read, so require exactly one destination register and at least
+  // one source memory operand. Everything else reports "no value", which leaves
+  // the register marked unknown by the decode notification -- the correct
+  // outcome, since an ALU result is not in the trace.
+  //
+  // This fires at execute, not fetch, deliberately. Handing a register value to
+  // a predictor at fetch would leak the branch outcome: the flags at an x86 jcc
+  // determine its direction outright.
+  if (!std::empty(instr.destination_registers)) {
+    bool has_value = false;
+    uint64_t value = 0;
+#if CHAMPSIM_TRACE_MEMORY_VALUES
+    if (std::size(instr.destination_registers) == 1 && !std::empty(instr.source_memory)) {
+      std::memcpy(&value, std::data(instr.source_memory_value.at(0)), sizeof(value));
+      has_value = true;
+    }
+#endif
+    impl_branch_execute_notify(instr.instr_id, has_value, value);
+  }
+
   if (instr.branch_mispredicted) {
-    fetch_resume_time = current_time + BRANCH_MISPREDICT_PENALTY;
+    resume_fetch_after_mispredict();
+  }
+}
+
+// Restart fetch after a misprediction and charge the frozen interval, penalty
+// included, to cycles_on_wrong_path.
+void O3_CPU::resume_fetch_after_mispredict()
+{
+  fetch_resume_time = current_time + BRANCH_MISPREDICT_PENALTY;
+
+  if (fetch_stalled_on_mispredict) {
+    sim_stats.cycles_on_wrong_path += static_cast<uint64_t>((fetch_resume_time - fetch_stall_begin) / clock_period);
+    fetch_stalled_on_mispredict = false;
   }
 }
 
@@ -689,7 +762,7 @@ long O3_CPU::retire_rob()
 {
   auto [retire_begin, retire_end] =
       champsim::get_span_p(std::cbegin(ROB), std::cend(ROB), champsim::bandwidth{RETIRE_WIDTH}, [](const auto& x) { return x.completed; });
-  assert(std::distance(retire_begin, retire_end) >= 0); // end succeeds begin
+  CHAMPSIM_ASSERT(std::distance(retire_begin, retire_end) >= 0); // end succeeds begin
   if constexpr (champsim::debug_print) {
     std::for_each(retire_begin, retire_end, [cycle = current_time.time_since_epoch() / clock_period](const auto& x) {
       fmt::print("[ROB] retire_rob instr_id: {} is retired cycle: {}\n", x.instr_id, cycle);
@@ -715,6 +788,23 @@ long O3_CPU::retire_rob()
 }
 
 void O3_CPU::impl_initialize_branch_predictor() const { branch_module_pimpl->impl_initialize_branch_predictor(); }
+
+void O3_CPU::impl_branch_predictor_final_stats() const { branch_module_pimpl->impl_branch_predictor_final_stats(); }
+
+void O3_CPU::impl_branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type) const
+{
+  branch_module_pimpl->impl_branch_execute_resolve(instr_id, ip, branch_target, taken, branch_type);
+}
+
+void O3_CPU::impl_branch_decode_notify(uint64_t instr_id, uint8_t arch_dst_reg) const
+{
+  branch_module_pimpl->impl_branch_decode_notify(instr_id, arch_dst_reg);
+}
+
+void O3_CPU::impl_branch_execute_notify(uint64_t instr_id, bool has_value, uint64_t value) const
+{
+  branch_module_pimpl->impl_branch_execute_notify(instr_id, has_value, value);
+}
 
 void O3_CPU::impl_last_branch_result(champsim::address ip, champsim::address target, bool taken, uint8_t branch_type) const
 {
@@ -794,16 +884,16 @@ LSQ_ENTRY::LSQ_ENTRY(champsim::address addr, champsim::program_ordered<LSQ_ENTRY
 void LSQ_ENTRY::finish(std::deque<ooo_model_instr>::iterator begin, std::deque<ooo_model_instr>::iterator end) const
 {
   auto rob_entry = std::partition_point(begin, end, ooo_model_instr::precedes(this->instr_id));
-  assert(rob_entry != end);
+  CHAMPSIM_ASSERT(rob_entry != end);
   finish(*rob_entry);
 }
 
 void LSQ_ENTRY::finish(ooo_model_instr& rob_entry) const
 {
-  assert(rob_entry.instr_id == this->instr_id);
+  CHAMPSIM_ASSERT(rob_entry.instr_id == this->instr_id);
 
   ++rob_entry.completed_mem_ops;
-  assert(rob_entry.completed_mem_ops <= rob_entry.num_mem_ops());
+  CHAMPSIM_ASSERT(rob_entry.completed_mem_ops <= rob_entry.num_mem_ops());
 
   if constexpr (champsim::debug_print) {
     fmt::print("[LSQ] {} instr_id: {} full_address: {} remain_mem_ops: {}\n", __func__, instr_id, virtual_address,

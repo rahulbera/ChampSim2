@@ -1,11 +1,11 @@
 #include "drrip.h"
 
 #include <algorithm>
-#include <cassert>
 #include <random>
 #include <utility>
 
 #include "champsim.h"
+#include "champsim_assert.h"
 
 drrip::drrip(CACHE* cache)
     : replacement(cache), NUM_SET(cache->NUM_SET), NUM_WAY(cache->NUM_WAY), rrpv(static_cast<std::size_t>(NUM_SET * NUM_WAY)),
@@ -74,7 +74,7 @@ long drrip::find_victim(uint32_t triggering_cpu, uint64_t instr_id, long set, co
     for (auto it = begin; it != end; ++it)
       *it += rrpv_update;
 
-  assert(begin <= victim);
-  assert(victim < end);
+  CHAMPSIM_ASSERT(begin <= victim);
+  CHAMPSIM_ASSERT(victim < end);
   return std::distance(begin, victim); // cast protected by assertions
 }

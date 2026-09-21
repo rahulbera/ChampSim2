@@ -51,15 +51,42 @@ std::vector<std::string> champsim::plain_printer::format(O3_CPU::stats_type stat
   lines.push_back(fmt::format("{} cumulative IPC: {} instructions: {} cycles: {}", stats.name, ::print_ratio(stats.instrs(), stats.cycles()), stats.instrs(),
                               stats.cycles()));
 
+  // Decoded-instruction-buffer accesses. A hit lets the instruction skip both
+  // the L1I access and decode, so the hit rate is a front-end property in its
+  // own right. The counts are reported beside the rate because a percentage
+  // cannot be pooled across traces on its own.
+  lines.push_back(fmt::format("{} DIB lookups: {} hits: {} misses: {} hit rate: {}%", stats.name, stats.dib_lookups(), stats.dib_hits, stats.dib_misses,
+                              ::print_ratio(100 * stats.dib_hits, stats.dib_lookups())));
+
   lines.push_back(fmt::format("{} Branch Prediction Accuracy: {}% MPKI: {} Average ROB Occupancy at Mispredict: {}", stats.name,
                               ::print_ratio(100 * (total_branch - total_mispredictions), total_branch),
                               ::print_ratio(std::kilo::num * total_mispredictions, stats.instrs()),
                               ::print_ratio(stats.total_rob_occupancy_at_branch_mispredict, total_mispredictions)));
 
+  // Cycles fetch spent frozen after a misprediction -- CBP2025's CycWP -- and
+  // the same figure per 1K instructions. MPKI counts mispredictions; this
+  // counts what they cost.
+  lines.push_back(fmt::format("{} Cycles on wrong path: {} CycWPKI: {} Average cycles per mispredict: {}", stats.name, stats.cycles_on_wrong_path,
+                              ::print_ratio(std::kilo::num * stats.cycles_on_wrong_path, stats.instrs()),
+                              ::print_ratio(stats.cycles_on_wrong_path, total_mispredictions)));
+
   lines.emplace_back("Branch type MPKI");
   for (auto idx : types) {
     lines.push_back(fmt::format("{}: {}", branch_type_names.at(champsim::to_underlying(idx)),
                                 ::print_ratio(std::kilo::num * stats.branch_type_misses.value_or(idx, 0), stats.instrs())));
+  }
+
+  // Per-type EXECUTION counts, not just mispredictions. total_branch_types is
+  // already accumulated (ooo_cpu.cc) and feeds the accuracy line above, but was
+  // never reported per type -- so "what fraction of indirect branches missed"
+  // could only be reconstructed by pairing MPKI with a branch-type census of the
+  // TRACE, i.e. a different instruction window than the ROI. Over 68 traces that
+  // approximation disagreed with the simulated branch density by a median 0.68%
+  // but up to 37.6%. Emitting the counts here makes the ratio exact and removes
+  // the second source entirely.
+  lines.emplace_back("Branch type executed");
+  for (auto idx : types) {
+    lines.push_back(fmt::format("{}: {}", branch_type_names.at(champsim::to_underlying(idx)), stats.total_branch_types.value_or(idx, 0)));
   }
 
   return lines;
@@ -127,7 +154,7 @@ std::vector<std::string> champsim::plain_printer::format(CACHE::stats_type stats
   return lines;
 }
 
-std::vector<std::string> champsim::plain_printer::format(DRAM_CHANNEL::stats_type stats)
+std::vector<std::string> champsim::plain_printer::format(dram_stats stats)
 {
   std::vector<std::string> lines{};
   lines.push_back(fmt::format("{} RQ ROW_BUFFER_HIT: {:10}", stats.name, stats.RQ_ROW_BUFFER_HIT));
@@ -176,6 +203,11 @@ std::vector<std::string> champsim::plain_printer::format(champsim::phase_stats& 
       auto sublines = format(stat);
       std::move(std::begin(sublines), std::end(sublines), std::back_inserter(lines));
     }
+    if (stats.sim_ramulator2) {
+      lines.emplace_back("Ramulator2 Statistics");
+      auto sublines = toml_printer::format(*stats.sim_ramulator2, "ramulator2");
+      std::move(sublines.begin(), sublines.end(), std::back_inserter(lines));
+    }
   }
 
   lines.emplace_back("");
@@ -194,11 +226,17 @@ std::vector<std::string> champsim::plain_printer::format(champsim::phase_stats& 
   }
 
   lines.emplace_back("");
-  lines.emplace_back("DRAM Statistics");
-  for (const auto& stat : stats.roi_dram_stats) {
-    auto sublines = format(stat);
-    lines.emplace_back("");
-    std::move(std::begin(sublines), std::end(sublines), std::back_inserter(lines));
+  if (stats.roi_ramulator2) {
+    lines.emplace_back("Ramulator2 Statistics");
+    auto sublines = toml_printer::format(*stats.roi_ramulator2, "ramulator2");
+    std::move(sublines.begin(), sublines.end(), std::back_inserter(lines));
+  } else {
+    lines.emplace_back("DRAM Statistics");
+    for (const auto& stat : stats.roi_dram_stats) {
+      auto sublines = format(stat);
+      lines.emplace_back("");
+      std::move(std::begin(sublines), std::end(sublines), std::back_inserter(lines));
+    }
   }
 
   return lines;

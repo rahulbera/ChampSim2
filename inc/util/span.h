@@ -18,19 +18,19 @@
 #define UTIL_SPAN_H
 
 #include <algorithm>
-#include <cassert>
 #include <iterator>
 #include <limits>
 
 #include "bandwidth.h"
+#include "champsim_assert.h"
 
 namespace champsim
 {
 template <typename It>
 std::pair<It, It> get_span(It begin, It end, bandwidth sz)
 {
-  assert(std::distance(begin, end) >= 0);
-  assert(sz.amount_remaining() >= 0);
+  CHAMPSIM_ASSERT(std::distance(begin, end) >= 0);
+  CHAMPSIM_ASSERT(sz.amount_remaining() >= 0);
   auto distance = std::min(std::distance(begin, end), sz.amount_remaining());
   return {begin, std::next(begin, distance)};
 }

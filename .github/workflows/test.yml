@@ -31,6 +31,7 @@ jobs:
     runs-on: ${{ matrix.config.os }}
     env:
       CXX: ${{ matrix.config.cxx }}
+      WITH_RAMULATOR2: "0"
 
     strategy:
       fail-fast: false
@@ -221,7 +222,7 @@ jobs:
         name: lcov-python
         path: lcov_python.info
 
-  json_output:
+  stats_output:
     runs-on: ubuntu-latest
 
     steps:
@@ -244,28 +245,455 @@ jobs:
         CXXFLAGS: "--coverage"
         LDFLAGS: "--coverage"
 
-    - name: Produce JSON
-      run: ./bin/champsim -w5000 -i5000 --json=test.json -- <(curl -s https://dpc3.compas.cs.stonybrook.edu/champsim-traces/speccpu/400.perlbench-41B.champsimtrace.xz | xz -dc)
+    - name: Produce TOML
+      run: ./bin/champsim -w5000 -i5000 --toml=test.toml -- <(curl -s https://dpc3.compas.cs.stonybrook.edu/champsim-traces/speccpu/400.perlbench-41B.champsimtrace.xz | xz -dc)
 
-    - name: Validate JSON
-      run: python3 -m json.tool test.json
+    # Parsing alone only proves the file is well formed, which stayed true
+    # through every past change to the printer. Assert the shape too, so that
+    # dropping a section or emitting an empty document fails here.
+    - name: Validate TOML
+      run: |
+        python3 - <<'PY'
+        import re
+        import tomllib
+        doc = tomllib.load(open("test.toml", "rb"))
+        assert doc["meta"]["schema_version"] == 1, doc["meta"]
+        phase = doc["phase"]["simulation"]
+        # The whole-run section is opt-in, and [meta] must agree with what was
+        # actually emitted; --toml-sim-stats is covered by 099-toml-printer.cc.
+        assert doc["meta"]["sim_stats"] is False, doc["meta"]
+        assert "sim" not in phase, sorted(phase)
+        core = phase["roi"]["core"]["cpu0"]
+        assert core["instructions"] > 0, core
+        assert core["cycles"] > 0, core
+        assert set(core["mispredict"]) == set(core["executed"]), core
+        # One lookup per fetched instruction, always classified. The pipeline
+        # is not drained between phases, so the lookup count is neither equal to
+        # nor bounded by `instructions` and cannot be asserted against it.
+        #
+        # `dib_lookups` is derived from the other two (inc/core_stats.h), so the
+        # sum below is a tautology today -- it is kept as a guard against it
+        # ever becoming an independently stored counter. The RATE is the check
+        # that bites: it would catch a swapped key or a wrong denominator in the
+        # printer, neither of which the sum can see.
+        assert core["dib_lookups"] > 0, core
+        assert core["dib_lookups"] == core["dib_hits"] + core["dib_misses"], core
+        assert abs(core["dib_hit_rate"] - 100 * core["dib_hits"] / core["dib_lookups"]) < 0.01, core
+        # Hits need already-DECODED code to run again (the DIB fills at decode,
+        # so a cold fetch group misses in its entirety); 400.perlbench loops
+        # well inside the ROI, so this holds by thousands of events. dib_misses
+        # is deliberately NOT asserted: the ROI starts deep in a hot loop, and
+        # the miss count there is a handful of events -- 4 at `-w5000 -i5000`,
+        # 0 at `-i2000` -- so guarding it would red this leg on any change to
+        # the run length, for a reason unrelated to the document's shape.
+        assert core["dib_hits"] > 0, core
+        assert phase["roi"]["cache"], "no caches emitted"
+        assert phase["roi"]["dram"]["channel0"], "no DRAM channel emitted"
+        # Ratios must be real floats -- `nan` is legal and expected, a string or
+        # an int is not.
+        for key in ("ipc", "mpki", "cyc_wpki", "branch_prediction_accuracy", "dib_hit_rate"):
+            assert isinstance(core[key], float), (key, core[key])
+        # [config] is the EFFECTIVE configuration -- every key the machine
+        # consulted, with the value used -- and [meta] the parameters of this
+        # run, so a result file states what produced it.
+        meta = doc["meta"]
+        assert meta["warmup_instructions"] == 5000, meta
+        assert meta["simulation_instructions"] == 5000, meta
+        assert meta["trace_version"] == 1, meta
+        assert meta["num_cpus"] == 1, meta
+        assert "--toml" in meta["command_line"], meta
+        # No --config/--set on this leg, so nothing was overridden. An empty
+        # table, not a missing one: absence would be indistinguishable from a
+        # printer that dropped the section.
+        assert doc["config_override"] == {}, doc["config_override"]
+        assert meta["config_files"] == "", meta
+        # 0x + a 16-hex-digit FNV-1a hash of the effective configuration,
+        # leading zeros intact.
+        assert re.fullmatch(r"0x[0-9a-f]{16}", meta["build_id"]), meta
+
+        cfg = doc["config"]
+        # Components and the backend selector exist at the root: no configuration file
+        # for the document to echo, so an "executable_name" or "block_size" key
+        # here would mean the printer had invented one.
+        assert set(cfg) == {"cache", "dram-model", "ooo_cpu", "pmem", "ptw", "sim", "vmem"}, sorted(cfg)
+        assert cfg["dram-model"] == "legacy", cfg
+        assert cfg["ooo_cpu"]["cpu0"]["branch_predictor"], cfg["ooo_cpu"]["cpu0"]
+        assert cfg["ooo_cpu"]["cpu0"]["btb"], cfg["ooo_cpu"]["cpu0"]
+        # Module selections are consulted keys like any other, so every cache
+        # reports the policy and prefetcher it actually ran with.
+        assert cfg["cache"]["cpu0_l1i"]["replacement"], cfg["cache"]["cpu0_l1i"]
+        assert cfg["cache"]["cpu0_l1i"]["prefetcher"], cfg["cache"]["cpu0_l1i"]
+        # The whole point of lower-casing component names the same way in both
+        # sections: a consumer can join a cache's configuration to its stats.
+        assert set(cfg["cache"]) == set(phase["roi"]["cache"]), (sorted(cfg["cache"]), sorted(phase["roi"]["cache"]))
+        assert set(cfg["ooo_cpu"]) == set(phase["roi"]["core"]), (sorted(cfg["ooo_cpu"]), sorted(phase["roi"]["core"]))
+
+        print("TOML document validated")
+        PY
+
+    # The runtime configuration path: a file, an overriding --set, and the
+    # provenance record. Streams the trace again -- process substitution caches
+    # nothing, so this is a second download.
+    - name: Runtime configuration overrides
+      run: |
+        ./bin/champsim -w5000 -i5000 --config configs/sample.toml --set ooo_cpu.cpu0.rob_size=256 \
+          --toml override.toml -- <(curl -s https://dpc3.compas.cs.stonybrook.edu/champsim-traces/speccpu/400.perlbench-41B.champsimtrace.xz | xz -dc)
+        python3 - <<'PY'
+        import tomllib
+        doc = tomllib.load(open("override.toml", "rb"))
+        ov = doc["config_override"]
+        # --set came AFTER --config, so it wins over the file's 512.
+        assert ov["ooo_cpu.cpu0.rob_size"] == 256, ov
+        # Untouched file keys apply as written.
+        assert ov["cache.cpu0_l1d.sets"] == 128, ov
+        assert doc["meta"]["config_files"] == "configs/sample.toml", doc["meta"]
+        print("runtime configuration validated")
+        PY
+
+    # Selecting the perfect pair makes the swap's EFFECT structural: both
+    # oracles read the trace's own outcome/target, so total_mispredicts is 0
+    # by construction -- while the inc/defs.h default pair
+    # (hashed_perceptron + basic_btb) mispredicts. Two
+    # REAL predictors can tie on a 5000-instruction window (bimodal and gshare
+    # do, at 41), so real ones cannot carry this assertion. Module-knob
+    # consumption is covered by the sample.toml step above (basic_btb's
+    # geometry table with basic_btb selected).
+    - name: Runtime module selection
+      run: |
+        ./bin/champsim -w5000 -i5000 --set ooo_cpu.cpu0.branch_predictor=perfect_branch \
+          --set ooo_cpu.cpu0.btb=perfect_btb \
+          --toml modsel.toml -- <(curl -s https://dpc3.compas.cs.stonybrook.edu/champsim-traces/speccpu/400.perlbench-41B.champsimtrace.xz | xz -dc)
+        python3 - <<'PY'
+        import tomllib
+        doc = tomllib.load(open("modsel.toml", "rb"))
+        ov = doc["config_override"]
+        assert ov["ooo_cpu.cpu0.branch_predictor"] == "perfect_branch", ov
+        assert ov["ooo_cpu.cpu0.btb"] == "perfect_btb", ov
+        # [config] is the EFFECTIVE configuration, so it shows what ran.
+        assert doc["config"]["ooo_cpu"]["cpu0"]["branch_predictor"] == "perfect_branch", doc["config"]["ooo_cpu"]["cpu0"]
+        core = doc["phase"]["simulation"]["roi"]["core"]["cpu0"]
+        base = tomllib.load(open("test.toml", "rb"))["phase"]["simulation"]["roi"]["core"]["cpu0"]
+        assert base["total_mispredicts"] > 0, base["mispredict"]
+        assert core["total_mispredicts"] == 0, core["mispredict"]
+        print("runtime module selection validated")
+        PY
+
+    # A statistics document is a configuration source: --config on a previous
+    # run's --toml output must reproduce that run. This is the provenance
+    # claim the document makes, so it is checked end-to-end rather than only
+    # at the store's unit level (098-runtime-config.cc).
+    - name: Reproduce a run from its own statistics document
+      run: |
+        ./bin/champsim -w5000 -i5000 --config test.toml --toml repro.toml \
+          -- <(curl -s https://dpc3.compas.cs.stonybrook.edu/champsim-traces/speccpu/400.perlbench-41B.champsimtrace.xz | xz -dc)
+        python3 - <<'PY'
+        import math
+        import tomllib
+        first = tomllib.load(open("test.toml", "rb"))
+        again = tomllib.load(open("repro.toml", "rb"))
+
+        # An undefined ratio is emitted as a real `nan`, and nan != nan -- so a
+        # plain == on these documents reports a difference where there is none.
+        def differences(lhs, rhs, path=""):
+            if isinstance(lhs, dict) and isinstance(rhs, dict):
+                for key in sorted(set(lhs) | set(rhs)):
+                    if key not in lhs or key not in rhs:
+                        yield f"{path}.{key} is present in only one document"
+                    else:
+                        yield from differences(lhs[key], rhs[key], f"{path}.{key}")
+            elif isinstance(lhs, float) and isinstance(rhs, float) and math.isnan(lhs) and math.isnan(rhs):
+                return
+            elif lhs != rhs:
+                yield f"{path}: {lhs!r} != {rhs!r}"
+
+        # The machine is identical: same effective configuration, same id.
+        assert not list(differences(first["config"], again["config"])), list(differences(first["config"], again["config"]))
+        assert again["meta"]["build_id"] == first["meta"]["build_id"], (again["meta"], first["meta"])
+        # And so are the results it produced.
+        assert not list(differences(first["phase"], again["phase"])), list(differences(first["phase"], again["phase"]))
+        # Every key came from the document, so all of them are overrides now --
+        # the file did set them.
+        assert again["config_override"], again["config_override"]
+        print("statistics-document round trip validated")
+        PY
+
+    # --knobs is documented as the authoritative list of what a binary
+    # accepts, so it has to be machine-readable: a stray warning on stdout
+    # (the VMEM one fires during the probe) used to make it unparseable.
+    - name: --knobs emits a usable configuration file
+      run: |
+        ./bin/champsim --knobs > knobs.toml
+        # --knobs is what a user reaches for to check whether a key is real,
+        # so it must not accept a bad one and exit 0.
+        set +e
+        ./bin/champsim --knobs --set pmem.NOSUCHKEY=1 > /dev/null 2>&1
+        status=$?
+        set -e
+        test "$status" -ne 0 || { echo "--knobs accepted an unknown key"; exit 1; }
+        python3 -c "import tomllib; d = tomllib.load(open('knobs.toml','rb')); assert sorted(d) == ['cache','dram-model','ooo_cpu','pmem','ptw','sim','vmem'], sorted(d); assert d['dram-model'] == 'legacy'"
+        # And what it emits is accepted straight back as configuration.
+        ./bin/champsim -w5000 -i5000 --config knobs.toml \
+          -- <(curl -s https://dpc3.compas.cs.stonybrook.edu/champsim-traces/speccpu/400.perlbench-41B.champsimtrace.xz | xz -dc)
+        echo "--knobs round trip validated"
+
+    - name: Reject an unknown module name
+      run: |
+        set +e
+        message=$(./bin/champsim -w5000 -i5000 --set ooo_cpu.cpu0.btb=no_such_btb -- /dev/null 2>&1)
+        status=$?
+        set -e
+        echo "$message"
+        test "$status" -ne 0 || { echo "expected an unknown module to exit non-zero"; exit 1; }
+        echo "$message" | grep -q "valid btb modules" || { echo "exited non-zero, but not because of the module registry"; exit 1; }
+
+    - name: Reject an unknown runtime key
+      run: |
+        set +e
+        message=$(./bin/champsim -w5000 -i5000 --set pmem.tCAS=24 -- /dev/null 2>&1)
+        status=$?
+        set -e
+        echo "$message"
+        test "$status" -ne 0 || { echo "expected an unknown key to exit non-zero"; exit 1; }
+        echo "$message" | grep -q "did you mean 'pmem.tcas'" || { echo "exited non-zero, but not because of the unknown-key guard"; exit 1; }
+
+    # Asserting the message, not just a non-zero exit: almost anything makes
+    # this command fail, and a guard that passes for the wrong reason is worse
+    # than no guard.
+    - name: Reject the removed --json option
+      run: |
+        set +e
+        message=$(./bin/champsim -w5000 -i5000 --json=test.json -- /dev/null 2>&1)
+        status=$?
+        set -e
+        echo "$message"
+        test "$status" -ne 0 || { echo "expected --json to exit non-zero"; exit 1; }
+        echo "$message" | grep -q -- "--json has been removed" || { echo "exited non-zero, but not because of the --json guard"; exit 1; }
 
     - name: Capture LCOV
       run: |
         lcov --capture --no-external \
         --directory . \
+        --include $(pwd)/src/toml_printer.cc \
+        --include $(pwd)/src/runtime_config.cc \
+        --include $(pwd)/inc/runtime_config.h \
         --include $(pwd)/src/json_printer.cc \
         --include $(pwd)/inc/stats_printer.h \
-        --output-file lcov_json.info
+        --output-file lcov_stats.info
 
     - uses: actions/upload-artifact@v7
       with:
-        name: lcov-json
-        path: lcov_json.info
+        name: lcov-stats
+        path: lcov_stats.info
+
+  native:
+    name: Ubuntu 24.04 GCC 13 with Ramulator 2.1
+    runs-on: ubuntu-24.04
+    env:
+      CXX: /usr/bin/g++-13
+      WITH_RAMULATOR2: "1"
+      RAMULATOR2_ROOT: ${{ github.workspace }}/native-source
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: 'true'
+
+    - uses: actions/checkout@v6
+      with:
+        repository: CMU-SAFARI/ramulator2
+        ref: 72427a1bba3771564c4fb0e494ba02242fd1eaa7
+        path: native-source
+
+    - name: Set up native build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y g++-13 cmake curl zip unzip tar python3-venv
+        python3 -m venv "$RUNNER_TEMP/native-python"
+        "$RUNNER_TEMP/native-python/bin/python" -m pip install PyYAML
+        echo "$RUNNER_TEMP/native-python/bin" >> "$GITHUB_PATH"
+        vcpkg/bootstrap-vcpkg.sh
+        vcpkg/vcpkg install
+
+    # Keep this job separate from legacy coverage flags and compiler versions.
+    # The helper checks native/source/dependency revisions and the effective ABI.
+    - name: Build simulator and run enabled C++ tests
+      run: |
+        ./config.sh
+        env -u CXXFLAGS -u CPPFLAGS -u LDFLAGS -u CFLAGS make -j6 all test
+
+    - name: Run Python and CLI regression tests
+      run: |
+        make pytest
+        python3 -m unittest discover -s test/ramulator2 -p test_tools.py -v
+
+    # These generate bounded local inputs; no private or downloaded benchmark
+    # traces are required. One source root is built and executed serially.
+    - name: Compare driver with direct native replay
+      run: |
+        native_objects=$(make --no-print-directory print-build-paths | python3 -c 'import json,sys; print(json.load(sys.stdin)["obj"])')
+        python3 test/ramulator2/run_oracle.py \
+          --native-root "$RAMULATOR2_ROOT" --build-dir "$native_objects" \
+          --dependency-dir vcpkg_installed/x64-linux \
+          --output-dir "$RUNNER_TEMP/native-oracle" --cxx "$CXX"
+
+    - name: Exercise native simulations and result replay
+      run: |
+        python3 test/ramulator2/run_integration.py --binary bin/champsim \
+          --output-dir "$RUNNER_TEMP/native-integration"
+
+    # Non-PIE code takes a native function's address through a PLT stub in the
+    # executable, which once made the provenance check fingerprint the program.
+    # Separate object/binary roots leave the main build alone and reuse the
+    # same verified native library owned by its source root.
+    - name: Check library provenance from a non-PIE executable
+      run: |
+        obj="$RUNNER_TEMP/nopie-obj"
+        bin="$RUNNER_TEMP/nopie-bin"
+        mkdir -p "$obj"
+        cp .csconfig/registry.inc .csconfig/registry.cc.inc "$obj/"
+        env -u CXXFLAGS -u CPPFLAGS -u LDFLAGS -u CFLAGS make -j6 OBJ_ROOT="$obj" BIN_ROOT="$bin" \
+          CXXFLAGS='-fno-pie -no-pie' LDFLAGS=-no-pie "$bin/champsim"
+        readelf -h "$bin/champsim" | grep -q 'Type: *EXEC'
+        "$bin/champsim" --config configs/ramulator2.toml --knobs > "$RUNNER_TEMP/nopie-knobs.toml"
+        grep -q '^dram-model = "ramulator2"$' "$RUNNER_TEMP/nopie-knobs.toml"
+
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: native-validation
+        path: |
+          ${{ runner.temp }}/native-oracle
+          ${{ runner.temp }}/native-integration
+          .csconfig/**/ramulator2-native/build.log
+          native-source/.champsim-native/build.log
+          native-source/.champsim-native/manifest.json
+
+  # The native library and every host object are built with ASan and UBSan
+  # through RAMULATOR2_SANITIZE=1, so native allocations, callbacks and
+  # teardown are checked along with the adapter. Its own runner and native
+  # checkout keep the instrumented library away from the release job's.
+  native_sanitize:
+    name: Ubuntu 24.04 GCC 13 with Ramulator 2.1, ASan and UBSan
+    runs-on: ubuntu-24.04
+    env:
+      CXX: /usr/bin/g++-13
+      WITH_RAMULATOR2: "1"
+      RAMULATOR2_SANITIZE: "1"
+      RAMULATOR2_ROOT: ${{ github.workspace }}/native-source
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: 'true'
+
+    - uses: actions/checkout@v6
+      with:
+        repository: CMU-SAFARI/ramulator2
+        ref: 72427a1bba3771564c4fb0e494ba02242fd1eaa7
+        path: native-source
+
+    - name: Set up native build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y g++-13 cmake curl zip unzip tar python3-venv
+        python3 -m venv "$RUNNER_TEMP/native-python"
+        "$RUNNER_TEMP/native-python/bin/python" -m pip install PyYAML
+        echo "$RUNNER_TEMP/native-python/bin" >> "$GITHUB_PATH"
+        vcpkg/bootstrap-vcpkg.sh
+        vcpkg/vcpkg install
+
+    # GCC 13's AddressSanitizer cannot place its shadow memory under the
+    # 32-bit mmap randomization some hosted kernels use, and then fails every
+    # instrumented program at startup.
+    - name: Limit mmap randomization for AddressSanitizer
+      run: sudo sysctl -w vm.mmap_rnd_bits=28
+
+    - name: Build instrumented simulator and tests
+      id: build
+      run: |
+        ./config.sh
+        env -u CXXFLAGS -u CPPFLAGS -u LDFLAGS -u CFLAGS make -j6 all test/bin/000-test-main
+
+    # Suppressions cover only vendored ITTAGE (the last step's file covers only
+    # the known native RITAddrMapper leak); see test/ramulator2/README.md.
+    # Tests are selected by file tag, without hidden cases: the driver (704),
+    # adapter (705), differential oracle smoke (706), global clock (707) and
+    # lifecycle (708) tests, each of which must exist. Cases tagged
+    # [rit-addr-mapper] run in the last step instead, so the native leak they
+    # report cannot hide a new one here. Each step after the build runs
+    # whatever the others' outcomes, so every one is reported.
+    - name: Run native C++ tests under sanitizers
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      env:
+        CHAMPSIM_EXPECT_RAMULATOR2: "1"
+      run: |
+        export ASAN_OPTIONS=halt_on_error=1:detect_leaks=1
+        export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1:suppressions=$PWD/test/ramulator2/sanitizers/ubsan.supp"
+        export LSAN_OPTIONS="suppressions=$PWD/test/ramulator2/sanitizers/lsan.supp"
+        for required in 704 705 706 707 708; do
+          ls test/cpp/src/"$required"-*.cc > /dev/null
+        done
+        spec=""
+        for file in test/cpp/src/70[4-8]-*.cc; do
+          spec="$spec${spec:+,}[#$(basename "$file" .cc)]~[.]~[rit-addr-mapper]"
+        done
+        test/bin/000-test-main -# --order rand "$spec"
+
+    - name: Simulate a generated trace with the instrumented binary
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      run: |
+        export ASAN_OPTIONS=halt_on_error=1:detect_leaks=1
+        export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1:suppressions=$PWD/test/ramulator2/sanitizers/ubsan.supp"
+        export LSAN_OPTIONS="suppressions=$PWD/test/ramulator2/sanitizers/lsan.supp"
+        python3 test/ramulator2/generate_trace.py --output "$RUNNER_TEMP/sanitized.champsim2" --instructions 32768
+        # Small data caches force LLC reads and writebacks, as in run_integration.py.
+        bin/champsim --trace-version 2 --config configs/ramulator2.toml -w 2000 -i 10000 \
+          --set ooo_cpu.cpu0.branch_predictor=hashed_perceptron --set ooo_cpu.cpu0.btb=basic_btb \
+          --set cache.cpu0_l1d.sets=16 --set cache.cpu0_l1d.ways=4 \
+          --set cache.cpu0_l2c.sets=16 --set cache.cpu0_l2c.ways=4 \
+          --set cache.llc.sets=32 --set cache.llc.ways=4 \
+          --toml "$RUNNER_TEMP/sanitized.toml" -- "$RUNNER_TEMP/sanitized.champsim2"
+        python3 - "$RUNNER_TEMP/sanitized.toml" <<'PY'
+        import json, sys, tomllib
+        doc = tomllib.load(open(sys.argv[1], "rb"))
+        mode = json.loads(doc["meta"]["ramulator2"]["build"])["mode"]
+        assert mode == "RelWithDebInfo C++20 Python=OFF Sanitizers=address,undefined", mode
+        adapter = doc["phase"]["simulation"]["roi"]["ramulator2"]["adapter"]
+        assert adapter["accepted_reads"] > 0 and adapter["accepted_writes"] > 0, adapter
+        print("instrumented native simulation validated:", mode)
+        PY
+
+    # The pinned native RITAddrMapper never frees the nested mapper it creates
+    # (rit_addr_mapper.cpp:55 calls Factory::create_implementation without
+    # add_child). These cases build four such controllers, which LeakSanitizer
+    # reports as 2,028 bytes in 20 allocations. lsan-rit.supp suppresses only
+    # allocations under RITAddrMapper::create_base_mapper, so any other leak in
+    # these cases still fails the step. Catch2 exits non-zero if the tag matches
+    # no test case.
+    - name: Run RITAddrMapper test cases under sanitizers (known native leak suppressed)
+      if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+      env:
+        CHAMPSIM_EXPECT_RAMULATOR2: "1"
+      run: |
+        export ASAN_OPTIONS=halt_on_error=1:detect_leaks=1
+        export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1:suppressions=$PWD/test/ramulator2/sanitizers/ubsan.supp"
+        export LSAN_OPTIONS="suppressions=$PWD/test/ramulator2/sanitizers/lsan-rit.supp"
+        test/bin/000-test-main --order rand "[rit-addr-mapper]~[.]"
+
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: native-sanitize-validation
+        include-hidden-files: true
+        path: |
+          ${{ runner.temp }}/sanitized.toml
+          .csconfig/**/ramulator2-native/build.log
+          native-source/.champsim-native/build.log
+          native-source/.champsim-native/manifest.json
 
   upload_coveralls:
     runs-on: ubuntu-latest
-    needs: [cpp, python, json_output]
+    needs: [cpp, python, stats_output]
     steps:
     - uses: actions/checkout@v6
 
@@ -282,10 +710,10 @@ jobs:
 
     - uses: actions/download-artifact@v8.0.0
       with:
-        name: lcov-json
+        name: lcov-stats
 
     - name: Merge coverage
-      run: lcov --add-tracefile lcov_cpp.info --add-tracefile lcov_python.info --add-tracefile lcov_json.info --output-file lcov.info
+      run: lcov --add-tracefile lcov_cpp.info --add-tracefile lcov_python.info --add-tracefile lcov_stats.info --output-file lcov.info
 
     - name: Coveralls
       uses: coverallsapp/github-action@master

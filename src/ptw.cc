@@ -18,6 +18,7 @@
 
 #include <cmath>
 #include <numeric>
+#include <stdexcept>
 #include <fmt/chrono.h>
 #include <fmt/core.h>
 
@@ -30,12 +31,20 @@
 #include "vmem.h"
 
 PageTableWalker::PageTableWalker(champsim::ptw_builder b)
-    : champsim::operable(b.m_clock_period), upper_levels(b.m_uls), lower_level(b.m_ll), NAME(b.m_name),
+    : champsim::operable(b.m_clock_period), upper_levels(b.m_uls), lower_level(b.m_ll), fixed_latency(b.m_fixed_latency), NAME(b.m_name),
       MSHR_SIZE(b.m_mshr_size.value_or(std::lround(b.m_mshr_factor * std::floor(std::size(upper_levels))))),
       MAX_READ(b.m_max_tag_check.value_or(champsim::bandwidth::maximum_type{b.scaled_by_ul_size(b.m_bandwidth_factor)})),
       MAX_FILL(b.m_max_fill.value_or(champsim::bandwidth::maximum_type{b.scaled_by_ul_size(b.m_bandwidth_factor)})),
-      HIT_LATENCY(b.m_clock_period * b.m_latency), vmem(b.m_vmem), CR3_addr(b.m_vmem->get_pte_pa(b.m_cpu, champsim::page_number{}, b.m_vmem->pt_levels).first)
+      HIT_LATENCY(b.m_clock_period * b.m_latency), vmem(b.m_vmem),
+      CR3_addr(b.m_fixed_latency ? champsim::address{} : b.m_vmem->get_pte_pa(b.m_cpu, champsim::page_number{}, b.m_vmem->pt_levels).first)
 {
+  if (fixed_latency.has_value()) {
+    if (fixed_latency->count() < 0 || clock_period.count() <= 0 || MSHR_SIZE == 0 || static_cast<long>(MAX_READ) <= 0 || static_cast<long>(MAX_FILL) <= 0) {
+      throw std::runtime_error{NAME + ": fixed PTW requires nonnegative latency and positive clock period, mshr_size, max_read and max_write"};
+    }
+    return;
+  }
+
   std::vector<decltype(b.m_pscl)::value_type> local_pscl_dims{};
   std::remove_copy_if(std::begin(b.m_pscl), std::end(b.m_pscl), std::back_inserter(local_pscl_dims), [](auto x) { return std::get<0>(x) == 0; });
   std::sort(std::begin(local_pscl_dims), std::end(local_pscl_dims), std::greater{});
@@ -121,6 +130,10 @@ auto PageTableWalker::step_translation(const mshr_type& source) -> std::optional
 
 long PageTableWalker::operate()
 {
+  if (fixed_latency.has_value()) {
+    return operate_fixed();
+  }
+
   long progress{0};
 
   auto is_ready = [time = current_time](const auto& pkt) {
@@ -180,6 +193,44 @@ long PageTableWalker::operate()
   return progress;
 }
 
+long PageTableWalker::operate_fixed()
+{
+  // This queue contains complete translations with known deadlines. No PSCL
+  // lookup, PTE allocation, cache access or page-fault penalty is performed.
+  champsim::bandwidth fill_bw{MAX_FILL};
+  while (fill_bw.has_remaining() && !completed.empty() && completed.front().data.is_ready_at(current_time)) {
+    const auto& entry = completed.front();
+    for (auto* ret : entry.to_return) {
+      ret->emplace_back(entry.v_address, entry.v_address, *entry.data, entry.pf_metadata, entry.instr_depend_on_me);
+    }
+    completed.pop_front();
+    fill_bw.consume();
+  }
+
+  champsim::bandwidth read_bw{MAX_READ};
+  for (auto* ul : upper_levels) {
+    while (read_bw.has_remaining() && completed.size() < MSHR_SIZE && !ul->RQ.empty()) {
+      const auto delay = warmup ? champsim::chrono::picoseconds::zero() : *fixed_latency;
+      if (delay > champsim::chrono::clock::time_point::max() - current_time) {
+        throw std::runtime_error{NAME + ": fixed PTW completion time overflows the simulation clock"};
+      }
+      const auto& packet = ul->RQ.front();
+      mshr_type entry{packet, 0};
+      entry.v_address = packet.address;
+      // The configured delay replaces the minor-fault penalty as well as the walk.
+      const auto physical_page = vmem->va_to_pa(packet.cpu, champsim::page_number{packet.address}).first;
+      entry.data = champsim::waitable{champsim::address{physical_page}, current_time + delay};
+      if (packet.response_requested) {
+        entry.to_return = {&ul->returned};
+      }
+      completed.push_back(std::move(entry));
+      ul->RQ.pop_front();
+      read_bw.consume();
+    }
+  }
+  return fill_bw.amount_consumed() + read_bw.amount_consumed();
+}
+
 void PageTableWalker::finish_packet(const response_type& packet)
 {
   auto finish_step = [this](auto mshr_entry) {
@@ -235,8 +286,11 @@ void PageTableWalker::begin_phase()
 // LCOV_EXCL_START Exclude the following function from LCOV
 void PageTableWalker::print_deadlock()
 {
-  champsim::range_print_deadlock(MSHR, NAME + "_MSHR", "address: {} v_address: {} translation_level: {}", [](const auto& entry) {
-    return std::tuple{entry.address, entry.v_address, entry.translation_level};
-  });
+  if (fixed_latency.has_value()) {
+    champsim::range_print_deadlock(completed, NAME + "_FIXED", "v_address: {} physical_page: {}",
+                                   [](const auto& entry) { return std::tuple{entry.v_address, *entry.data}; });
+  }
+  champsim::range_print_deadlock(MSHR, NAME + "_MSHR", "address: {} v_address: {} translation_level: {}",
+                                 [](const auto& entry) { return std::tuple{entry.address, entry.v_address, entry.translation_level}; });
 }
 // LCOV_EXCL_STOP

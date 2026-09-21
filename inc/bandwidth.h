@@ -17,6 +17,10 @@
 #ifndef BANDWIDTH_H
 #define BANDWIDTH_H
 
+#include <type_traits>
+
+#include "util/to_underlying.h"
+
 namespace champsim
 {
 /**
@@ -41,6 +45,8 @@ private:
   underlying_type value_;
   maximum_type maximum_;
 
+  [[noreturn]] void throw_exceeded() const;
+
 public:
   /**
    * Consume some of the bandwidth.
@@ -49,39 +55,45 @@ public:
    *
    * \throws std::range_error if more than the maximum amount of bandwidth will have been consumed.
    */
-  void consume(underlying_type delta);
+  void consume(underlying_type delta)
+  {
+    value_ -= delta;
+    if (value_ < 0) {
+      throw_exceeded();
+    }
+  }
 
   /**
    * Consume one unit of bandwidth.
    *
    * \throws std::range_error if more than the maximum amount of bandwidth will have been consumed.
    */
-  void consume();
+  void consume() { consume(1); }
 
   /**
    * Report if the bandwidth has one or more unit remaining.
    */
-  bool has_remaining() const;
+  bool has_remaining() const { return amount_remaining() > 0; }
 
   /**
    * Report the amount of bandwidth that has been consumed
    */
-  underlying_type amount_consumed() const;
+  underlying_type amount_consumed() const { return champsim::to_underlying(maximum_) - value_; }
 
   /**
    * Report the amount of bandwidth that remains
    */
-  underlying_type amount_remaining() const;
+  underlying_type amount_remaining() const { return value_; }
 
   /**
    * Reset the bandwidth, so that it can be used again.
    */
-  void reset();
+  void reset() { value_ = champsim::to_underlying(maximum_); }
 
   /**
    * Initialize a bandwidth with the specified maximum.
    */
-  explicit bandwidth(maximum_type maximum);
+  explicit bandwidth(maximum_type maximum) : value_(champsim::to_underlying(maximum)), maximum_(maximum) {}
 };
 } // namespace champsim
 

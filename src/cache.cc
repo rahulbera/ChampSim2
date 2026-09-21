@@ -17,7 +17,6 @@
 #include "cache.h"
 
 #include <algorithm>
-#include <cassert>
 #include <cmath>
 #include <iomanip>
 #include <numeric>
@@ -25,6 +24,7 @@
 
 #include "bandwidth.h"
 #include "champsim.h"
+#include "champsim_assert.h"
 #include "chrono.h"
 #include "deadlock.h"
 #include "instruction.h"
@@ -40,7 +40,7 @@ CACHE::CACHE(CACHE&& other)
       cpu(other.cpu), NAME(std::move(other.NAME)), NUM_SET(other.NUM_SET), NUM_WAY(other.NUM_WAY), MSHR_SIZE(other.MSHR_SIZE), PQ_SIZE(other.PQ_SIZE),
       HIT_LATENCY(other.HIT_LATENCY), FILL_LATENCY(other.FILL_LATENCY), OFFSET_BITS(other.OFFSET_BITS), block(std::move(other.block)), MAX_TAG(other.MAX_TAG),
       MAX_FILL(other.MAX_FILL), prefetch_as_load(other.prefetch_as_load), match_offset_bits(other.match_offset_bits), virtual_prefetch(other.virtual_prefetch),
-      pref_activate_mask(std::move(other.pref_activate_mask)),
+      perfect(other.perfect), pref_activate_mask(std::move(other.pref_activate_mask)),
 
       sim_stats(std::move(other.sim_stats)), roi_stats(std::move(other.roi_stats)),
 
@@ -78,6 +78,7 @@ auto CACHE::operator=(CACHE&& other) -> CACHE&
   this->prefetch_as_load = other.prefetch_as_load;
   this->match_offset_bits = other.match_offset_bits;
   this->virtual_prefetch = other.virtual_prefetch;
+  this->perfect = other.perfect;
   this->pref_activate_mask = std::move(other.pref_activate_mask);
 
   this->sim_stats = std::move(other.sim_stats);
@@ -176,10 +177,10 @@ bool CACHE::handle_fill(const fill_type& fill)
   if (way == set_end) {
     way = std::next(set_begin, impl_find_victim(fill.cpu, fill.instr_id, get_set_index(fill.address), &*set_begin, fill.ip, fill.address, fill.type));
   }
-  assert(set_begin <= way);
-  assert(way <= set_end);
-  assert(way != set_end || fill.type != access_type::WRITE); // Writes may not bypass
-  const auto way_idx = std::distance(set_begin, way);        // cast protected by earlier assertion
+  CHAMPSIM_ASSERT(set_begin <= way);
+  CHAMPSIM_ASSERT(way <= set_end);
+  CHAMPSIM_ASSERT(way != set_end || fill.type != access_type::WRITE); // Writes may not bypass
+  const auto way_idx = std::distance(set_begin, way);                 // cast protected by earlier assertion
 
   if constexpr (champsim::debug_print) {
     fmt::print("[{}] {} instr_id: {} address: {} v_address: {} set: {} way: {} type: {} prefetch_metadata: {} cycle_enqueued: {} cycle: {}\n", NAME, __func__,
@@ -247,6 +248,36 @@ bool CACHE::handle_fill(const fill_type& fill)
 bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 {
   cpu = handle_pkt.cpu;
+
+  // A perfect cache hits on EVERY lookup, including the first access to a block
+  // that was never filled -- the point is to measure headroom ("what if every
+  // request hit here?"), so there is no such thing as a compulsory miss. The tag
+  // array is therefore never consulted, never filled and never evicted, and the
+  // level below this one sees no traffic at all.
+  //
+  // The prefetcher and the replacement policy are bypassed rather than called
+  // with hit=true. Neither can affect a cache that cannot miss, and there is no
+  // way index to hand the replacement policy: the block has no line, and the
+  // RRIP policies index their state with .at(), so an out-of-range way would
+  // throw rather than be ignored.
+  //
+  // The response echoes the request's own data, which for a v2 trace is the
+  // value that operand actually held -- a cache with no line has nothing else
+  // truthful to return.
+  //
+  // Requests still arrive translated (the tag-check stage requires it), so a
+  // perfect data cache still exercises the TLBs and the page table walker. To
+  // model perfect translation as well, set perfect on the TLBs.
+  if (perfect) {
+    sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
+
+    response_type response{handle_pkt.address, handle_pkt.v_address, handle_pkt.data, handle_pkt.pf_metadata, handle_pkt.instr_depend_on_me};
+    for (auto* ret : handle_pkt.to_return) {
+      ret->push_back(response);
+    }
+
+    return true;
+  }
 
   // access cache
   auto [set_begin, set_end] = get_set_span(handle_pkt.address);
@@ -439,21 +470,28 @@ long CACHE::operate()
 
   // Perform fills
   champsim::bandwidth fill_bw{MAX_FILL};
-  auto [fill_begin, fill_end] = champsim::get_span_p(std::cbegin(inflight_fills), std::cend(inflight_fills), fill_bw,
-                                                     [time = current_time](const auto& x) { return x.data_promise.is_ready_at(time); });
-  auto complete_end = std::find_if_not(fill_begin, fill_end, [this](const auto& x) { return this->handle_fill(x); });
-  fill_bw.consume(std::distance(fill_begin, complete_end));
-  inflight_fills.erase(fill_begin, complete_end);
+  CHAMPSIM_ASSERT(fill_bw.amount_remaining() >= 0);
+  if (!inflight_fills.empty() && fill_bw.amount_remaining() > 0) {
+    auto [fill_begin, fill_end] = champsim::get_span_p(std::cbegin(inflight_fills), std::cend(inflight_fills), fill_bw,
+                                                       [time = current_time](const auto& x) { return x.data_promise.is_ready_at(time); });
+    auto complete_end = std::find_if_not(fill_begin, fill_end, [this](const auto& x) { return this->handle_fill(x); });
+    fill_bw.consume(std::distance(fill_begin, complete_end));
+    inflight_fills.erase(fill_begin, complete_end);
+  }
 
   // Initiate tag checks
   const champsim::bandwidth::maximum_type bandwidth_from_tag_checks{champsim::to_underlying(MAX_TAG) * (long)(HIT_LATENCY / clock_period)
                                                                     - (long)std::size(inflight_tag_check)};
   champsim::bandwidth initiate_tag_bw{std::clamp(bandwidth_from_tag_checks, champsim::bandwidth::maximum_type{0}, MAX_TAG)};
+  CHAMPSIM_ASSERT(initiate_tag_bw.amount_remaining() >= 0);
   auto can_translate = [avail = (std::size(translation_stash) < static_cast<std::size_t>(MSHR_SIZE))](const auto& entry) {
     return avail || entry.is_translated;
   };
-  auto stash_bandwidth_consumed =
-      champsim::transform_while_n(translation_stash, std::back_inserter(inflight_tag_check), initiate_tag_bw, is_translated, initiate_tag_check<false>());
+  long stash_bandwidth_consumed = 0;
+  if (!translation_stash.empty() && initiate_tag_bw.amount_remaining() > 0) {
+    stash_bandwidth_consumed =
+        champsim::transform_while_n(translation_stash, std::back_inserter(inflight_tag_check), initiate_tag_bw, is_translated, initiate_tag_check<false>());
+  }
   initiate_tag_bw.consume(stash_bandwidth_consumed);
   std::vector<long long> channels_bandwidth_consumed{};
 
@@ -472,15 +510,24 @@ long CACHE::operate()
       // this needs to be in this loop, we need to ensure that for cases where bandwidth doesn't divide nicely across upstreams,
       // we don't accidentally consume more bandwidth than expected
       champsim::bandwidth per_upper_tag_bw{std::min(per_upper_bandwidth, champsim::bandwidth::maximum_type{initiate_tag_bw.amount_remaining()})};
-      auto bandwidth_consumed =
-          champsim::transform_while_n(q.get(), std::back_inserter(inflight_tag_check), per_upper_tag_bw, can_translate, initiate_tag_check<true>(ul));
-      channels_bandwidth_consumed.push_back(bandwidth_consumed);
+      CHAMPSIM_ASSERT(per_upper_tag_bw.amount_remaining() >= 0);
+      long bandwidth_consumed = 0;
+      if (!q.get().empty() && per_upper_tag_bw.amount_remaining() > 0) {
+        bandwidth_consumed =
+            champsim::transform_while_n(q.get(), std::back_inserter(inflight_tag_check), per_upper_tag_bw, can_translate, initiate_tag_check<true>(ul));
+      }
+      if constexpr (champsim::debug_print) {
+        channels_bandwidth_consumed.push_back(bandwidth_consumed);
+      }
       initiate_tag_bw.consume(bandwidth_consumed);
     }
   }
 
-  auto pq_bandwidth_consumed =
-      champsim::transform_while_n(internal_PQ, std::back_inserter(inflight_tag_check), initiate_tag_bw, can_translate, initiate_tag_check<false>());
+  long pq_bandwidth_consumed = 0;
+  if (!internal_PQ.empty() && initiate_tag_bw.amount_remaining() > 0) {
+    pq_bandwidth_consumed =
+        champsim::transform_while_n(internal_PQ, std::back_inserter(inflight_tag_check), initiate_tag_bw, can_translate, initiate_tag_check<false>());
+  }
   initiate_tag_bw.consume(pq_bandwidth_consumed);
 
   // Issue translations
@@ -488,10 +535,13 @@ long CACHE::operate()
   std::for_each(std::begin(translation_stash), std::end(translation_stash), [this](auto& x) { this->issue_translation(x); });
 
   // Find entries that would be ready except that they have not finished translation, move them to the stash
-  auto [last_not_missed, stash_end] = champsim::extract_if(std::begin(inflight_tag_check), std::end(inflight_tag_check), std::back_inserter(translation_stash),
-                                                           [is_ready, is_translated](const auto& x) { return is_ready(x) && !is_translated(x); });
-  progress += std::distance(last_not_missed, std::end(inflight_tag_check));
-  inflight_tag_check.erase(last_not_missed, std::end(inflight_tag_check));
+  if (!inflight_tag_check.empty()) {
+    auto [last_not_missed, stash_end] =
+        champsim::extract_if(std::begin(inflight_tag_check), std::end(inflight_tag_check), std::back_inserter(translation_stash),
+                             [is_ready, is_translated](const auto& x) { return is_ready(x) && !is_translated(x); });
+    progress += std::distance(last_not_missed, std::end(inflight_tag_check));
+    inflight_tag_check.erase(last_not_missed, std::end(inflight_tag_check));
+  }
 
   // Perform tag checks
   auto do_handle_miss = [this](const auto& pkt) {
@@ -501,13 +551,16 @@ long CACHE::operate()
     return this->handle_miss(pkt); // Treat writes (that is, stores) like reads
   };
   champsim::bandwidth tag_check_bw{MAX_TAG};
-  auto [tag_check_ready_begin, tag_check_ready_end] =
-      champsim::get_span_p(std::begin(inflight_tag_check), std::end(inflight_tag_check), tag_check_bw,
-                           [is_ready, is_translated](const auto& pkt) { return is_ready(pkt) && is_translated(pkt); });
-  auto hits_end = std::stable_partition(tag_check_ready_begin, tag_check_ready_end, [this](const auto& pkt) { return this->try_hit(pkt); });
-  auto finish_tag_check_end = std::stable_partition(hits_end, tag_check_ready_end, do_handle_miss);
-  tag_check_bw.consume(std::distance(tag_check_ready_begin, finish_tag_check_end));
-  inflight_tag_check.erase(tag_check_ready_begin, finish_tag_check_end);
+  CHAMPSIM_ASSERT(tag_check_bw.amount_remaining() >= 0);
+  if (!inflight_tag_check.empty() && tag_check_bw.amount_remaining() > 0) {
+    auto [tag_check_ready_begin, tag_check_ready_end] =
+        champsim::get_span_p(std::begin(inflight_tag_check), std::end(inflight_tag_check), tag_check_bw,
+                             [is_ready, is_translated](const auto& pkt) { return is_ready(pkt) && is_translated(pkt); });
+    auto hits_end = std::stable_partition(tag_check_ready_begin, tag_check_ready_end, [this](const auto& pkt) { return this->try_hit(pkt); });
+    auto finish_tag_check_end = std::stable_partition(hits_end, tag_check_ready_end, do_handle_miss);
+    tag_check_bw.consume(std::distance(tag_check_ready_begin, finish_tag_check_end));
+    inflight_tag_check.erase(tag_check_ready_begin, finish_tag_check_end);
+  }
 
   impl_prefetcher_cycle_operate();
 
@@ -537,14 +590,14 @@ std::pair<It, It> get_span(It anchor, typename std::iterator_traits<It>::differe
 auto CACHE::get_set_span(champsim::address address) -> std::pair<set_type::iterator, set_type::iterator>
 {
   const auto set_idx = get_set_index(address);
-  assert(set_idx < NUM_SET);
+  CHAMPSIM_ASSERT(set_idx < NUM_SET);
   return get_span(std::begin(block), static_cast<set_type::difference_type>(set_idx), NUM_WAY); // safe cast because of prior assert
 }
 
 auto CACHE::get_set_span(champsim::address address) const -> std::pair<set_type::const_iterator, set_type::const_iterator>
 {
   const auto set_idx = get_set_index(address);
-  assert(set_idx < NUM_SET);
+  CHAMPSIM_ASSERT(set_idx < NUM_SET);
   return get_span(std::cbegin(block), static_cast<set_type::difference_type>(set_idx), NUM_WAY); // safe cast because of prior assert
 }
 
@@ -611,7 +664,7 @@ void CACHE::finish_packet(const response_type& packet)
   // sanity check
   if (mshr_entry == MSHR.end()) {
     fmt::print(stderr, "[{}_MSHR] {} cannot find a matching entry! address: {} v_address: {}\n", NAME, __func__, packet.address, packet.v_address);
-    assert(0);
+    CHAMPSIM_ASSERT(0);
   }
 
   // MSHR holds the most updated information about this request

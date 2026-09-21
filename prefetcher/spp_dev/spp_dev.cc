@@ -1,7 +1,10 @@
 #include "spp_dev.h"
 
-#include <cassert>
+#include <algorithm>
 #include <iostream>
+#include <limits>
+
+#include "champsim_assert.h"
 
 void spp_dev::prefetcher_initialize()
 {
@@ -129,7 +132,10 @@ uint32_t spp_dev::prefetcher_cache_operate(champsim::address addr, champsim::add
       std::cout << "Looping curr_sig: " << std::hex << curr_sig << " base_addr: " << base_addr << std::dec;
       std::cout << " pf_q_head: " << pf_q_head << " pf_q_tail: " << pf_q_tail << " depth: " << depth << std::endl;
     }
-  } while (LOOKAHEAD_ON && do_lookahead);
+    // The candidate queues hold MSHR_SIZE entries and read_pattern refuses to
+    // append past that, so a lookahead deep enough to fill them has nowhere left
+    // to record its candidates and stops here.
+  } while (LOOKAHEAD_ON && do_lookahead && pf_q_tail < confidence_q.size());
 
   return metadata_in;
 }
@@ -254,7 +260,7 @@ void spp_dev::SIGNATURE_TABLE::read_and_update_sig(champsim::address addr, uint3
       // Assertion
       if (match == ST_WAY) {
         std::cout << "[ST] Cannot find a replacement victim!" << std::endl;
-        assert(0);
+        CHAMPSIM_ASSERT(0);
       }
     }
   }
@@ -279,7 +285,7 @@ void spp_dev::SIGNATURE_TABLE::read_and_update_sig(champsim::address addr, uint3
         // Assertion
         if (lru[set][way] >= ST_WAY) {
           std::cout << "[ST] LRU value is wrong! set: " << set << " way: " << way << " lru: " << lru[set][way] << std::endl;
-          assert(0);
+          CHAMPSIM_ASSERT(0);
         }
       }
     }
@@ -342,7 +348,7 @@ void spp_dev::PATTERN_TABLE::update_pattern(uint32_t last_sig, typename offset_t
       // Assertion
       if (victim_way == PT_WAY) {
         std::cout << "[PT] Cannot find a replacement victim!" << std::endl;
-        assert(0);
+        CHAMPSIM_ASSERT(0);
       }
     }
   }
@@ -354,12 +360,20 @@ void spp_dev::PATTERN_TABLE::read_pattern(uint32_t curr_sig, std::vector<typenam
   // Update (sig, delta) correlation
   uint32_t set = get_hash(curr_sig) % PT_SET, local_conf = 0, pf_conf = 0, max_conf = 0;
 
+  // Both queues are MSHR_SIZE long. The lookahead that calls this is bounded only by
+  // confidence decaying below PF_THRESHOLD, so nothing but this limit keeps a deep
+  // lookahead from appending past the end of them.
+  const std::size_t queue_size = std::min(confidence_q.size(), delta_q.size());
+
   if (c_sig[set]) {
     for (uint32_t way = 0; way < PT_WAY; way++) {
       local_conf = (100 * c_delta[set][way]) / c_sig[set];
       pf_conf = depth ? (_parent->GHR.global_accuracy * c_delta[set][way] / c_sig[set] * lookahead_conf / 100) : local_conf;
 
       if (pf_conf >= PF_THRESHOLD) {
+        if (pf_q_tail >= queue_size) // the queue is full; drop the remaining candidates
+          break;
+
         confidence_q[pf_q_tail] = pf_conf;
         delta_q[pf_q_tail] = delta[set][way];
 
@@ -383,7 +397,8 @@ void spp_dev::PATTERN_TABLE::read_pattern(uint32_t curr_sig, std::vector<typenam
         }
       }
     }
-    pf_q_tail++;
+    if (pf_q_tail < queue_size)
+      pf_q_tail++;
 
     lookahead_conf = max_conf;
     if (lookahead_conf >= PF_THRESHOLD)
@@ -392,7 +407,7 @@ void spp_dev::PATTERN_TABLE::read_pattern(uint32_t curr_sig, std::vector<typenam
     if constexpr (SPP_DEBUG_PRINT) {
       std::cout << "global_accuracy: " << _parent->GHR.global_accuracy << " lookahead_conf: " << lookahead_conf << std::endl;
     }
-  } else {
+  } else if (pf_q_tail < queue_size) {
     confidence_q[pf_q_tail] = 0;
   }
 }
@@ -483,7 +498,7 @@ bool spp_dev::PREFETCH_FILTER::check(champsim::address check_addr, FILTER_REQUES
   default:
     // Assertion
     std::cout << "[FILTER] Invalid filter request type: " << filter_request << std::endl;
-    assert(0);
+    CHAMPSIM_ASSERT(0);
   }
 
   return true;
@@ -493,7 +508,13 @@ void spp_dev::GLOBAL_REGISTER::update_entry(uint32_t pf_sig, uint32_t pf_confide
 {
   // NOTE: GHR implementation is slightly different from the original paper
   // Instead of matching (last_offset + delta), GHR simply stores and matches the pf_offset
-  uint32_t min_conf = 100, victim_way = MAX_GHR_ENTRY;
+  // Confidence is a percentage and legitimately reaches exactly 100 (local_conf is
+  // 100 * c_delta / c_sig, and c_delta == c_sig for a signature only ever followed by
+  // one delta), so a search seeded with 100 finds no victim once every entry is
+  // maximally confident. Seed it above the range instead. Whenever any entry is below
+  // 100 this picks the same victim the seed of 100 did: a 100 can never be the strict
+  // minimum unless every entry is one.
+  uint32_t min_conf = std::numeric_limits<uint32_t>::max(), victim_way = MAX_GHR_ENTRY;
 
   if constexpr (SPP_DEBUG_PRINT) {
     std::cout << "[GHR] Crossing the page boundary pf_sig: " << std::hex << pf_sig << std::dec;
@@ -528,7 +549,7 @@ void spp_dev::GLOBAL_REGISTER::update_entry(uint32_t pf_sig, uint32_t pf_confide
   // Assertion
   if (victim_way >= MAX_GHR_ENTRY) {
     std::cout << "[GHR] Cannot find a replacement victim!" << std::endl;
-    assert(0);
+    CHAMPSIM_ASSERT(0);
   }
 
   if constexpr (SPP_DEBUG_PRINT) {

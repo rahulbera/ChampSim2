@@ -67,6 +67,191 @@ const std::string bz2_cyphertext{
      '\x4a', '\x33', '\xac', '\x19', '\x9b', '\xb7', '\x23', '\xc7', '\xab', '\x96', '\xc4', '\xe5', '\x28', '\xf9', '\x03', '\x18', '\x44', '\xf3',
      '\xa0', '\xb6', '\x81', '\x50', '\x31', '\x78', '\x3f', '\x8b', '\xb9', '\x22', '\x9c', '\x28', '\x48', '\x4f', '\xa1', '\x99', '\x56', '\x80'}};
 
+const std::string zstd_cyphertext{
+    {'\x28', '\xb5', '\x2f', '\xfd', '\x04', '\x68', '\x75', '\x08', '\x00', '\x66', '\x57', '\x39', '\x17', '\x90', '\xa9', '\x39', '\x00', '\x89', '\xec',
+     '\x46', '\x4d', '\x64', '\xe3', '\xd8', '\xc7', '\x24', '\x01', '\x73', '\x4e', '\x96', '\x1e', '\xb6', '\xba', '\xf3', '\x5f', '\x39', '\x31', '\x00',
+     '\x32', '\x00', '\x33', '\x00', '\xa6', '\x98', '\x45', '\xcb', '\xf2', '\x72', '\x62', '\x2f', '\xba', '\xe3', '\x18', '\x5b', '\xee', '\xa4', '\xbc',
+     '\x7b', '\xa5', '\xc5', '\xa9', '\x06', '\xde', '\xb8', '\x07', '\x3b', '\x49', '\x3f', '\x5e', '\xaa', '\x28', '\xd1', '\x48', '\x9c', '\xec', '\x48',
+     '\x0d', '\xf4', '\xa9', '\xe2', '\x53', '\xd1', '\x99', '\x2b', '\x3d', '\x99', '\x8e', '\xf7', '\x18', '\xdd', '\x20', '\x5d', '\xb8', '\xc7', '\x31',
+     '\xfb', '\x74', '\x6b', '\xfa', '\x91', '\x53', '\xc6', '\x64', '\xed', '\x8e', '\x85', '\x27', '\xc8', '\x0b', '\xb7', '\x24', '\xc2', '\x74', '\xd6',
+     '\xf4', '\x4c', '\xd4', '\x38', '\x75', '\xb3', '\xe2', '\xa7', '\xa5', '\x7a', '\x6e', '\x2e', '\x12', '\x0a', '\xa8', '\x4c', '\xdc', '\x54', '\xcb',
+     '\x0e', '\x75', '\x6a', '\x74', '\x8d', '\xae', '\x50', '\x01', '\x0b', '\x41', '\x01', '\x28', '\xb1', '\x8e', '\xea', '\xa8', '\x15', '\xeb', '\x87',
+     '\x34', '\x34', '\x5d', '\x1b', '\x73', '\x52', '\xa7', '\xe4', '\x2a', '\x6a', '\x2c', '\x3c', '\xd2', '\x9c', '\xa2', '\xf6', '\xe2', '\x91', '\x8b',
+     '\x19', '\x61', '\x74', '\x18', '\xd5', '\x6e', '\x94', '\xe8', '\x35', '\x66', '\x05', '\x0a', '\xc0', '\xca', '\xc4', '\x95', '\x3b', '\xe7', '\x48',
+     '\xcb', '\x01', '\x80', '\x93', '\xc9', '\x2d', '\xef', '\xb9', '\x95', '\xb9', '\x53', '\xb4', '\x44', '\x4e', '\x2e', '\xad', '\x93', '\x1b', '\x0c',
+     '\xd7', '\x67', '\xa2', '\x75', '\x98', '\x24', '\x96', '\xa9', '\x06', '\x9a', '\xcb', '\x0f', '\x1d', '\xb5', '\xb3', '\x62', '\x61', '\x95', '\x1f',
+     '\x49', '\x8a', '\x45', '\x5c', '\x84', '\x5c', '\xd1', '\x9e', '\x8a', '\xd2', '\x78', '\x98', '\x04', '\x0d', '\x08', '\x10', '\x70', '\xb4', '\x3c',
+     '\x5b', '\x0b', '\xa9', '\x30', '\x3b', '\xc7', '\x23', '\x88', '\x62', '\xf9', '\x25', '\x0b', '\xdd', '\xb6', '\x76', '\x6f', '\x03', '\x39', '\x0d',
+     '\xe2', '\x5f', '\x56', '\x8c', '\xd2', '\x85', '\x25', '\x16', '\xd9', '\xf4', '\x62', '\x88', '\x02', '\x30', '\x56', '\x76', '\x43'}};
+
+const std::string empty_gzip{{'\x1f', '\x8b', '\x08', '\x00', '\x00', '\x00', '\x00', '\x00', '\x02', '\xff',
+                              '\x03', '\x00', '\x00', '\x00', '\x00', '\x00', '\x00', '\x00', '\x00', '\x00'}};
+const std::string empty_bzip2{{'\x42', '\x5a', '\x68', '\x39', '\x17', '\x72', '\x45', '\x38', '\x50', '\x90', '\x00', '\x00', '\x00', '\x00'}};
+const std::string empty_xz{{'\xfd', '\x37', '\x7a', '\x58', '\x5a', '\x00', '\x00', '\x04', '\xe6', '\xd6', '\xb4', '\x46', '\x00', '\x00', '\x00', '\x00',
+                            '\x1c', '\xdf', '\x44', '\x21', '\x1f', '\xb6', '\xf3', '\x7d', '\x01', '\x00', '\x00', '\x00', '\x00', '\x04', '\x59', '\x5a'}};
+const std::string empty_zstd{{'\x28', '\xb5', '\x2f', '\xfd', '\x24', '\x00', '\x01', '\x00', '\x00', '\x99', '\xe9', '\xd8', '\x51'}};
+
+struct failing_init_tag {
+  using in_char_type = unsigned char;
+  using out_char_type = unsigned char;
+  struct state_type {
+    const in_char_type* next_in = nullptr;
+    std::size_t avail_in = 0;
+    out_char_type* next_out = nullptr;
+    std::size_t avail_out = 0;
+    std::size_t total_out = 0;
+  };
+  using inflate_state_type = std::unique_ptr<state_type>;
+  using status_type = champsim::decomp_tags::status_t;
+  static constexpr const char* name = "test-codec";
+  static constexpr bool supports_concatenation = false;
+
+  static champsim::decomp_tags::inflate_result inflate(inflate_state_type&) { return {status_type::ERROR, "unused"}; }
+  static inflate_state_type new_inflate_state() { throw std::runtime_error{"injected initialization failure"}; }
+};
+
+std::string compress_gzip(const std::string& plain)
+{
+  z_stream state{};
+  REQUIRE(::deflateInit2(&state, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 16 + MAX_WBITS, 8, Z_DEFAULT_STRATEGY) == Z_OK);
+  std::string compressed(::deflateBound(&state, std::size(plain)), '\0');
+  state.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(std::data(plain)));
+  state.avail_in = static_cast<uInt>(std::size(plain));
+  state.next_out = reinterpret_cast<Bytef*>(std::data(compressed));
+  state.avail_out = static_cast<uInt>(std::size(compressed));
+  REQUIRE(::deflate(&state, Z_FINISH) == Z_STREAM_END);
+  compressed.resize(state.total_out);
+  REQUIRE(::deflateEnd(&state) == Z_OK);
+  return compressed;
+}
+
+std::string compress_bzip2(const std::string& plain)
+{
+  unsigned int compressed_size = static_cast<unsigned int>(std::size(plain) + (std::size(plain) / 100) + 601);
+  std::string compressed(compressed_size, '\0');
+  REQUIRE(::BZ2_bzBuffToBuffCompress(std::data(compressed), &compressed_size, const_cast<char*>(std::data(plain)), static_cast<unsigned int>(std::size(plain)),
+                                     9, 0, 30)
+          == BZ_OK);
+  compressed.resize(compressed_size);
+  return compressed;
+}
+
+std::string compress_xz(const std::string& plain)
+{
+  std::string compressed(::lzma_stream_buffer_bound(std::size(plain)), '\0');
+  std::size_t compressed_size = 0;
+  REQUIRE(::lzma_easy_buffer_encode(LZMA_PRESET_DEFAULT, LZMA_CHECK_CRC64, nullptr, reinterpret_cast<const uint8_t*>(std::data(plain)), std::size(plain),
+                                    reinterpret_cast<uint8_t*>(std::data(compressed)), &compressed_size, std::size(compressed))
+          == LZMA_OK);
+  compressed.resize(compressed_size);
+  return compressed;
+}
+
+std::string compress_zstd(const std::string& plain)
+{
+  std::string compressed(::ZSTD_compressBound(std::size(plain)), '\0');
+  const auto compressed_size = ::ZSTD_compress(std::data(compressed), std::size(compressed), std::data(plain), std::size(plain), 3);
+  REQUIRE_FALSE(::ZSTD_isError(compressed_size));
+  compressed.resize(compressed_size);
+  return compressed;
+}
+
+template <typename Tag>
+std::string inflate_past_end(const std::string& compressed, const std::string& label)
+{
+  champsim::inf_istream<Tag, std::istringstream> stream{std::istringstream{compressed}, label};
+  std::string result(std::size_t{3} << 16, '\0');
+  stream.read(std::data(result), static_cast<std::streamsize>(std::size(result)));
+  result.resize(static_cast<std::size_t>(stream.gcount()));
+  REQUIRE(stream.eof());
+  return result;
+}
+
+template <typename Tag>
+void require_bad_stream(const std::string& compressed, const std::string& label, const std::string& codec)
+{
+  champsim::inf_istream<Tag, std::istringstream> stream{std::istringstream{compressed}, label};
+  std::string result(std::size(plaintext) * 2 + 1, '\0');
+  REQUIRE_THROWS_WITH(stream.read(std::data(result), static_cast<std::streamsize>(std::size(result))),
+                      Catch::Matchers::ContainsSubstring(label) && Catch::Matchers::ContainsSubstring(codec));
+}
+
+TEST_CASE("Compressed streams validate their clean end and accept an empty container")
+{
+  SECTION("gzip")
+  {
+    REQUIRE(inflate_past_end<champsim::decomp_tags::gzip_tag_t<>>(gzip_cyphertext, "gzip-valid") == plaintext + "\n");
+    REQUIRE(inflate_past_end<champsim::decomp_tags::gzip_tag_t<>>(empty_gzip, "gzip-empty").empty());
+  }
+  SECTION("xz")
+  {
+    REQUIRE(inflate_past_end<champsim::decomp_tags::lzma_tag_t<>>(xz_cyphertext, "xz-valid") == plaintext + "\n");
+    REQUIRE(inflate_past_end<champsim::decomp_tags::lzma_tag_t<>>(empty_xz, "xz-empty").empty());
+  }
+  SECTION("bzip2")
+  {
+    REQUIRE(inflate_past_end<champsim::decomp_tags::bzip2_tag_t>(bz2_cyphertext, "bzip2-valid") == plaintext + "\n");
+    REQUIRE(inflate_past_end<champsim::decomp_tags::bzip2_tag_t>(empty_bzip2, "bzip2-empty").empty());
+  }
+  SECTION("zstd")
+  {
+    REQUIRE(inflate_past_end<champsim::decomp_tags::zstd_tag_t>(zstd_cyphertext, "zstd-valid") == plaintext);
+    REQUIRE(inflate_past_end<champsim::decomp_tags::zstd_tag_t>(empty_zstd, "zstd-empty").empty());
+  }
+}
+
+TEST_CASE("Decoder initialization failures retain their source and codec")
+{
+  const auto construct = [] {
+    return champsim::inf_istream<failing_init_tag, std::istringstream>{std::istringstream{}, "named-input"};
+  };
+  REQUIRE_THROWS_WITH(construct(), Catch::Matchers::ContainsSubstring("named-input") && Catch::Matchers::ContainsSubstring("test-codec")
+                                       && Catch::Matchers::ContainsSubstring("injected initialization failure"));
+}
+
+TEST_CASE("Compressed streams decode across output-buffer boundaries")
+{
+  const auto output_size = GENERATE(std::size_t{1} << 16, (std::size_t{1} << 16) + 1, std::size_t{2} << 16);
+  const std::string expected(output_size, 'A');
+
+  SECTION("gzip") { REQUIRE(inflate_past_end<champsim::decomp_tags::gzip_tag_t<>>(compress_gzip(expected), "gzip-multichunk") == expected); }
+  SECTION("xz") { REQUIRE(inflate_past_end<champsim::decomp_tags::lzma_tag_t<>>(compress_xz(expected), "xz-multichunk") == expected); }
+  SECTION("bzip2") { REQUIRE(inflate_past_end<champsim::decomp_tags::bzip2_tag_t>(compress_bzip2(expected), "bzip2-multichunk") == expected); }
+  SECTION("zstd") { REQUIRE(inflate_past_end<champsim::decomp_tags::zstd_tag_t>(compress_zstd(expected), "zstd-multichunk") == expected); }
+}
+
+TEST_CASE("Truncated compressed streams throw through the public reader")
+{
+  SECTION("gzip") { require_bad_stream<champsim::decomp_tags::gzip_tag_t<>>(gzip_cyphertext.substr(0, gzip_cyphertext.size() - 4), "gzip-truncated", "gzip"); }
+  SECTION("xz") { require_bad_stream<champsim::decomp_tags::lzma_tag_t<>>(xz_cyphertext.substr(0, xz_cyphertext.size() - 4), "xz-truncated", "xz"); }
+  SECTION("bzip2") { require_bad_stream<champsim::decomp_tags::bzip2_tag_t>(bz2_cyphertext.substr(0, bz2_cyphertext.size() - 4), "bzip2-truncated", "bzip2"); }
+  SECTION("zstd") { require_bad_stream<champsim::decomp_tags::zstd_tag_t>(zstd_cyphertext.substr(0, zstd_cyphertext.size() - 4), "zstd-truncated", "zstd"); }
+}
+
+TEST_CASE("Corrupt compressed streams throw through the public reader")
+{
+  auto corrupt = [](std::string value) {
+    value.at(value.size() / 2) ^= '\x7f';
+    return value;
+  };
+  SECTION("gzip") { require_bad_stream<champsim::decomp_tags::gzip_tag_t<>>(corrupt(gzip_cyphertext), "gzip-corrupt", "gzip"); }
+  SECTION("xz") { require_bad_stream<champsim::decomp_tags::lzma_tag_t<>>(corrupt(xz_cyphertext), "xz-corrupt", "xz"); }
+  SECTION("bzip2") { require_bad_stream<champsim::decomp_tags::bzip2_tag_t>(corrupt(bz2_cyphertext), "bzip2-corrupt", "bzip2"); }
+  SECTION("zstd") { require_bad_stream<champsim::decomp_tags::zstd_tag_t>(corrupt(zstd_cyphertext), "zstd-corrupt", "zstd"); }
+}
+
+TEST_CASE("Concatenated zstd frames remain one logical stream")
+{
+  REQUIRE(inflate_past_end<champsim::decomp_tags::zstd_tag_t>(zstd_cyphertext + zstd_cyphertext, "zstd-concatenated") == plaintext + plaintext);
+}
+
+TEST_CASE("Other codecs do not gain concatenated-stream support")
+{
+  SECTION("gzip") { require_bad_stream<champsim::decomp_tags::gzip_tag_t<>>(gzip_cyphertext + gzip_cyphertext, "gzip-concatenated", "gzip"); }
+  SECTION("xz") { require_bad_stream<champsim::decomp_tags::lzma_tag_t<>>(xz_cyphertext + xz_cyphertext, "xz-concatenated", "xz"); }
+  SECTION("bzip2") { require_bad_stream<champsim::decomp_tags::bzip2_tag_t>(bz2_cyphertext + bz2_cyphertext, "bzip2-concatenated", "bzip2"); }
+}
+
 TEST_CASE("An inf_stream can inflate a gzip-compressed text")
 {
   // Initialize a inflation/deflation buffer
@@ -99,6 +284,20 @@ TEST_CASE("An inf_stream can inflate a bz2-compressed text")
 {
   // Initialize a inflation/deflation buffer
   champsim::inf_istream<champsim::decomp_tags::bzip2_tag_t, std::istringstream> comp_stream{std::istringstream{bz2_cyphertext}};
+
+  STATIC_REQUIRE(std::is_move_constructible<decltype(comp_stream)>::value);
+  STATIC_REQUIRE(std::is_move_assignable<decltype(comp_stream)>::value);
+  STATIC_REQUIRE(std::is_swappable<decltype(comp_stream)>::value);
+
+  char inflated[1000] = {};
+  comp_stream.read(inflated, static_cast<std::streamsize>(std::size(plaintext)));
+  REQUIRE_THAT(std::string{inflated}, Catch::Matchers::Equals(plaintext));
+}
+
+TEST_CASE("An inf_stream can inflate a zstd-compressed text")
+{
+  // Initialize a inflation/deflation buffer
+  champsim::inf_istream<champsim::decomp_tags::zstd_tag_t, std::istringstream> comp_stream{std::istringstream{zstd_cyphertext}};
 
   STATIC_REQUIRE(std::is_move_constructible<decltype(comp_stream)>::value);
   STATIC_REQUIRE(std::is_move_assignable<decltype(comp_stream)>::value);

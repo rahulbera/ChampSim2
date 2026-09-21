@@ -1,0 +1,8 @@
+config,label,reference,speedup_geomean_pertrace,mpki_red_mean_pertrace,dir_mpki_red_mean_pertrace,cycwpki_red_mean_pertrace,speedup_geomean_perbench,mpki_red_mean_perbench,dir_mpki_red_mean_perbench,cycwpki_red_mean_perbench,speedup_pooled,mpki_red_pooled,dir_mpki_red_pooled,cycwpki_red_pooled
+cbp_tagescl64,TAGE-SC-L 64KB,TAGE-SC-L 64KB,1.000000,0.0000,0.0000,0.0000,1.000000,0.0000,0.0000,0.0000,1.000000,0.0000,0.0000,0.0000
+cbp_tagescl192,TAGE-SC-L 192KB,TAGE-SC-L 64KB,1.005909,8.1120,12.4804,6.2328,1.006445,8.9812,14.8358,6.8828,1.006010,5.2725,8.5384,2.6148
+cbp_ddtage,DD-TAGE (Ros),TAGE-SC-L 64KB,1.007422,8.0390,13.1083,5.4838,1.006957,7.6917,14.7147,5.0111,1.007766,6.2716,10.0427,3.3795
+cbp_runlts,RUNLTS (no RV),TAGE-SC-L 64KB,1.007827,9.1052,15.7517,6.4786,1.007472,10.8009,19.7508,8.2795,1.007993,6.9569,11.0561,3.6554
+cbp_runlts_rv,RUNLTS (load RV),TAGE-SC-L 64KB,1.007994,9.4463,16.0390,6.6927,1.007555,10.9760,19.9002,8.3960,1.008150,7.0076,11.1355,3.7422
+cbp_perfdir,Perfect direction,TAGE-SC-L 64KB,1.083213,64.1615,100.0000,59.3271,1.084332,54.6198,100.0000,50.3318,1.080590,65.3766,100.0000,56.2745
+cbp_perfall,Perfect direction+target,TAGE-SC-L 64KB,1.128006,100.0000,100.0000,100.0000,1.149825,100.0000,100.0000,100.0000,1.124822,100.0000,100.0000,100.0000

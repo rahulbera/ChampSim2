@@ -57,6 +57,7 @@ struct cache_builder_base {
   bool m_pref_load{};
   bool m_wq_full_addr{};
   bool m_va_pref{};
+  bool m_perfect{};
 
   std::vector<access_type> m_pref_act_mask{access_type::LOAD, access_type::PREFETCH};
   std::vector<champsim::channel*> m_uls{};
@@ -188,6 +189,13 @@ public:
   self_type& set_prefetch_as_load();
 
   /**
+   * Specify whether the cache should issue prefetches as loads. The
+   * bool-taking overloads exist for the runtime configuration store, whose
+   * value cannot select between set_/reset_ at compile time.
+   */
+  self_type& prefetch_as_load(bool pref_load_);
+
+  /**
    * Specify that prefetches should be issued with lower priority than loads.
    */
   self_type& reset_prefetch_as_load();
@@ -208,15 +216,48 @@ public:
   self_type& set_virtual_prefetch();
 
   /**
+   * Specify whether prefetches should be translated. See prefetch_as_load(bool).
+   */
+  self_type& virtual_prefetch(bool virt_pref_);
+
+  /**
    * Specify that prefetchers should operate in the physical address space.
    */
   self_type& reset_virtual_prefetch();
+
+  /**
+   * Model this cache as perfect: every lookup hits, including the first access
+   * to a block that was never filled. Used to measure headroom -- "what is the
+   * performance if every request hits in this cache?" -- so the tag array is
+   * never filled or evicted and the level below sees no traffic at all. The
+   * configured hit latency and bandwidth still apply, requests are still
+   * translated, and this cache's own prefetcher and replacement hooks are
+   * bypassed because neither can affect a cache that never misses.
+   */
+  self_type& perfect(bool perfect_);
+
+  /**
+   * Model this cache as perfect. See perfect(bool).
+   */
+  self_type& set_perfect();
+
+  /**
+   * Model this cache normally. See perfect(bool).
+   */
+  self_type& reset_perfect();
 
   /**
    * Specify the ``access_type`` values that should activate the prefetcher.
    */
   template <typename... Elems>
   self_type& prefetch_activate(Elems... pref_act_elems);
+
+  /**
+   * Specify the ``access_type`` values that should activate the prefetcher, as
+   * an already-built mask. Non-template, so it wins overload resolution over
+   * the variadic form above, which cannot accept a vector.
+   */
+  self_type& prefetch_activate(std::vector<access_type> pref_act_mask);
 
   /**
    * Specify the upper levels to this cache.
@@ -444,6 +485,13 @@ auto champsim::cache_builder<P, R>::log2_offset_bits(unsigned log2_offset_bits_)
 }
 
 template <typename P, typename R>
+auto champsim::cache_builder<P, R>::prefetch_as_load(bool pref_load_) -> self_type&
+{
+  m_pref_load = pref_load_;
+  return *this;
+}
+
+template <typename P, typename R>
 auto champsim::cache_builder<P, R>::set_prefetch_as_load() -> self_type&
 {
   m_pref_load = true;
@@ -472,6 +520,13 @@ auto champsim::cache_builder<P, R>::reset_wq_checks_full_addr() -> self_type&
 }
 
 template <typename P, typename R>
+auto champsim::cache_builder<P, R>::virtual_prefetch(bool virt_pref_) -> self_type&
+{
+  m_va_pref = virt_pref_;
+  return *this;
+}
+
+template <typename P, typename R>
 auto champsim::cache_builder<P, R>::set_virtual_prefetch() -> self_type&
 {
   m_va_pref = true;
@@ -486,10 +541,38 @@ auto champsim::cache_builder<P, R>::reset_virtual_prefetch() -> self_type&
 }
 
 template <typename P, typename R>
+auto champsim::cache_builder<P, R>::perfect(bool perfect_) -> self_type&
+{
+  m_perfect = perfect_;
+  return *this;
+}
+
+template <typename P, typename R>
+auto champsim::cache_builder<P, R>::set_perfect() -> self_type&
+{
+  m_perfect = true;
+  return *this;
+}
+
+template <typename P, typename R>
+auto champsim::cache_builder<P, R>::reset_perfect() -> self_type&
+{
+  m_perfect = false;
+  return *this;
+}
+
+template <typename P, typename R>
 template <typename... Elems>
 auto champsim::cache_builder<P, R>::prefetch_activate(Elems... pref_act_elems) -> self_type&
 {
   m_pref_act_mask = {pref_act_elems...};
+  return *this;
+}
+
+template <typename P, typename R>
+auto champsim::cache_builder<P, R>::prefetch_activate(std::vector<access_type> pref_act_mask) -> self_type&
+{
+  m_pref_act_mask = std::move(pref_act_mask);
   return *this;
 }
 

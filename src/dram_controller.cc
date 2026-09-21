@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cfenv>
 #include <cmath>
+#include <stdexcept>
 #include <fmt/core.h>
 
 #include "deadlock.h"
@@ -27,12 +28,39 @@
 #include "util/span.h"
 #include "util/units.h"
 
+namespace
+{
+std::size_t prefetch_size_for_geometry(champsim::data::bytes channel_width, std::size_t channels, std::size_t bankgroups, std::size_t banks,
+                                       std::size_t columns, std::size_t ranks, std::size_t rows)
+{
+  if (channel_width.count() <= 0 || channel_width.count() > BLOCK_SIZE || BLOCK_SIZE % channel_width.count() != 0) {
+    throw std::invalid_argument{"DRAM channel width must be positive, no larger than BLOCK_SIZE, and divide BLOCK_SIZE exactly"};
+  }
+  const auto prefetch_size = static_cast<std::size_t>(BLOCK_SIZE / channel_width.count());
+  const auto valid_power_of_two = [](std::size_t value) {
+    return value > 0 && champsim::is_power_of_2(value);
+  };
+  if (!valid_power_of_two(channels) || !valid_power_of_two(bankgroups) || !valid_power_of_two(banks) || !valid_power_of_two(columns)
+      || !valid_power_of_two(ranks) || !valid_power_of_two(rows) || columns % prefetch_size != 0 || !valid_power_of_two(columns / prefetch_size)) {
+    throw std::invalid_argument{"invalid DRAM address mapping geometry"};
+  }
+  const auto mapped_bits = champsim::lg2(static_cast<std::size_t>(channel_width.count()) * prefetch_size) + champsim::lg2(channels) + champsim::lg2(bankgroups)
+                           + champsim::lg2(banks) + champsim::lg2(columns / prefetch_size) + champsim::lg2(ranks) + champsim::lg2(rows);
+  if (mapped_bits >= std::numeric_limits<champsim::data::bytes::rep>::digits) {
+    throw std::invalid_argument{"DRAM address mapping capacity is not representable"};
+  }
+  return prefetch_size;
+}
+} // namespace
+
 MEMORY_CONTROLLER::MEMORY_CONTROLLER(champsim::chrono::picoseconds dbus_period, champsim::chrono::picoseconds mc_period, std::size_t t_rp, std::size_t t_rcd,
                                      std::size_t t_cas, std::size_t t_ras, champsim::chrono::microseconds refresh_period, std::vector<channel_type*>&& ul,
                                      std::size_t rq_size, std::size_t wq_size, std::size_t chans, champsim::data::bytes chan_width, std::size_t rows,
                                      std::size_t columns, std::size_t ranks, std::size_t bankgroups, std::size_t banks, std::size_t refreshes_per_period)
     : champsim::operable(mc_period), queues(std::move(ul)), channel_width(chan_width),
-      address_mapping(chan_width, BLOCK_SIZE / chan_width.count(), chans, bankgroups, banks, columns, ranks, rows), data_bus_period(dbus_period)
+      address_mapping(chan_width, prefetch_size_for_geometry(chan_width, chans, bankgroups, banks, columns, ranks, rows), chans, bankgroups, banks, columns,
+                      ranks, rows),
+      data_bus_period(dbus_period)
 {
   for (std::size_t i{0}; i < chans; ++i) {
     channels.emplace_back(dbus_period, mc_period, t_rp, t_rcd, t_cas, t_ras, refresh_period, refreshes_per_period, chan_width, rq_size, wq_size,
@@ -63,23 +91,24 @@ DRAM_ADDRESS_MAPPING::DRAM_ADDRESS_MAPPING(champsim::data::bytes channel_width_,
                                            std::size_t banks_, std::size_t columns_, std::size_t ranks_, std::size_t rows_)
     : address_slicer(make_slicer(channel_width_, pref_size_, channels_, bankgroups_, banks_, columns_, ranks_, rows_)), prefetch_size(pref_size_)
 {
-  // assert prefetch size is not zero
-  assert(prefetch_size != 0);
-  // assert prefetch size is multiple of block size
-  assert((channel_width_.count() * prefetch_size) % BLOCK_SIZE == 0);
-
-  // mapping sanity check
-  assert(columns() >= 1 && columns() == columns_);
-  assert(rows() >= 1 && rows() == rows_);
-  assert(banks() >= 1 && banks() == banks_);
-  assert(bankgroups() >= 1 && bankgroups() == bankgroups_);
-  assert(ranks() >= 1 && ranks() == ranks_);
-  assert(channels() >= 1 && channels() == channels_);
 }
 
 auto DRAM_ADDRESS_MAPPING::make_slicer(champsim::data::bytes channel_width, std::size_t pref_size, std::size_t channels, std::size_t bankgroups,
                                        std::size_t banks, std::size_t columns, std::size_t ranks, std::size_t rows) -> slicer_type
 {
+  const auto valid_power_of_two = [](std::size_t value) {
+    return value > 0 && champsim::is_power_of_2(value);
+  };
+  if (channel_width.count() <= 0 || pref_size == 0
+      || static_cast<unsigned long long>(channel_width.count()) > std::numeric_limits<std::size_t>::max() / pref_size || !valid_power_of_two(channels)
+      || !valid_power_of_two(bankgroups) || !valid_power_of_two(banks) || !valid_power_of_two(columns) || !valid_power_of_two(ranks)
+      || !valid_power_of_two(rows) || columns % pref_size != 0 || !valid_power_of_two(columns / pref_size)) {
+    throw std::invalid_argument{"invalid DRAM address mapping geometry"};
+  }
+  const auto transfer_size = static_cast<std::size_t>(channel_width.count()) * pref_size;
+  if (!valid_power_of_two(transfer_size) || transfer_size % BLOCK_SIZE != 0) {
+    throw std::invalid_argument{"invalid DRAM address mapping geometry"};
+  }
   std::array<std::size_t, slicer_type::size()> params{};
   params.at(SLICER_ROW_IDX) = rows;
   params.at(SLICER_COLUMN_IDX) = columns / pref_size;
@@ -87,7 +116,7 @@ auto DRAM_ADDRESS_MAPPING::make_slicer(champsim::data::bytes channel_width, std:
   params.at(SLICER_BANK_IDX) = banks;
   params.at(SLICER_BANKGROUP_IDX) = bankgroups;
   params.at(SLICER_CHANNEL_IDX) = channels;
-  params.at(SLICER_OFFSET_IDX) = channel_width.count() * pref_size;
+  params.at(SLICER_OFFSET_IDX) = transfer_size;
   return std::apply([](auto... p) { return champsim::make_contiguous_extent_set(0, champsim::lg2(p)...); }, params);
 }
 
@@ -556,6 +585,11 @@ unsigned long DRAM_ADDRESS_MAPPING::swizzle_bits(champsim::address address, unsi
                                                  unsigned long field, unsigned long field_bits) const
 {
   champsim::address_slice row{get<SLICER_ROW_IDX>(address_slicer), address};
+  // A zero-width slice contributes zero to every XOR. Leave the legacy
+  // zero-step case unchanged; it needs a separate correctness fix.
+  if (field_bits == 0 && segment_size != 0) {
+    return field;
+  }
   unsigned long permute_field = field;
 
   for (champsim::dynamic_extent subextent{champsim::data::bits{0}, segment_size}; subextent.upper <= row.upper_extent();

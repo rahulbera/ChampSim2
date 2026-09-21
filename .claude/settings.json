@@ -1,0 +1,8 @@
+{
+  "enabledPlugins": {
+    "ggplot-house-style@skillhub": true,
+    "git-commit@skillhub": true,
+    "research-report@skillhub": true,
+    "slurm-launch@skillhub": true
+  }
+}

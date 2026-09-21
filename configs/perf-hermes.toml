@@ -1,0 +1,40 @@
+# Overlay on champsim_config.toml for the Hermes GLC speed comparison.
+# Matches available sizes/widths/timings; the simulator algorithms still differ.
+dram-model = "legacy"
+
+[ooo_cpu.cpu0]
+branch_predictor = "perceptron"
+rob_size = 512
+scheduler_size = 512
+execute_width = 6
+retire_width = 6
+mispredict_penalty = 17
+
+[cache.cpu0_itlb]
+sets = 64
+
+[cache.cpu0_dtlb]
+ways = 6
+
+[cache.cpu0_stlb]
+ways = 16
+
+[cache.cpu0_l2c]
+ways = 20
+rq_size = 48
+wq_size = 48
+mshr_size = 48
+
+[cache.llc]
+sets = 4096
+ways = 12
+rq_size = 48
+wq_size = 48
+latency = 40
+
+[pmem]
+bankgroups = 1
+banks = 8
+tcas = 20
+trcd = 20
+trp = 20

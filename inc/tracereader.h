@@ -17,12 +17,12 @@
 #ifndef TRACEREADER_H
 #define TRACEREADER_H
 
-#include <cstring>
 #include <deque>
+#include <iterator>
 #include <memory>
-#include <numeric>
 #include <string>
 #include <type_traits>
+#include <utility>
 
 #include "instruction.h"
 #include "util/detect.h"
@@ -88,6 +88,14 @@ class bulk_tracereader
   constexpr static std::size_t refresh_thresh = 1;
   std::deque<ooo_model_instr> instr_buffer;
 
+  // Keep the large trace-refill buffer out of operator() so the
+  // per-instruction path does not allocate and probe that frame on every call.
+#if defined(__clang__) || defined(__GNUC__)
+  __attribute__((noinline))
+#endif
+  void
+  refill();
+
 public:
   ooo_model_instr operator()();
 
@@ -102,45 +110,57 @@ ooo_model_instr apply_branch_target(ooo_model_instr branch, const ooo_model_inst
 template <typename It>
 void set_branch_targets(It begin, It end)
 {
-  std::reverse_iterator rbegin{end};
-  std::reverse_iterator rend{begin};
-  std::adjacent_difference(rbegin, rend, rbegin, apply_branch_target);
+  if (begin == end) {
+    return;
+  }
+  // The helper reads the next instruction without modifying it. A forward
+  // pass therefore preserves the original adjacent pairs and final lookahead.
+  for (auto next = std::next(begin); next != end; ++begin, ++next) {
+    *begin = apply_branch_target(std::move(*begin), *next);
+  }
+}
+
+template <typename T, typename F>
+void bulk_tracereader<T, F>::refill()
+{
+  std::array<T, buffer_size - refresh_thresh> trace_read_buf;
+  std::size_t bytes_read;
+
+  // Read through the character representation of the trivial trace records.
+  trace_file.read(reinterpret_cast<char*>(std::data(trace_read_buf)), std::size(trace_read_buf) * sizeof(T));
+  bytes_read = static_cast<std::size_t>(trace_file.gcount());
+  eof_ = trace_file.eof();
+
+  // Inflate trace format into core model instructions
+  auto begin = std::begin(trace_read_buf);
+  auto end = std::next(begin, bytes_read / sizeof(T));
+  std::transform(begin, end, std::back_inserter(instr_buffer), [cpu = this->cpu](const T& t) { return ooo_model_instr{cpu, t}; });
+
+  // Set branch targets
+  set_branch_targets(std::begin(instr_buffer), std::end(instr_buffer));
 }
 
 template <typename T, typename F>
 ooo_model_instr bulk_tracereader<T, F>::operator()()
 {
   if (std::size(instr_buffer) <= refresh_thresh) {
-    std::array<T, buffer_size - refresh_thresh> trace_read_buf;
-    std::array<char, std::size(trace_read_buf) * sizeof(T)> raw_buf;
-    std::size_t bytes_read;
-
-    // Read from trace file
-    trace_file.read(std::data(raw_buf), std::size(raw_buf));
-    bytes_read = static_cast<std::size_t>(trace_file.gcount());
-    eof_ = trace_file.eof();
-
-    // Transform bytes into trace format instructions
-    std::memcpy(std::data(trace_read_buf), std::data(raw_buf), bytes_read);
-
-    // Inflate trace format into core model instructions
-    auto begin = std::begin(trace_read_buf);
-    auto end = std::next(begin, bytes_read / sizeof(T));
-    std::transform(begin, end, std::back_inserter(instr_buffer), [cpu = this->cpu](T t) { return ooo_model_instr{cpu, t}; });
-
-    // Set branch targets
-    set_branch_targets(std::begin(instr_buffer), std::end(instr_buffer));
+    refill();
   }
 
-  auto retval = instr_buffer.front();
+  auto retval = std::move(instr_buffer.front());
   instr_buffer.pop_front();
 
   return retval;
 }
 
 std::string get_fptr_cmd(std::string_view fname);
+
+// True when the first record of this v2 trace declares an explicit branch type
+// (or when the file cannot be read far enough to tell). See the definition in
+// tracereader.cc for why this is not a member of bulk_tracereader.
+bool v2_trace_declares_branch_type(const std::string& fname);
 } // namespace champsim
 
-champsim::tracereader get_tracereader(const std::string& fname, uint8_t cpu, bool is_cloudsuite, bool repeat);
+champsim::tracereader get_tracereader(const std::string& fname, uint8_t cpu, bool is_cloudsuite, bool repeat, unsigned trace_version = 1);
 
 #endif

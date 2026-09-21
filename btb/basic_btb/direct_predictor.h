@@ -37,6 +37,10 @@ struct direct_predictor {
   };
 
   champsim::msl::lru_table<btb_entry_t> BTB{sets, ways};
+
+  // Runtime geometry: rebuild the (empty) table before first use. The
+  // constexpr sets/ways above remain the defaults.
+  void resize(std::size_t new_sets, std::size_t new_ways) { BTB = champsim::msl::lru_table<btb_entry_t>{new_sets, new_ways}; }
   std::optional<btb_entry_t> check_hit(champsim::address ip);
   void update(champsim::address ip, champsim::address branch_target, uint8_t branch_type);
 };

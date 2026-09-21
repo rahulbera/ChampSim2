@@ -1,0 +1,28 @@
+"scope","config","capture_pct","ind_mpki","speedup","label"
+"ALL","ittage64",81.46,0.2686,1.0174,"ITTAGE 64KB"
+"ALL","blbp64_untuned",66.61,0.401,1.0133,"BLBP 64KB (paper constants)"
+"ALL","blbp64_tuned",72.25,0.3507,1.0146,"BLBP 64KB (tuned)"
+"SPEC
+train","ittage64",86.44,0.0995,1.0078,"ITTAGE 64KB"
+"SPEC
+train","blbp64_untuned",80.57,0.1184,1.0072,"BLBP 64KB (paper constants)"
+"SPEC
+train","blbp64_tuned",84.25,0.1065,1.0074,"BLBP 64KB (tuned)"
+"SPEC
+test","ittage64",97.78,0.0248,1.0156,"ITTAGE 64KB"
+"SPEC
+test","blbp64_untuned",98.35,0.022,1.0157,"BLBP 64KB (paper constants)"
+"SPEC
+test","blbp64_tuned",98.48,0.0213,1.0157,"BLBP 64KB (tuned)"
+"agentic
+train","ittage64",80.62,0.4456,1.0221,"ITTAGE 64KB"
+"agentic
+train","blbp64_untuned",66.97,0.6205,1.0172,"BLBP 64KB (paper constants)"
+"agentic
+train","blbp64_tuned",72.84,0.5453,1.0189,"BLBP 64KB (tuned)"
+"agentic
+test","ittage64",73.7,0.4654,1.0217,"ITTAGE 64KB"
+"agentic
+test","blbp64_untuned",46.62,0.8443,1.0118,"BLBP 64KB (paper constants)"
+"agentic
+test","blbp64_tuned",55.05,0.7263,1.0144,"BLBP 64KB (tuned)"

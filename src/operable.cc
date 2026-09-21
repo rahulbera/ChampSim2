@@ -16,6 +16,9 @@
 
 #include "operable.h"
 
+#include <exception>
+#include <fmt/core.h>
+
 champsim::operable::operable() : operable(champsim::chrono::picoseconds{1}) {}
 
 champsim::operable::operable(champsim::chrono::picoseconds clock_period_) : clock_period(clock_period_) {}
@@ -37,3 +40,17 @@ long champsim::operable::_operate()
 }
 
 uint64_t champsim::operable::current_cycle() const { return static_cast<uint64_t>(current_time.time_since_epoch() / clock_period); }
+
+void champsim::print_deadlock_diagnostics(const std::vector<std::reference_wrapper<operable>>& operables)
+{
+  // The caller aborts next. An exception escaping here would reach
+  // std::terminate first, losing every later operable's diagnostics -- the
+  // memory backend's are last -- along with everything still buffered.
+  for (std::size_t index = 0; index < std::size(operables); ++index) {
+    try {
+      operables[index].get().print_deadlock();
+    } catch (const std::exception& err) {
+      fmt::print("\n[operable {}: deadlock diagnostics stopped by an exception: {}]\n", index, err.what());
+    }
+  }
+}

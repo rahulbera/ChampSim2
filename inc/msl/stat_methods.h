@@ -2,8 +2,9 @@
 #ifndef STAT_METHODS_H
 #define STAT_METHODS_H
 
-#include <cassert>
 #include <cstdint>
+#include <stdexcept>
+#include <string>
 
 #include "msl/bits.h"
 #include "msl/fwcounter.h"
@@ -97,7 +98,7 @@ static inline std::size_t get_sample_rate(long num)
   } else if (num >= 8) { // 1 in 4
     set_sample_rate = 4;
   } else {
-    assert(false); // Not enough sets to sample for set dueling
+    throw std::invalid_argument{"set dueling requires at least 8 sets, received " + std::to_string(num)};
   }
   return set_sample_rate;
 }
@@ -105,8 +106,11 @@ static inline std::size_t get_sample_rate(long num)
 // the number of sets is divisible by the sample rate, and returns the number of samples as the total number of sets divided by the sample rate.
 static inline std::size_t get_num_samples(long num)
 {
-  assert(num % get_sample_rate(num) == 0);
-  return num / get_sample_rate(num);
+  const auto sample_rate = get_sample_rate(num);
+  if (num % static_cast<long>(sample_rate) != 0) {
+    throw std::invalid_argument{"set-dueling set count " + std::to_string(num) + " is not divisible by sample rate " + std::to_string(sample_rate)};
+  }
+  return static_cast<std::size_t>(num) / sample_rate;
 }
 } // namespace champsim::msl
 

@@ -17,6 +17,9 @@
 #ifndef OPERABLE_H
 #define OPERABLE_H
 
+#include <functional>
+#include <vector>
+
 #include "chrono.h"
 
 namespace champsim
@@ -43,6 +46,11 @@ public:
 
   [[deprecated]] uint64_t current_cycle() const;
 };
+
+// Prints every operable's deadlock diagnostics, in order. A printer that
+// throws ends only its own diagnostics: a one-line note on stdout names the
+// failure, and the next operable still prints.
+void print_deadlock_diagnostics(const std::vector<std::reference_wrapper<operable>>& operables);
 
 } // namespace champsim
 

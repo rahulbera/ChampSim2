@@ -1,0 +1,133 @@
+"item","label","n","value"
+"abc.sp0","TAGE-SC-L 192KB",1,1.5455
+"abc.sp0","DD-TAGE (Ros)",1,1.2727
+"abc.sp0","RUNLTS (no RV)",1,2.1818
+"abc.sp0","RUNLTS (load RV)",1,2.1818
+"abc.sp2","TAGE-SC-L 192KB",1,2.708
+"abc.sp2","DD-TAGE (Ros)",1,2.6151
+"abc.sp2","RUNLTS (no RV)",1,3.5797
+"abc.sp2","RUNLTS (load RV)",1,3.5216
+"cppcheck.sp1","TAGE-SC-L 192KB",1,1.6218
+"cppcheck.sp1","DD-TAGE (Ros)",1,2.2776
+"cppcheck.sp1","RUNLTS (no RV)",1,2.5042
+"cppcheck.sp1","RUNLTS (load RV)",1,2.4684
+"cppcheck.sp2","TAGE-SC-L 192KB",1,3.7077
+"cppcheck.sp2","DD-TAGE (Ros)",1,6.6631
+"cppcheck.sp2","RUNLTS (no RV)",1,21.3326
+"cppcheck.sp2","RUNLTS (load RV)",1,21.1177
+"cpython.sp0","TAGE-SC-L 192KB",1,0
+"cpython.sp0","DD-TAGE (Ros)",1,0
+"cpython.sp0","RUNLTS (no RV)",1,0.0425
+"cpython.sp0","RUNLTS (load RV)",1,0.0425
+"cpython.sp1","TAGE-SC-L 192KB",1,0
+"cpython.sp1","DD-TAGE (Ros)",1,0
+"cpython.sp1","RUNLTS (no RV)",1,0
+"cpython.sp1","RUNLTS (load RV)",1,0
+"gcc.sp1","TAGE-SC-L 192KB",1,6.6555
+"gcc.sp1","DD-TAGE (Ros)",1,7.4113
+"gcc.sp1","RUNLTS (no RV)",1,7.0964
+"gcc.sp1","RUNLTS (load RV)",1,6.9494
+"gem5.sp1","TAGE-SC-L 192KB",1,2.266
+"gem5.sp1","DD-TAGE (Ros)",1,2.786
+"gem5.sp1","RUNLTS (no RV)",1,3.3804
+"gem5.sp1","RUNLTS (load RV)",1,3.3061
+"llvm.sp1","TAGE-SC-L 192KB",1,13.3613
+"llvm.sp1","DD-TAGE (Ros)",1,14.1061
+"llvm.sp1","RUNLTS (no RV)",1,13.6685
+"llvm.sp1","RUNLTS (load RV)",1,13.6406
+"llvm.sp2","TAGE-SC-L 192KB",1,2.8068
+"llvm.sp2","DD-TAGE (Ros)",1,3.0676
+"llvm.sp2","RUNLTS (no RV)",1,6.563
+"llvm.sp2","RUNLTS (load RV)",1,6.3126
+"ns3.sp0","TAGE-SC-L 192KB",1,4.835
+"ns3.sp0","DD-TAGE (Ros)",1,4.835
+"ns3.sp0","RUNLTS (no RV)",1,5.3754
+"ns3.sp0","RUNLTS (load RV)",1,5.2048
+"ns3.sp1","TAGE-SC-L 192KB",1,3.1062
+"ns3.sp1","DD-TAGE (Ros)",1,3.6072
+"ns3.sp1","RUNLTS (no RV)",1,4.0414
+"ns3.sp1","RUNLTS (load RV)",1,3.9078
+"ns3.sp2","TAGE-SC-L 192KB",1,4.3395
+"ns3.sp2","DD-TAGE (Ros)",1,4.2303
+"ns3.sp2","RUNLTS (no RV)",1,4.8035
+"ns3.sp2","RUNLTS (load RV)",1,4.7216
+"ntest.sp0","TAGE-SC-L 192KB",1,10.3714
+"ntest.sp0","DD-TAGE (Ros)",1,14.0399
+"ntest.sp0","RUNLTS (no RV)",1,17.8442
+"ntest.sp0","RUNLTS (load RV)",1,17.7989
+"ntest.sp1","TAGE-SC-L 192KB",1,7.0429
+"ntest.sp1","DD-TAGE (Ros)",1,8.1035
+"ntest.sp1","RUNLTS (no RV)",1,12.1765
+"ntest.sp1","RUNLTS (load RV)",1,11.9644
+"ntest.sp2","TAGE-SC-L 192KB",1,1.6495
+"ntest.sp2","DD-TAGE (Ros)",1,1.9068
+"ntest.sp2","RUNLTS (no RV)",1,2.7996
+"ntest.sp2","RUNLTS (load RV)",1,3.5866
+"omnetpp.sp0","TAGE-SC-L 192KB",1,18.6053
+"omnetpp.sp0","DD-TAGE (Ros)",1,34.1713
+"omnetpp.sp0","RUNLTS (no RV)",1,29.243
+"omnetpp.sp0","RUNLTS (load RV)",1,29.4987
+"omnetpp.sp2","TAGE-SC-L 192KB",1,0.1722
+"omnetpp.sp2","DD-TAGE (Ros)",1,0.0783
+"omnetpp.sp2","RUNLTS (no RV)",1,0.2035
+"omnetpp.sp2","RUNLTS (load RV)",1,0.2348
+"sealcrypto.sp0","TAGE-SC-L 192KB",1,87.0457
+"sealcrypto.sp0","DD-TAGE (Ros)",1,52.8235
+"sealcrypto.sp0","RUNLTS (no RV)",1,86.1904
+"sealcrypto.sp0","RUNLTS (load RV)",1,86.1904
+"sealcrypto.sp1","TAGE-SC-L 192KB",1,69.0799
+"sealcrypto.sp1","DD-TAGE (Ros)",1,47.3366
+"sealcrypto.sp1","RUNLTS (no RV)",1,71.0291
+"sealcrypto.sp1","RUNLTS (load RV)",1,71.9653
+"sealcrypto.sp2","TAGE-SC-L 192KB",1,3.3037
+"sealcrypto.sp2","DD-TAGE (Ros)",1,2.1601
+"sealcrypto.sp2","RUNLTS (no RV)",1,10.864
+"sealcrypto.sp2","RUNLTS (load RV)",1,10.864
+"sqlite.sp0","TAGE-SC-L 192KB",1,-11.0851
+"sqlite.sp0","DD-TAGE (Ros)",1,19.8784
+"sqlite.sp0","RUNLTS (no RV)",1,-53.508
+"sqlite.sp0","RUNLTS (load RV)",1,-53.5547
+"sqlite.sp1","TAGE-SC-L 192KB",1,2.0437
+"sqlite.sp1","DD-TAGE (Ros)",1,1.4342
+"sqlite.sp1","RUNLTS (no RV)",1,5.4141
+"sqlite.sp1","RUNLTS (load RV)",1,6.0954
+"sqlite.sp2","TAGE-SC-L 192KB",1,1.5348
+"sqlite.sp2","DD-TAGE (Ros)",1,1.9862
+"sqlite.sp2","RUNLTS (no RV)",1,1.9109
+"sqlite.sp2","RUNLTS (load RV)",1,12.3232
+"stockfish.sp0","TAGE-SC-L 192KB",1,5.4754
+"stockfish.sp0","DD-TAGE (Ros)",1,4.735
+"stockfish.sp0","RUNLTS (no RV)",1,6.8005
+"stockfish.sp0","RUNLTS (load RV)",1,6.9174
+"stockfish.sp1","TAGE-SC-L 192KB",1,5.8349
+"stockfish.sp1","DD-TAGE (Ros)",1,5.0626
+"stockfish.sp1","RUNLTS (no RV)",1,7.1563
+"stockfish.sp1","RUNLTS (load RV)",1,7.0019
+"stockfish.sp2","TAGE-SC-L 192KB",1,5.8289
+"stockfish.sp2","DD-TAGE (Ros)",1,4.92
+"stockfish.sp2","RUNLTS (no RV)",1,7.0342
+"stockfish.sp2","RUNLTS (load RV)",1,6.8564
+"vpr.sp0","TAGE-SC-L 192KB",1,3.8321
+"vpr.sp0","DD-TAGE (Ros)",1,3.9234
+"vpr.sp0","RUNLTS (no RV)",1,8.4854
+"vpr.sp0","RUNLTS (load RV)",1,7.938
+"vpr.sp1","TAGE-SC-L 192KB",1,0.9549
+"vpr.sp1","DD-TAGE (Ros)",1,1.2442
+"vpr.sp1","RUNLTS (no RV)",1,1.4757
+"vpr.sp1","RUNLTS (load RV)",1,1.5046
+"zstd.sp0","TAGE-SC-L 192KB",1,0.4596
+"zstd.sp0","DD-TAGE (Ros)",1,0.3676
+"zstd.sp0","RUNLTS (no RV)",1,0.5744
+"zstd.sp0","RUNLTS (load RV)",1,0.5974
+"zstd.sp1","TAGE-SC-L 192KB",1,0.3422
+"zstd.sp1","DD-TAGE (Ros)",1,0.2053
+"zstd.sp1","RUNLTS (no RV)",1,0.4106
+"zstd.sp1","RUNLTS (load RV)",1,0.4334
+"zstd.sp2","TAGE-SC-L 192KB",1,0.1384
+"zstd.sp2","DD-TAGE (Ros)",1,0
+"zstd.sp2","RUNLTS (no RV)",1,0.692
+"zstd.sp2","RUNLTS (load RV)",1,0.692
+"AVG","TAGE-SC-L 192KB",32,8.111990625
+"AVG","DD-TAGE (Ros)",32,8.039028125
+"AVG","RUNLTS (no RV)",32,9.10518125
+"AVG","RUNLTS (load RV)",32,9.44634375

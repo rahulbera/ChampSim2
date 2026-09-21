@@ -1,4 +1,5 @@
 #include <catch.hpp>
+#include <stdexcept>
 
 #include "bandwidth.h"
 #include "util/detect.h"
@@ -86,4 +87,20 @@ TEST_CASE("Bandwidth maximums are not incrementable")
   STATIC_REQUIRE_FALSE(champsim::is_detected_v<can_add, champsim::bandwidth::maximum_type>);
   STATIC_REQUIRE_FALSE(champsim::is_detected_v<can_decrement, champsim::bandwidth::maximum_type>);
   STATIC_REQUIRE_FALSE(champsim::is_detected_v<can_subtract, champsim::bandwidth::maximum_type>);
+}
+
+TEST_CASE("Bandwidth exhaustion preserves the exception and signed state")
+{
+  champsim::bandwidth value{champsim::bandwidth::maximum_type{10}};
+  REQUIRE_THROWS_MATCHES(value.consume(11), std::range_error, Catch::Matchers::Message("Exceeded bandwidth of 10"));
+  CHECK(value.amount_remaining() == -1);
+  CHECK(value.amount_consumed() == 11);
+  CHECK_FALSE(value.has_remaining());
+  value.consume(-2);
+  CHECK(value.amount_remaining() == 1);
+  CHECK(value.amount_consumed() == 9);
+  CHECK(value.has_remaining());
+  value.reset();
+  CHECK(value.amount_remaining() == 10);
+  CHECK(value.amount_consumed() == 0);
 }

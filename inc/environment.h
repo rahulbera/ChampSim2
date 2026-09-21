@@ -18,10 +18,11 @@
 #define ENVIRONMENT_H
 
 #include <functional>
+#include <string_view>
 #include <vector>
 
 #include "cache.h"
-#include "dram_controller.h"
+#include "memory_backend.h"
 #include "ooo_cpu.h"
 #include "operable.h"
 #include "ptw.h"
@@ -32,14 +33,19 @@ struct environment {
   virtual std::vector<std::reference_wrapper<O3_CPU>> cpu_view() = 0;
   virtual std::vector<std::reference_wrapper<CACHE>> cache_view() = 0;
   virtual std::vector<std::reference_wrapper<PageTableWalker>> ptw_view() = 0;
-  virtual MEMORY_CONTROLLER& dram_view() = 0;
+  virtual memory_backend& memory_view() = 0;
   virtual std::vector<std::reference_wrapper<operable>> operable_view() = 0;
 };
 
 namespace configured
 {
-template <unsigned long long ID>
-struct generated_environment;
+// The runtime module registry: per-kind name arrays and factories producing
+// the type-erased module pimpls, emitted by config.sh
+// (config/module_registry.py) from the modules it discovers and defined in the
+// generated registry translation unit. Lets a runtime configuration key select
+// any compiled module without rebuilding. One configuration per binary, so it
+// is a plain struct rather than a per-build specialization.
+struct module_registry;
 
 template <typename R, typename... PTWs>
 auto build(PTWs... builders)

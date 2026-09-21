@@ -1,0 +1,15 @@
+// ChampSim's SET_ASIDE_CHAMPSIM_MODULE mechanism is not re-entrant; performing
+// the set-aside here, at the outermost level, avoids the nesting. See
+// branch/cbp6_tagescl64/cbp6_tagescl64.cc for the full explanation.
+#undef CHAMPSIM_MODULE
+#include "ooo_cpu.h"
+#define CHAMPSIM_MODULE
+
+#include "ideal_btb_pibtb.h"
+
+std::pair<champsim::address, bool> ideal_btb_pibtb::btb_prediction(champsim::address ip) { return impl.prediction(ip, intern_); }
+
+void ideal_btb_pibtb::update_btb(champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type)
+{
+  impl.update(ip, branch_target, taken, branch_type);
+}

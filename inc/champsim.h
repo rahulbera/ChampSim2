@@ -39,6 +39,16 @@ struct deadlock : public std::exception {
   explicit deadlock(uint32_t cpu) : which(cpu) {}
 };
 
+// Simulation-level runtime knobs, settable through the runtime configuration
+// store as sim.deadlock_cycle / sim.livelock_period. The defaults here are the
+// values that were hardcoded in src/champsim.cc before the knobs existed.
+struct simulation_knobs {
+  // Consecutive no-progress cycles before the run is declared deadlocked.
+  int deadlock_cycle{500};
+  // Cycles between livelock IPC checks.
+  uint64_t livelock_period{10000000};
+};
+
 #ifdef DEBUG_PRINT
 constexpr bool debug_print = true;
 #else

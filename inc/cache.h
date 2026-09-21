@@ -44,6 +44,7 @@
 #include "chrono.h"
 #include "modules.h"
 #include "operable.h"
+#include "runtime_config.h"
 #include "util/to_underlying.h" // for to_underlying
 #include "waitable.h"
 
@@ -166,6 +167,8 @@ public:
   bool prefetch_as_load;
   bool match_offset_bits;
   bool virtual_prefetch;
+  // Every lookup hits, including cold blocks. See cache_builder::perfect(bool).
+  bool perfect;
   std::vector<access_type> pref_activate_mask;
 
   using stats_type = cache_stats;
@@ -219,10 +222,12 @@ public:
 
   void print_deadlock() final;
 
-#include "module_decl.inc"
-
   struct prefetcher_module_concept {
     virtual ~prefetcher_module_concept() = default;
+
+    // Deliver runtime-configuration values after construction, before any
+    // other hook. prefix names this instance's knob table.
+    virtual void impl_configure(const champsim::runtime_config& cfg, std::string_view prefix) = 0;
 
     virtual void bind(CACHE* cache) = 0;
 
@@ -238,6 +243,8 @@ public:
 
   struct replacement_module_concept {
     virtual ~replacement_module_concept() = default;
+
+    virtual void impl_configure(const champsim::runtime_config& cfg, std::string_view prefix) = 0;
 
     virtual void bind(CACHE* cache) = 0;
 
@@ -255,6 +262,8 @@ public:
   struct prefetcher_module_model final : prefetcher_module_concept {
     std::tuple<Ps...> intern_;
     explicit prefetcher_module_model(CACHE* cache) : intern_(Ps{cache}...) { (void)cache; /* silence -Wunused-but-set-parameter when sizeof...(Ps) == 0 */ }
+
+    void impl_configure(const champsim::runtime_config& cfg, std::string_view prefix) final;
     void bind(CACHE* cache)
     {
       std::apply([cache = cache](auto&... p) { (..., p.bind(cache)); }, intern_);
@@ -277,6 +286,8 @@ public:
 
     std::tuple<Rs...> intern_;
     explicit replacement_module_model(CACHE* cache) : intern_(Rs{cache}...) { (void)cache; /* silence -Wunused-but-set-parameter when sizeof...(Rs) == 0 */ }
+
+    void impl_configure(const champsim::runtime_config& cfg, std::string_view prefix) final;
     void bind(CACHE* cache)
     {
       std::apply([cache = cache](auto&... r) { (..., r.bind(cache)); }, intern_);
@@ -294,6 +305,18 @@ public:
 
   std::unique_ptr<prefetcher_module_concept> pref_module_pimpl;
   std::unique_ptr<replacement_module_concept> repl_module_pimpl;
+
+  // Runtime module selection seam; see O3_CPU::install_branch_module.
+  void install_prefetcher_module(std::unique_ptr<prefetcher_module_concept> mod)
+  {
+    pref_module_pimpl = std::move(mod);
+    pref_module_pimpl->bind(this);
+  }
+  void install_replacement_module(std::unique_ptr<replacement_module_concept> mod)
+  {
+    repl_module_pimpl = std::move(mod);
+    repl_module_pimpl->bind(this);
+  }
 
   // NOLINTBEGIN(readability-make-member-function-const): legacy modules use non-const hooks
   void impl_prefetcher_initialize() const;
@@ -320,8 +343,9 @@ public:
       : champsim::operable(b.m_clock_period), upper_levels(b.m_uls), lower_level(b.m_ll), lower_translate(b.m_lt), NAME(b.m_name), NUM_SET(b.get_num_sets()),
         NUM_WAY(b.get_num_ways()), MSHR_SIZE(b.get_num_mshrs()), PQ_SIZE(b.m_pq_size), HIT_LATENCY(b.get_hit_latency() * b.m_clock_period),
         FILL_LATENCY(b.get_fill_latency() * b.m_clock_period), OFFSET_BITS(b.m_offset_bits), MAX_TAG(b.get_tag_bandwidth()), MAX_FILL(b.get_fill_bandwidth()),
-        prefetch_as_load(b.m_pref_load), match_offset_bits(b.m_wq_full_addr), virtual_prefetch(b.m_va_pref), pref_activate_mask(b.m_pref_act_mask),
-        pref_module_pimpl(std::make_unique<prefetcher_module_model<Ps...>>(this)), repl_module_pimpl(std::make_unique<replacement_module_model<Rs...>>(this))
+        prefetch_as_load(b.m_pref_load), match_offset_bits(b.m_wq_full_addr), virtual_prefetch(b.m_va_pref), perfect(b.m_perfect),
+        pref_activate_mask(b.m_pref_act_mask), pref_module_pimpl(std::make_unique<prefetcher_module_model<Ps...>>(this)),
+        repl_module_pimpl(std::make_unique<replacement_module_model<Rs...>>(this))
   {
   }
 
@@ -330,6 +354,18 @@ public:
   CACHE& operator=(const CACHE&) = delete;
   CACHE& operator=(CACHE&&);
 };
+
+template <typename... Ps>
+void CACHE::prefetcher_module_model<Ps...>::impl_configure(const champsim::runtime_config& cfg, std::string_view prefix)
+{
+  [[maybe_unused]] auto process_one = [&](auto& p) {
+    using namespace champsim::modules;
+    if constexpr (prefetcher::template has_configure<decltype(p), const champsim::runtime_config&, std::string_view>)
+      p.configure(cfg, prefix);
+  };
+
+  std::apply([&](auto&... p) { (..., process_one(p)); }, intern_);
+}
 
 template <typename... Ps>
 void CACHE::prefetcher_module_model<Ps...>::impl_prefetcher_initialize()
@@ -421,6 +457,18 @@ void CACHE::prefetcher_module_model<Ps...>::impl_prefetcher_branch_operate(champ
   };
 
   std::apply([&](auto&... p) { (..., process_one(p)); }, intern_);
+}
+
+template <typename... Rs>
+void CACHE::replacement_module_model<Rs...>::impl_configure(const champsim::runtime_config& cfg, std::string_view prefix)
+{
+  [[maybe_unused]] auto process_one = [&](auto& r) {
+    using namespace champsim::modules;
+    if constexpr (replacement::template has_configure<decltype(r), const champsim::runtime_config&, std::string_view>)
+      r.configure(cfg, prefix);
+  };
+
+  std::apply([&](auto&... r) { (..., process_one(r)); }, intern_);
 }
 
 template <typename... Rs>
