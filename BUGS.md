@@ -38,7 +38,7 @@ Line numbers are at `81275433` unless an entry says otherwise.
 | [B7](#b7-the-v2-branch-type-probe-consumes-pipe-input) | The v2 branch-type probe consumes pipe input | Medium | Open |
 | [B8](#b8-trace-end-of-file-handling) | Trace end-of-file handling: FIFO hang, no drain, N−1 laps, `-` | Low–Medium | Open |
 | [B9](#b9-small-defects) | Small defects (no-op flag, wrong overload, dead declaration, path parsing, register counts, no CI bounds checks) | Low | Open |
-| [B10](#b10-ci-on-master-fails-in-three-independent-ways) | CI on `master` fails in three independent ways | Medium | Open |
+| [B10](#b10-ci-on-master-fails-in-two-independent-ways) | CI on `master` fails in two independent ways | Medium | Open |
 
 ---
 
@@ -282,7 +282,7 @@ non-inert and needs its own decision.
 
 ---
 
-## B10. CI on `master` fails in three independent ways
+## B10. CI on `master` fails in two independent ways
 
 **Status: open.** Severity: medium. Every "Run Tests" run on `master` has failed
 since at least 2026-09-21, the first one recorded, and every "Update Documentation"
@@ -290,23 +290,9 @@ run since 2026-08-05. A red build cannot show a new regression, and a job that f
 to build never runs its tests. Each failure stops its own job, so fixing one can
 reveal another behind it.
 
-Two causes are identified, one is not:
+One cause is identified, one is not:
 
-1. **The `python` job fails
-   `test_ramulator2_build.RamulatorBuildTests.test_make_dry_run_does_not_prepare_build_artifacts`**
-   (from `73f317fc`). It runs `make -n ramulator2` at the repository root. That goal
-   hard-includes `_configuration.mk` (`config/build_rules.mk:88-92`), which only
-   `./config.sh` writes, and the `python` job (`.github/workflows/test.yml:199-218`)
-   never runs `config.sh`. The result is `No rule to make target
-   '_configuration.mk'`. The `overriding recipe` warning beside it in the log is a
-   symptom of the same missing file. Locally it passes because the tree is configured.
-   In a clean `git archive` export with the dependencies linked in it fails with CI's
-   message, and passes after `./config.sh`.
-   - **Fix:** run `./config.sh` in the `python` job before the tests, or rewrite the
-     test to dry-run beside a stub fragment, as its neighbour
-     `test_fresh_enabled_dry_run_prints_missing_dependencies_without_building`
-     already does for the same reason.
-2. **`publish-wiki` ("Update Documentation") fails** because
+1. **`publish-wiki` ("Update Documentation") fails** because
    `.github/workflows/docs.yml` checks out `ref: gh-pages`, a branch this fork does not
    have (`git ls-remote origin 'refs/heads/gh-pages*'` is empty). The fetch fails
    three times and the job stops, on every push to `master`.
@@ -314,7 +300,7 @@ Two causes are identified, one is not:
      wanted), or skip the job outside upstream with
      `if: github.repository == 'ChampSim/ChampSim'`, or drop `master` from its
      triggers.
-3. **macOS Clang: cause not identified.** `make test/bin/000-test-main` exits 2
+2. **macOS Clang: cause not identified.** `make test/bin/000-test-main` exits 2
    after about 225 compiles, with no compiler error and no inner-make message,
    identically before and after `fcd13089`–`ed01cca7`. The log names no failing
    command. Reproduce on a Mac with `make --debug=j`, or with `-j1` and

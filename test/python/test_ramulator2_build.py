@@ -60,6 +60,24 @@ class RamulatorBuildTests(unittest.TestCase):
         for directory in ('include', 'lib'):
             (workspace / 'vcpkg_installed' / triplet / directory).mkdir(parents=True)
 
+    def fresh_checkout(self, name):
+        """The real Makefile and build rules beside a stub fragment and source.
+
+        Goals such as `all` and `ramulator2` hard-include _configuration.mk, which
+        only config.sh writes, so a fresh checkout (the hosted python job) cannot
+        dry-run the repository root.
+        """
+        workspace = self.root / name
+        (workspace / 'src').mkdir(parents=True)
+        shutil.copyfile(HELPER.parent.parent / 'Makefile', workspace / 'Makefile')
+        (workspace / 'config').symlink_to(HELPER.parent, target_is_directory=True)
+        (workspace / 'inc').symlink_to(HELPER.parent.parent / 'inc', target_is_directory=True)  # the policy's compiler query
+        for file_name, content in {'_configuration.mk': 'executable_name := bin/champsim\n',
+                                   'global.options': '', 'module.options': '', 'src/ramulator2_driver.cc': ''}.items():
+            (workspace / file_name).write_text(content)
+        self.stub_dependencies(workspace)
+        return workspace
+
     def run_helper(self, *args):
         return subprocess.run([sys.executable, str(HELPER), '--obj', str(self.root / 'objects'),
                                '--cxx', self.compiler, *args], text=True, capture_output=True)
@@ -77,25 +95,18 @@ class RamulatorBuildTests(unittest.TestCase):
         self.assertEqual(json.loads(stamp.read_text())['flags'], '-O1')
 
     def test_make_dry_run_does_not_prepare_build_artifacts(self):
+        workspace = self.fresh_checkout('dry-run-checkout')
+        before = tree(workspace)
         objects = self.root / 'dry-run-objects'
-        result = subprocess.run(['make', '-n', 'ramulator2', 'WITH_RAMULATOR2=0',
-                                 f'OBJ_ROOT={objects}', f'CXX={self.compiler}'],
-                                cwd=HELPER.parent.parent, env=self.env, text=True, capture_output=True)
+        result = subprocess.run(['make', '-n', 'ramulator2', 'WITH_RAMULATOR2=0', f'OBJ_ROOT={objects}',
+                                 f'CXX={self.compiler}', 'CHAMPSIM_LIBRARIES=', 'CHAMPSIM_TEST_LIBRARIES='],
+                                cwd=workspace, env=self.env, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(objects.exists(), 'dry-run must not create compiler/native stamps')
+        self.assertEqual(tree(workspace), before, 'dry-run must not create files')
 
     def test_fresh_enabled_dry_run_prints_missing_dependencies_without_building(self):
-        # Goal `all` hard-includes _configuration.mk, which only config.sh writes, so
-        # a fresh checkout (the hosted python job) cannot dry-run the repository root.
-        # Dry-run the real Makefile and helper beside a stub fragment and source instead.
-        workspace = self.root / 'fresh-checkout'
-        (workspace / 'src').mkdir(parents=True)
-        shutil.copyfile(HELPER.parent.parent / 'Makefile', workspace / 'Makefile')
-        (workspace / 'config').symlink_to(HELPER.parent, target_is_directory=True)
-        for name, content in {'_configuration.mk': 'executable_name := bin/champsim\n',
-                              'global.options': '', 'module.options': '', 'src/ramulator2_driver.cc': ''}.items():
-            (workspace / name).write_text(content)
-        self.stub_dependencies(workspace)
+        workspace = self.fresh_checkout('fresh-checkout')
         before = tree(workspace)
         native = self.root / 'missing-native'
         objects = self.root / 'enabled-dry-run'
@@ -112,11 +123,13 @@ class RamulatorBuildTests(unittest.TestCase):
         self.assertEqual(tree(workspace), before, 'dry-run must not create files')
 
     def test_long_make_options_do_not_disable_normal_preparation(self):
+        workspace = self.fresh_checkout('normal-checkout')
         objects = self.root / 'normal-objects'
-        result = subprocess.run(['make', '--no-print-directory', 'ramulator2',
-                                 'WITH_RAMULATOR2=0', f'OBJ_ROOT={objects}', f'CXX={self.compiler}'],
-                                cwd=HELPER.parent.parent, env=self.env, text=True, capture_output=True)
-        self.assertNotEqual(result.returncode, 0)  # target explains enablement
+        result = subprocess.run(['make', '--no-print-directory', 'ramulator2', 'WITH_RAMULATOR2=0', f'OBJ_ROOT={objects}',
+                                 f'CXX={self.compiler}', 'CHAMPSIM_LIBRARIES=', 'CHAMPSIM_TEST_LIBRARIES='],
+                                cwd=workspace, env=self.env, text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Use WITH_RAMULATOR2=1', result.stdout, result.stderr)  # the target explains enablement
         self.assertEqual(len(list(objects.rglob('compiler.stamp'))), 1)
 
     def test_effective_abi_changes_are_rejected_in_flags_response_and_include_files(self):
