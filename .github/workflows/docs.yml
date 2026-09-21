@@ -13,6 +13,9 @@ permissions:
 
 jobs:
   publish-wiki:
+    # Only upstream has the gh-pages branch this publishes to; elsewhere the
+    # checkout of it fails on every push.
+    if: github.repository == 'ChampSim/ChampSim'
     runs-on: ubuntu-latest
 
     steps:

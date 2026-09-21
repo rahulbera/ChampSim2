@@ -38,7 +38,7 @@ Line numbers are at `81275433` unless an entry says otherwise.
 | [B7](#b7-the-v2-branch-type-probe-consumes-pipe-input) | The v2 branch-type probe consumes pipe input | Medium | Open |
 | [B8](#b8-trace-end-of-file-handling) | Trace end-of-file handling: FIFO hang, no drain, N−1 laps, `-` | Low–Medium | Open |
 | [B9](#b9-small-defects) | Small defects (no-op flag, wrong overload, dead declaration, path parsing, register counts, no CI bounds checks) | Low | Open |
-| [B10](#b10-ci-on-master-fails-in-two-independent-ways) | CI on `master` fails in two independent ways | Medium | Open |
+| [B10](#b10-the-macos-ci-build-stops-without-a-diagnostic) | The macOS CI build stops without a diagnostic | Medium | Open |
 
 ---
 
@@ -282,31 +282,19 @@ non-inert and needs its own decision.
 
 ---
 
-## B10. CI on `master` fails in two independent ways
+## B10. The macOS CI build stops without a diagnostic
 
-**Status: open.** Severity: medium. Every "Run Tests" run on `master` has failed
-since at least 2026-09-21, the first one recorded, and every "Update Documentation"
-run since 2026-08-05. A red build cannot show a new regression, and a job that fails
-to build never runs its tests. Each failure stops its own job, so fixing one can
-reveal another behind it.
+**Status: open.** Severity: medium. The "Run Tests" `macOS Clang` job has failed on
+every recorded push to `master`, so macOS is never built or tested. The other CI
+failures once recorded here are fixed, and `publish-wiki` now runs only in upstream
+ChampSim/ChampSim.
 
-One cause is identified, one is not:
-
-1. **`publish-wiki` ("Update Documentation") fails** because
-   `.github/workflows/docs.yml` checks out `ref: gh-pages`, a branch this fork does not
-   have (`git ls-remote origin 'refs/heads/gh-pages*'` is empty). The fetch fails
-   three times and the job stops, on every push to `master`.
-   - **Fix:** create an orphan `gh-pages` branch (and enable Pages if the site is
-     wanted), or skip the job outside upstream with
-     `if: github.repository == 'ChampSim/ChampSim'`, or drop `master` from its
-     triggers.
-2. **macOS Clang: cause not identified.** `make test/bin/000-test-main` exits 2
-   after about 225 compiles, with no compiler error and no inner-make message,
-   identically before and after `fcd13089`–`ed01cca7`. The log names no failing
-   command. Reproduce on a Mac with `make --debug=j`, or with `-j1` and
-   `SHELL='sh -x'`. The runner's make version is not in the log; Apple's
-   `/usr/bin/make` is GNU Make 3.81, which may not support everything the build
-   rules use (inferred, not verified).
+**Cause not identified.** `make test/bin/000-test-main` exits 2 after about 225
+compiles, with no compiler error and no inner-make message, identically before and
+after `fcd13089`–`ed01cca7`. The log names no failing command. Reproduce on a Mac
+with `make --debug=j`, or with `-j1` and `SHELL='sh -x'`. The runner's make version
+is not in the log; Apple's `/usr/bin/make` is GNU Make 3.81, which may not support
+everything the build rules use (inferred, not verified).
 
 **Next in line: `upload_coveralls`** (`.github/workflows/test.yml:694`). It `needs`
 every cpp job, so it has been skipped in every run, and it runs for the first time
@@ -316,6 +304,6 @@ for upstream (`coveralls.io/github/rahulbera/ChampSim2` is 404). Guard it with
 `if: github.repository == 'ChampSim/ChampSim'`, register the repository on
 Coveralls, or remove the job.
 
-**Acceptance.** All "Run Tests" matrix jobs, `python`, `stats_output` and "Update
-Documentation" (or its deliberate removal) are green on a push to `master`, and the
-old-compiler jobs actually run the Catch2 suite rather than stopping at the build.
+**Acceptance.** The `macOS Clang` job builds and runs the Catch2 suite, and "Run Tests"
+is green on a push to `master` (or `upload_coveralls` is deliberately guarded or
+removed).
