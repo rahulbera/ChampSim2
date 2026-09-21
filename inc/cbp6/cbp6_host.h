@@ -124,9 +124,9 @@ class host
   // architectural registers. ChampSim supplies them in two steps: a decode
   // notification marks a register's value unknown, and an execute notification
   // delivers it when knowable. The architectural register number has to be
-  // remembered between the two, because dispatch rewrites
+  // remembered between the two, because scheduling rewrites
   // ooo_model_instr::destination_registers with physical IDs in place
-  // (src/ooo_cpu.cc:450) before execute is reached.
+  // (O3_CPU::do_scheduling) before execute is reached.
   std::unordered_map<uint64_t, unsigned> pending_reg_;
   uint64_t registers_marked_{0};
   uint64_t values_delivered_{0};

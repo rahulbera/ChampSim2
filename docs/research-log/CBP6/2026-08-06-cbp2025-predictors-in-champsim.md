@@ -2,6 +2,16 @@
 
 **Date:** 2026-08-06 · **Branch:** `rbdev` · **Authors:** Rahul Bera and Claude Opus 5
 
+> **Measured before the scheduler fix of 2026-09-21.** Every IPC, speedup, CycWPKI
+> and headroom figure here comes from a binary whose scheduler also ran its
+> free-register check on already-renamed instructions, stopping its walk
+> spuriously. Fixing that moved ROI cycles by −1.11% to +0.93% (median −0.04%)
+> across a 15-workload 50M-instruction gate, so do not mix these figures with
+> post-fix runs. Both arms of every comparison carried the bug, so the relative
+> conclusions should hold. Direction MPKI of predictors updated at execute
+> (`CBP6_DELAYED_UPDATE=1`, RUNLTS's execute-time value delivery) may shift too;
+> the default predictor's did not.
+
 ---
 
 ## 1. Key Idea

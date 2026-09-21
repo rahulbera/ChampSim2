@@ -37,6 +37,7 @@ PHYSICAL_REGISTER_ID RegisterAllocator::rename_src_register(int16_t reg)
   if (phys < 0) {
     // allocate the register if it hasn't yet been mapped
     // (common due to the traces being slices in the middle of a program)
+    CHAMPSIM_ASSERT(!free_registers.empty());
     phys = free_registers.front();
     free_registers.pop();
     frontend_RAT[reg] = phys;
@@ -76,7 +77,13 @@ void RegisterAllocator::free_register(PHYSICAL_REGISTER_ID physreg)
 
 bool RegisterAllocator::isValid(PHYSICAL_REGISTER_ID physreg) const { return physical_register_file.at(physreg).valid; }
 
-bool RegisterAllocator::isAllocated(PHYSICAL_REGISTER_ID archreg) const { return frontend_RAT[archreg] != -1; }
+bool RegisterAllocator::isAllocated(PHYSICAL_REGISTER_ID archreg) const
+{
+  // An architectural ID. A renamed instruction's operands hold physical IDs,
+  // which can exceed the RAT, so asking this about them is a caller bug.
+  CHAMPSIM_ASSERT(archreg >= 0 && static_cast<std::size_t>(archreg) < std::size(frontend_RAT));
+  return frontend_RAT[static_cast<std::size_t>(archreg)] != -1;
+}
 
 unsigned long RegisterAllocator::count_free_registers() const { return std::size(free_registers); }
 

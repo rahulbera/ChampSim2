@@ -664,6 +664,25 @@ overwrite that one.
   *bandwidth*, not the size of a structure — and `ptw.<name>.max_read`/`max_write`
   feed `tag_bandwidth`/`fill_bandwidth`. Both names came from the JSON and were kept
   so old configurations still load; read them as widths.
+- **An instruction's register operands change meaning when it is scheduled.**
+  `ooo_model_instr::source_registers`/`destination_registers` hold the trace's
+  architectural IDs until `O3_CPU::do_scheduling` renames them *in place*, and
+  physical IDs after; only `scheduled` tells which. Anything reading them must check
+  it. The scheduler's free-register check once ran on scheduled entries too
+  (fixed 2026-09-21, as upstream did in `f46c1ff0`): it charged them for registers
+  they already held and read their physical IDs from the 256-entry architectural
+  RAT, out of bounds above 256 registers. The `native_sanitize` job's
+  `address,undefined` cannot see that read, nor can `-fsanitize=bounds` (GCC
+  13.3); only `-D_GLIBCXX_ASSERTIONS` or `-fsanitize=bounds-strict` catch it.
+  `isAllocated` now bounds its index to the RAT, which catches a physical ID of 256
+  or more but not a smaller one, so at the shipped 128 and 200 registers only
+  `test/cpp/src/202-scheduler-rename-gate.cc` pins the fix. It moved ROI cycles by
+  −1.11% to +0.93% (median −0.04%) across the 15-workload long gate and left every
+  mispredict count unchanged, so compare cycle-level results only against runs
+  from the same side of it. Statistics documents from either side have the same
+  `build_id` and `[config]`, and `--build-info` records no source revision, so
+  only the binary's SHA256 tells them apart: record it with every result. The
+  deadlock printer still counts dependencies of unrenamed entries (`BUGS.md` B9).
 - **Geometry knobs read through `positive_value`; queue sizes deliberately do not.**
   Thirteen keys used to kill the process at zero (SIGFPE in the DRAM divisors, SIGABRT in
   the cache asserts) and the two DIB knobs silently built a structure that can never hit.

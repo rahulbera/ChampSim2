@@ -207,8 +207,11 @@ and [src/register_allocator.cc](../../../src/register_allocator.cc).
 
 **Regression requirements.** Invalid physical-register indices, rename/free/valid
 transitions, register exhaustion, and the existing register/scheduling tests.
-The allocation check currently precedes the `scheduled` test in
-`O3_CPU::schedule_instruction`; moving it can change when the scan stops.
+The allocation check preceded the `scheduled` test in
+`O3_CPU::schedule_instruction` when this was measured. It was moved behind that
+test on 2026-09-21, a scheduler fix that removes most `isAllocated` and
+`count_free_registers` calls from the ROB walk, so the evidence above is pre-fix;
+re-profile before acting on it, and keep `isAllocated`'s new index bound.
 
 ### 4. Reduce repeated nonzero DRAM mapping work for mcf
 

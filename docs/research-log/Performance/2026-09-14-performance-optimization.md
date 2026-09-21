@@ -871,6 +871,24 @@ use the ordinary two benchmark configs, legacy DRAM, the original SQLite v2 trac
 `break *'RegisterAllocator::isAllocated(short) const' if (short)$rsi > 255` on
 this Linux x86-64 build; the saved script records the argument and backtrace.
 
+**Resolved 2026-09-21.** The scheduler now runs the free-register check only on
+the instruction it is about to rename, as upstream ChampSim does since `f46c1ff0`,
+and `isAllocated` now bounds its index to the 256-entry RAT. The statement above
+that the 128-register benchmark configurations are unaffected holds for the
+out-of-bounds read only. The same misplaced check charged every already-renamed
+instruction for its destinations and read its physical sources as architectural
+IDs at any register-file size, so it stopped the scheduler's walk spuriously in
+every campaign in this log. The parity verdicts stand, because both sides of every
+pair carried it; the absolute statistics and KIPS are pre-fix. The fix moves ROI
+cycles by −0.066% to +0.003% on the four protected traces at 1M/3M, and by
+−1.11% (750.sealcrypto_r) to +0.93% (714.cpython_r), median −0.04%, across the
+5M/50M long gate of 14 SPEC26 workloads and the mcf control; `[config]` and every
+mispredict count are unchanged. It also removes most
+`isAllocated`/`count_free_registers` calls from the ROB walk, but not `isValid`'s,
+so re-profile before pursuing candidate 3 of `2026-09-15-linux-perf-hotspots.md`
+(inline the register-allocation queries), and keep `isAllocated`'s new bound if
+it is inlined.
+
 ## Optimization 11 — skip cache helper calls when no work is possible
 
 **Issue.** Every cache tick called span, transformation, extraction and stable
