@@ -122,25 +122,30 @@ SCENARIO("Physical register IDs of 256 and above are not used to index the archi
   }
 }
 
+// In both scenarios below an older writer is in flight, so the stall is one the
+// core waits out. With nothing older in flight it could never end, and the
+// scheduler reports it instead (203-register-file-too-small.cc).
 SCENARIO("Renaming stays in program order under register pressure")
 {
-  GIVEN("A core with 1 free register, an instruction needing 2, and a younger one needing none")
+  GIVEN("A core with 2 free registers behind an in-flight writer, an instruction needing 3, and a younger one needing none")
   {
     do_nothing_MRC mock_L1I, mock_L1D;
-    O3_CPU uut{core_with_registers(mock_L1I, mock_L1D, 1)};
+    O3_CPU uut{core_with_registers(mock_L1I, mock_L1D, 3)};
 
-    uut.ROB.push_back(ready_instruction(1, {}, {10, 11}));
-    uut.ROB.push_back(ready_instruction(2, {}, {}));
+    uut.ROB.push_back(ready_instruction(1, {}, {9}));
+    uut.ROB.push_back(ready_instruction(2, {}, {10, 11, 12}));
+    uut.ROB.push_back(ready_instruction(3, {}, {}));
 
     WHEN("The scheduler runs")
     {
       uut.schedule_instruction();
 
-      THEN("Neither is scheduled, because the younger may not rename before the older")
+      THEN("Only the writer is scheduled, because the youngest may not rename before the one waiting")
       {
-        REQUIRE_FALSE(uut.ROB.at(0).scheduled);
+        REQUIRE(uut.ROB.at(0).scheduled);
         REQUIRE_FALSE(uut.ROB.at(1).scheduled);
-        REQUIRE(uut.reg_allocator.count_free_registers() == 1);
+        REQUIRE_FALSE(uut.ROB.at(2).scheduled);
+        REQUIRE(uut.reg_allocator.count_free_registers() == 2);
       }
     }
   }
@@ -148,20 +153,22 @@ SCENARIO("Renaming stays in program order under register pressure")
 
 SCENARIO("An instruction's unmapped sources count against the free registers")
 {
-  GIVEN("A core with 2 registers and an instruction with two unmapped sources and a destination")
+  GIVEN("A core with 2 free registers behind an in-flight writer, and an instruction with two unmapped sources and a destination")
   {
     do_nothing_MRC mock_L1I, mock_L1D;
-    O3_CPU uut{core_with_registers(mock_L1I, mock_L1D, 2)};
+    O3_CPU uut{core_with_registers(mock_L1I, mock_L1D, 3)};
 
-    uut.ROB.push_back(ready_instruction(1, {10, 11}, {12}));
+    uut.ROB.push_back(ready_instruction(1, {}, {9}));
+    uut.ROB.push_back(ready_instruction(2, {10, 11}, {12}));
 
     WHEN("The scheduler runs")
     {
       uut.schedule_instruction();
 
-      THEN("It is not scheduled, and no register is taken")
+      THEN("It is not scheduled, and no register is taken for it")
       {
-        REQUIRE_FALSE(uut.ROB.front().scheduled);
+        REQUIRE(uut.ROB.at(0).scheduled);
+        REQUIRE_FALSE(uut.ROB.at(1).scheduled);
         REQUIRE(uut.reg_allocator.count_free_registers() == 2);
       }
     }

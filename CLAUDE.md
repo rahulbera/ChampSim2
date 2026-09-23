@@ -683,6 +683,19 @@ overwrite that one.
   `build_id` and `[config]`, and `--build-info` records no source revision, so
   only the binary's SHA256 tells them apart: record it with every result. The
   deadlock printer still counts dependencies of unrenamed entries (`BUGS.md` B9).
+- **`register_file_size` must hold the trace's architectural footprint.** An
+  architectural register is mapped on first use and keeps a committed physical
+  register for the rest of the run; one is freed only when a newer write of the same
+  architectural register retires. So once the registers held plus what the oldest
+  instruction must rename exceed the file, with nothing older in flight, the core can
+  never proceed, and the scheduler throws `runtime config: ooo_cpu.cpuN.register_file_size
+  = X is too small for this trace` naming the instruction and the counts. Fast warmup
+  clears every instruction's register operands (`do_init_instruction`), so the RAT is
+  empty when measurement starts and the footprint builds during the region of
+  interest: issue #3's 649.fotonik3d_s-1B uses 45 architectural registers after a 1M
+  warmup and needs 47 physical ones (two destinations to rename); 32–46 stop there.
+  A multi-core or `-i`-less run used to end this silently instead: with the core
+  frozen after its own region of interest, or as a success at trace EOF.
 - **Geometry knobs read through `positive_value`; queue sizes deliberately do not.**
   Thirteen keys used to kill the process at zero (SIGFPE in the DRAM divisors, SIGABRT in
   the cache asserts) and the two DIB knobs silently built a structure that can never hit.
