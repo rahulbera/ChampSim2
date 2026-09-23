@@ -122,6 +122,13 @@ bin/champsim --trace-version 2 --heartbeat-frequency 1000000 \
     -w 50000000 -i 200000000 --toml stats.toml -- trace.champsim2.zst
 ```
 
+The two formats also name registers differently, and ChampSim renames whatever ID a
+record carries. v1 traces (the public DPC-3 SPEC17 set, and anything `tracer/pin`
+writes) store Pin's `REG` enum value per operand, so 8/16/32-bit views such as EAX, AL
+and R8D get IDs of their own, separate from RAX and R8: each pins its own physical
+register, and a read of RAX after a write of EAX is not linked to that write
+(`BUGS.md` B11). The v2 SPEC26 traces use full register names only.
+
 `--toml` writes the machine-readable statistics document (see below). Without it, only
 the plain-text report goes to stdout.
 
@@ -693,8 +700,10 @@ overwrite that one.
   = X is too small for this trace` naming the instruction and the counts. Fast warmup
   clears every instruction's register operands (`do_init_instruction`), so the RAT is
   empty when measurement starts and the footprint builds during the region of
-  interest: issue #3's 649.fotonik3d_s-1B uses 45 architectural registers after a 1M
-  warmup and needs 47 physical ones (two destinations to rename); 32–46 stop there.
+  interest. "Architectural register" here means a trace register ID, and a v1 trace
+  gives partial-register views IDs of their own (B11): issue #3's 649.fotonik3d_s-1B
+  uses 45 register IDs after a 1M warmup, only about 22 distinct x86 registers, and
+  so needs 47 physical ones (two destinations to rename); 32–46 stop there.
   A multi-core or `-i`-less run used to end this silently instead: with the core
   frozen after its own region of interest, or as a success at trace EOF.
 - **Geometry knobs read through `positive_value`; queue sizes deliberately do not.**
