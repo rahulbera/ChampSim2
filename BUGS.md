@@ -12,7 +12,9 @@ that added an entry and, newest first, the one that fixed it. Fixed so far:
 
 - B1, perfect TLBs mapping every page to physical page 0 (`fcd13089`, before this file
   existed);
-- B2, the scheduler's register check running on already-renamed instructions.
+- B2, the scheduler's register check running on already-renamed instructions;
+- B10, the macOS CI job failing without a diagnostic, closed by removing the macOS job
+  and `upload_coveralls` from CI rather than fixed (the cause was never found).
 
 The rules for a fix:
 
@@ -38,7 +40,6 @@ Line numbers are at `81275433` unless an entry says otherwise.
 | [B7](#b7-the-v2-branch-type-probe-consumes-pipe-input) | The v2 branch-type probe consumes pipe input | Medium | Open |
 | [B8](#b8-trace-end-of-file-handling) | Trace end-of-file handling: FIFO hang, no drain, N−1 laps, `-` | Low–Medium | Open |
 | [B9](#b9-small-defects) | Small defects (no-op flag, wrong overload, dead declaration, path parsing, register counts, no CI bounds checks) | Low | Open |
-| [B10](#b10-the-macos-ci-build-stops-without-a-diagnostic) | The macOS CI build stops without a diagnostic | Medium | Open |
 
 ---
 
@@ -279,31 +280,3 @@ non-inert and needs its own decision.
   (`X0 = X1 op X1` needs 1 register and is charged 2), so it can stop the walk one
   register early. Deduplicating it changes timing, so it is non-inert and needs its
   own re-baseline.
-
----
-
-## B10. The macOS CI build stops without a diagnostic
-
-**Status: open.** Severity: medium. The "Run Tests" `macOS Clang` job has failed on
-every recorded push to `master`, so macOS is never built or tested. The other CI
-failures once recorded here are fixed, and `publish-wiki` now runs only in upstream
-ChampSim/ChampSim.
-
-**Cause not identified.** `make test/bin/000-test-main` exits 2 after about 225
-compiles, with no compiler error and no inner-make message, identically before and
-after `fcd13089`–`ed01cca7`. The log names no failing command. Reproduce on a Mac
-with `make --debug=j`, or with `-j1` and `SHELL='sh -x'`. The runner's make version
-is not in the log; Apple's `/usr/bin/make` is GNU Make 3.81, which may not support
-everything the build rules use (inferred, not verified).
-
-**Next in line: `upload_coveralls`** (`.github/workflows/test.yml:694`). It `needs`
-every cpp job, so it has been skipped in every run, and it runs for the first time
-once the matrix passes. It is expected to fail then (inferred; it has never run):
-`coverallsapp/github-action@master` uploads to a Coveralls project that exists only
-for upstream (`coveralls.io/github/rahulbera/ChampSim2` is 404). Guard it with
-`if: github.repository == 'ChampSim/ChampSim'`, register the repository on
-Coveralls, or remove the job.
-
-**Acceptance.** The `macOS Clang` job builds and runs the Catch2 suite, and "Run Tests"
-is green on a push to `master` (or `upload_coveralls` is deliberately guarded or
-removed).

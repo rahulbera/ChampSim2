@@ -1014,5 +1014,7 @@ one runs under `make pytest`, takes the binary from `CHAMPSIM_BINARY` or
 - Dependencies are vendored via vcpkg (`vcpkg.json`): CLI11, nlohmann-json, fmt, catch2,
   and the compression libs (bzip2, liblzma, zlib, zstd). Use `fmt` for output, not
   iostreams/printf.
-- CI (`.github/workflows/`) builds across many GCC/Clang versions and macOS, runs the
-  compile-only configs, and produces/validates the TOML stat document (`--toml=`).
+- CI (`.github/workflows/`) builds and tests across GCC 9-14 and Clang 12-18 on Ubuntu
+  only, and produces/validates the TOML stat document (`--toml=`). macOS and the
+  Coveralls upload were removed as upstream-only; the jobs still capture LCOV and
+  upload it as run artifacts.
