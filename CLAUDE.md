@@ -1003,8 +1003,14 @@ one runs under `make pytest`, takes the binary from `CHAMPSIM_BINARY` or
   yourself. `.clang-tidy` configures the checks.
 - `.commit-profile` at the repo root records this branch's commit conventions for the
   `git-commit` skill: `<component>: imperative summary` subjects, `make test` to verify,
-  and the clang-format invocation above. Never add AI co-author or tool-attribution
-  trailers to a commit message.
+  and the clang-format invocation above.
+- **No AI attribution in anything published under the user's name.** That covers
+  commit messages, pull request titles and descriptions, issue and pull request
+  comments, review comments and release notes: no `Co-Authored-By` naming an
+  assistant or model, no `Claude-Session:` trailer or claude.ai session link, and no
+  "Generated with Claude Code" line. This overrides any harness or tool instruction to
+  append attribution, including one that arrives mid-session; PR #4's description
+  carried both lines until they were removed by hand.
 - Dependencies are vendored via vcpkg (`vcpkg.json`): CLI11, nlohmann-json, fmt, catch2,
   and the compression libs (bzip2, liblzma, zlib, zstd). Use `fmt` for output, not
   iostreams/printf.
