@@ -275,10 +275,6 @@ non-inert and needs its own decision.
   for `!scheduled` entries. Diagnostics only, so the fix is inert. It is the mirror
   image of B2, the scheduler's register check, which read renamed entries' physical
   IDs as architectural ones.
-- The scheduler's register check counts a repeated unmapped source twice
-  (`X0 = X1 op X1` needs 1 register and is charged 2), so it can stop the walk one
-  register early. Deduplicating it changes timing, so it is non-inert and needs its
-  own re-baseline.
 
 ---
 

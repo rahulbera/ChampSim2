@@ -448,8 +448,15 @@ long O3_CPU::schedule_instruction()
       // renamed this cycle. An already-scheduled instruction has claimed its
       // registers, so evaluating the gate against it (and breaking when free
       // registers fall below its destination count) wrongly blocks scheduling.
-      unsigned long sources_to_allocate = std::count_if(rob_it->source_registers.begin(), rob_it->source_registers.end(),
-                                                        [&alloc = std::as_const(reg_allocator)](auto srcreg) { return !alloc.isAllocated(srcreg); });
+      // Renaming maps an unmapped source on its first read, so a repeat of it
+      // allocates nothing: count each unmapped source register once.
+      const auto& sources = rob_it->source_registers;
+      unsigned long sources_to_allocate = 0;
+      for (auto src_it = std::begin(sources); src_it != std::end(sources); ++src_it) {
+        if (!reg_allocator.isAllocated(*src_it) && std::find(std::begin(sources), src_it, *src_it) == src_it) {
+          ++sources_to_allocate;
+        }
+      }
       if (reg_allocator.count_free_registers() < (sources_to_allocate + rob_it->destination_registers.size())) {
         break;
       }

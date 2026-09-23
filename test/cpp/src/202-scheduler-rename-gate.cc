@@ -167,3 +167,27 @@ SCENARIO("An instruction's unmapped sources count against the free registers")
     }
   }
 }
+
+SCENARIO("A repeated unmapped source is counted once")
+{
+  GIVEN("A core with 2 registers and an instruction reading one unmapped register twice and writing another")
+  {
+    do_nothing_MRC mock_L1I, mock_L1D;
+    O3_CPU uut{core_with_registers(mock_L1I, mock_L1D, 2)};
+
+    // Renaming maps the source on its first read, so the second read allocates
+    // nothing: the instruction needs 2 registers, not 3.
+    uut.ROB.push_back(ready_instruction(1, {10, 10}, {11}));
+
+    WHEN("The scheduler runs")
+    {
+      uut.schedule_instruction();
+
+      THEN("It is renamed, taking both registers")
+      {
+        REQUIRE(uut.ROB.front().scheduled);
+        REQUIRE(uut.reg_allocator.count_free_registers() == 0);
+      }
+    }
+  }
+}
