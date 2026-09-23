@@ -682,7 +682,8 @@ overwrite that one.
   from the same side of it. Statistics documents from either side have the same
   `build_id` and `[config]`, and `--build-info` records no source revision, so
   only the binary's SHA256 tells them apart: record it with every result. The
-  deadlock printer still counts dependencies of unrenamed entries (`BUGS.md` B9).
+  deadlock printer shows `num_reg_dependent: -` for an unrenamed entry, since its
+  operands say nothing about the physical register file.
 - **`register_file_size` must hold the trace's architectural footprint.** An
   architectural register is mapped on first use and keeps a committed physical
   register for the rest of the run; one is freed only when a newer write of the same

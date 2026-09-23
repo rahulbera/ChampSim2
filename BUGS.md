@@ -37,7 +37,7 @@ Line numbers are at `81275433` unless an entry says otherwise.
 | [B6](#b6-exhausting-physical-memory-silently-aliases-pages) | Exhausting physical memory silently aliases pages | Low | Open |
 | [B7](#b7-the-v2-branch-type-probe-consumes-pipe-input) | The v2 branch-type probe consumes pipe input | Medium | Open |
 | [B8](#b8-trace-end-of-file-handling) | Trace end-of-file handling: FIFO hang, no drain, N−1 laps, `-` | Low–Medium | Open |
-| [B9](#b9-small-defects) | Small defects (no-op flag, wrong overload, dead declaration, path parsing, register counts, no CI bounds checks) | Low | Open |
+| [B9](#b9-small-defects) | Small defects (no-op flag, wrong overload, dead declaration, path parsing, no CI bounds checks, a buffer missing from deadlock dumps) | Low | Open |
 | [B10](#b10-the-macos-ci-build-stops-without-a-diagnostic) | The macOS CI build stops without a diagnostic | Medium | Open |
 
 ---
@@ -268,13 +268,11 @@ non-inert and needs its own decision.
   `-fsanitize=address,undefined` misses such a read when it stays inside the
   enclosing object, and so does `-fsanitize=bounds` (GCC 13.3). Add a non-native
   job built with `-D_GLIBCXX_ASSERTIONS`, or `-fsanitize=bounds-strict`.
-- The deadlock printer calls `count_reg_dependencies` for entries not yet renamed,
-  whose operands are still architectural IDs (`src/ooo_cpu.cc:843`). The range guard
-  from `63889670` (`src/register_allocator.cc:85-91`) only stops the throw, so the
-  count is meaningless for an architectural ID below the register-file size. Report 0
-  for `!scheduled` entries. Diagnostics only, so the fix is inert. It is the mirror
-  image of B2, the scheduler's register check, which read renamed entries' physical
-  IDs as architectural ones.
+- `O3_CPU::print_deadlock` prints the IFETCH, DECODE and DISPATCH buffers, the ROB,
+  the LQ and the SQ, but not `DIB_HIT_BUFFER` (`src/ooo_cpu.cc`, `print_deadlock`),
+  so an instruction on the DIB-hit route between fetch and dispatch appears in no
+  buffer of a deadlock dump. Print it like the others. Diagnostics only, so the fix
+  is inert.
 
 ---
 

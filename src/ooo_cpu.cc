@@ -864,15 +864,10 @@ void O3_CPU::print_deadlock()
   fmt::print("DEADLOCK! CPU {} cycle {}\n", cpu, current_time.time_since_epoch() / clock_period);
 
   auto instr_pack = [period = clock_period, this](const auto& entry) {
-    return std::tuple{entry.instr_id,
-                      entry.fetch_issued,
-                      entry.fetch_completed,
-                      entry.scheduled,
-                      entry.executed,
-                      entry.completed,
-                      reg_allocator.count_reg_dependencies(entry),
-                      entry.num_mem_ops() - entry.completed_mem_ops,
-                      entry.ready_time.time_since_epoch() / period};
+    return std::tuple{entry.instr_id, entry.fetch_issued, entry.fetch_completed, entry.scheduled, entry.executed, entry.completed,
+                      // Until do_scheduling renames an entry its operands are architectural IDs.
+                      entry.scheduled ? std::to_string(reg_allocator.count_reg_dependencies(entry)) : std::string{"-"},
+                      entry.num_mem_ops() - entry.completed_mem_ops, entry.ready_time.time_since_epoch() / period};
   };
   std::string_view instr_fmt{
       "instr_id: {} fetch_issued: {} fetch_completed: {} scheduled: {} executed: {} completed: {} num_reg_dependent: {} num_mem_ops: {} event: {}"};
@@ -895,9 +890,14 @@ void O3_CPU::print_deadlock()
   std::string_view lq_fmt{"instr_id: {} address: {} fetch_issued: {} event_cycle: {} waits on {}"};
 
   auto sq_pack = [period = clock_period](const auto& entry) {
+    // do_finish_store releases the waiting loads but not these references, so
+    // a slot may since be empty or hold a younger load waiting on nothing here.
     std::vector<uint64_t> depend_ids;
-    std::transform(std::begin(entry.lq_depend_on_me), std::end(entry.lq_depend_on_me), std::back_inserter(depend_ids),
-                   [](const std::optional<LSQ_ENTRY>& lq_entry) { return lq_entry->producer_id; });
+    for (const std::optional<LSQ_ENTRY>& lq_entry : entry.lq_depend_on_me) {
+      if (lq_entry.has_value() && lq_entry->producer_id == entry.instr_id) {
+        depend_ids.push_back(lq_entry->instr_id);
+      }
+    }
     return std::tuple{entry.instr_id, entry.virtual_address, entry.fetch_issued, entry.ready_time.time_since_epoch() / period, depend_ids};
   };
   std::string_view sq_fmt{"instr_id: {} address: {} fetch_issued: {} event_cycle: {} LQ waiting: {}"};

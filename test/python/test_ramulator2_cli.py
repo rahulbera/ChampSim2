@@ -155,10 +155,11 @@ class RamulatorCliTests(unittest.TestCase):
 
     def test_no_progress_abort_diagnostics_survive_unrenamed_register_ids(self):
         # Real traces name architectural registers past the 128-entry physical
-        # register file (706.stockfish_r uses 155). The deadlock printer counts
-        # dependencies of IFETCH/DECODE/DISPATCH entries, which are not renamed
-        # yet: an unchecked lookup threw std::out_of_range, std::terminate cut
-        # off every later operable, and the buffered stdout was lost.
+        # register file (706.stockfish_r uses 155). The deadlock printer used to
+        # count dependencies of IFETCH/DECODE/DISPATCH entries, which are not
+        # renamed yet: an unchecked lookup threw std::out_of_range, std::terminate
+        # cut off every later operable, and the buffered stdout was lost. It now
+        # prints '-' for them; this keeps every diagnostic arriving.
         def unrenamed_register_ids(record):
             record[12] = 155  # source_registers[0]
             record[13] = 255  # source_registers[1]
