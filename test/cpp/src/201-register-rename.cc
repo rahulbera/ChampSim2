@@ -293,11 +293,11 @@ SCENARIO("The register allocator correctly recycles physical registers when no l
 
 TEST_CASE("Counting register dependencies does not throw for an instruction that has not been renamed")
 {
-  // Only the deadlock printer counts dependencies, and it does so for IFETCH,
-  // DECODE and DISPATCH entries too. Those still hold the trace's architectural
-  // register IDs, which real traces place past the physical register file
-  // (706.stockfish_r uses 155). Such an ID names no physical register, so the
-  // instruction waits on nothing there.
+  // The deadlock printer used to count dependencies for IFETCH, DECODE and
+  // DISPATCH entries too, and now counts only renamed ones. An instruction not
+  // renamed yet still holds the trace's architectural register IDs, which real
+  // traces place past the physical register file (706.stockfish_r uses 155).
+  // Such an ID names no physical register, so the instruction waits on nothing.
   constexpr int PHYSICALREGS = 128;
   RegisterAllocator ra{PHYSICALREGS};
   auto unrenamed = champsim::test::instruction_with_ip(0);

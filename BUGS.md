@@ -39,7 +39,9 @@ Line numbers are at `81275433` unless an entry says otherwise.
 | [B6](#b6-exhausting-physical-memory-silently-aliases-pages) | Exhausting physical memory silently aliases pages | Low | Open |
 | [B7](#b7-the-v2-branch-type-probe-consumes-pipe-input) | The v2 branch-type probe consumes pipe input | Medium | Open |
 | [B8](#b8-trace-end-of-file-handling) | Trace end-of-file handling: FIFO hang, no drain, N−1 laps, `-` | Low–Medium | Open |
-| [B9](#b9-small-defects) | Small defects (no-op flag, wrong overload, dead declaration, path parsing, register counts, no CI bounds checks) | Low | Open |
+| [B9](#b9-small-defects) | Small defects (no-op flag, wrong overload, dead declaration, path parsing, no CI bounds checks, a buffer missing from deadlock dumps) | Low | Open |
+| [B11](#b11-v1-traces-name-partial-gpr-views-as-separate-registers) | v1 traces name partial GPR views as separate registers | Medium–High | Open |
+| [B12](#b12-the-pin-tracer-overflows-its-register-lists-and-keeps-partial-register-names) | The Pin tracer overflows its register lists and keeps partial register names | Medium | Open |
 
 ---
 
@@ -269,14 +271,93 @@ non-inert and needs its own decision.
   `-fsanitize=address,undefined` misses such a read when it stays inside the
   enclosing object, and so does `-fsanitize=bounds` (GCC 13.3). Add a non-native
   job built with `-D_GLIBCXX_ASSERTIONS`, or `-fsanitize=bounds-strict`.
-- The deadlock printer calls `count_reg_dependencies` for entries not yet renamed,
-  whose operands are still architectural IDs (`src/ooo_cpu.cc:843`). The range guard
-  from `63889670` (`src/register_allocator.cc:85-91`) only stops the throw, so the
-  count is meaningless for an architectural ID below the register-file size. Report 0
-  for `!scheduled` entries. Diagnostics only, so the fix is inert. It is the mirror
-  image of B2, the scheduler's register check, which read renamed entries' physical
-  IDs as architectural ones.
-- The scheduler's register check counts a repeated unmapped source twice
-  (`X0 = X1 op X1` needs 1 register and is charged 2), so it can stop the walk one
-  register early. Deduplicating it changes timing, so it is non-inert and needs its
-  own re-baseline.
+- `O3_CPU::print_deadlock` prints the IFETCH, DECODE and DISPATCH buffers, the ROB,
+  the LQ and the SQ, but not `DIB_HIT_BUFFER` (`src/ooo_cpu.cc`, `print_deadlock`),
+  so an instruction on the DIB-hit route between fetch and dispatch appears in no
+  buffer of a deadlock dump. Print it like the others. Diagnostics only, so the fix
+  is inert.
+
+---
+
+## B11. v1 traces name partial GPR views as separate registers
+
+**Status: open.** Severity: medium–high. It distorts every result from a v1 trace
+whose register file is under pressure, which includes the default 128 registers, and
+any register-file or SMT sizing study on v1 traces. Found while investigating issue #3.
+
+**Root cause.** The v1 tracer stores each operand register as Pin's `REG` enum value,
+taken straight from `INS_RegR`/`INS_RegW` and cast to `unsigned char`, without
+`REG_FullRegName` (`tracer/pin/champsim_tracer.cpp:220-233`; the 2017 tracer that made
+the DPC-3 traces did the same). Pin names the register an instruction uses, so
+`mov eax, esi` records `REG_EAX` (56) and `REG_ESI` (47), not RAX (10) and RSI (4).
+`ooo_model_instr` copies the IDs unchanged (`inc/instruction.h:166-167`), and the
+register allocator renames each ID independently. Two effects follow:
+
+- **Register footprint.** Every view keeps its own committed physical register. In
+  649.fotonik3d_s-1B the first 4M instructions use 45 IDs: 16 GPRs (3–18), FS (23),
+  RFLAGS (25), RIP (26), 23 partial views of those same GPRs (27–82: AL, AX, CL, DL,
+  EDI, DIL, ESI, SIL, EBP, BPL, EBX, EDX, ECX, EAX, R8D–R15D, R11B) and three XMM
+  registers (100, 101, 108). That is about 22 distinct x86 registers. It is why issue
+  #3 needs a 47-entry file where canonical names would need about 24. At the default
+  128 registers, mapping each view to its 64-bit parent cuts ROI cycles by about 5% on
+  fotonik3d and 22% on 605.mcf_s-1536B; stock mcf at 134 registers matches the mapped
+  version at 128 (8,787,618 against 8,803,389 cycles).
+- **Dependences.** A read is linked to the last writer of the same ID, not of the same
+  register, so a read of RAX after a write of EAX is linked to an older writer or to
+  none. In the first 4M instructions, 15.0% of fotonik3d's GPR reads and 11.1% of
+  mcf's are not linked to their newest x86 producer (13.9% and 9.2% without the
+  `xor r32,r32` zero idioms hardware breaks anyway); the true producer is within 352
+  instructions in over 99% of them. With 2048 registers, so that pressure plays no
+  part, the timing effect is about 1–2% and its sign depends on the workload: a
+  missed link lets a consumer issue early, and a stale link to an older load can
+  make it wait for nothing.
+
+**Scope.** IDs below 83 mean the same in every Pin kit from 2.14 to 4.0 (RSP 6,
+RFLAGS 25, RIP 26, partial views 27–82). Above that the numbering depends on the Pin
+version; the DPC-3 traces fit Pin 3.0 (XMM0 = 100, MXCSR = 204), so fotonik3d's XMM
+IDs are XMM0, XMM1 and XMM8. The v2 SPEC26 traces use full register names only: none
+of the 32 has a partial-view ID in its first 4M records.
+
+**Reproduction.** Count the distinct nonzero register bytes (record offsets 10–15) in
+the first 4M records of the public DPC-3 `649.fotonik3d_s-1B.champsimtrace.xz`: 45,
+23 of them in 27–82. For the dependence count, track the last writer of each ID and of
+each 64-bit parent, and count GPR reads where the two differ.
+
+**Fix options (a decision, since every v1 result changes).**
+
+- Canonicalize v1 IDs 27–82 to their 64-bit parent when `ooo_model_instr` is built from
+  an `input_instr`. An 8/16-bit write should also read its parent (a merge); zero
+  idioms could be recognized too. The table is Pin-version independent. It is
+  non-inert for every v1 run, so either make it the default with a re-baseline, or put
+  it behind a runtime key so recorded v1 results stay reproducible.
+- Leave v1 traces as they are, and use v2 traces for register-file and SMT work.
+- New traces: see B12.
+
+**Tests to add.** A v1 record naming EAX followed by one reading RAX must depend on
+it after canonicalization. A trace using EAX and RAX must hold one committed register,
+not two.
+
+---
+
+## B12. The Pin tracer overflows its register lists and keeps partial register names
+
+**Status: open.** Severity: medium, for any trace recorded with `tracer/pin` today.
+The 2017 tracer behind the DPC-3 traces bounded its loops and dropped extra registers
+silently instead.
+
+- **Overflow.** `WriteToSet` writes `*std::find(begin, set_end, r) = r`
+  (`tracer/pin/champsim_tracer.cpp:132-137`). When the list is full, `set_end` is
+  `end`, so it writes one element past the array: a third distinct destination
+  overwrites `source_registers[0]`, and a fifth source overwrites byte 0 of
+  `destination_memory[0]`. Built against Pin 4.0, `div ecx` is recorded as
+  destinations EAX, EDX and sources RFLAGS, EAX, EDX: ECX is lost and RFLAGS appears
+  as a source. `mul rcx` records sources RFLAGS, RAX instead of RCX, RAX.
+- **Partial names.** The tracer never calls `REG_FullRegName`, so new traces carry
+  B11.
+- **CET.** Pin 4.0 decodes `endbr64` as `nop edx, edi`, so every CET function entry
+  records reads of EDX and EDI (695 of 135,063 records for a trivial program).
+
+**Fix.** Canonicalize with `REG_FullRegName`, and decide how vector registers are named
+(v2 uses the widest, ZMM). Bound `WriteToSet`: drop, or better report, a register that
+does not fit. Record no register operands for `endbr64`. Add a tracer test that
+decodes a few known instructions (`div`, `mul`, `mov eax, esi`, `endbr64`).

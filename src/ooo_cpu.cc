@@ -21,6 +21,7 @@
 #include <cmath>
 #include <cstring>
 #include <numeric>
+#include <stdexcept>
 #include <fmt/chrono.h>
 #include <fmt/core.h>
 #include <fmt/ranges.h>
@@ -434,6 +435,17 @@ long O3_CPU::dispatch_instruction()
   return available_dispatch_bandwidth.amount_consumed();
 }
 
+void O3_CPU::throw_register_file_too_small(const ooo_model_instr& instr, unsigned long needed) const
+{
+  const auto free = reg_allocator.count_free_registers();
+  throw std::runtime_error{fmt::format(
+      "runtime config: ooo_cpu.cpu{}.register_file_size = {} is too small for this trace: the oldest instruction (instr_id {}) needs {} register{} to "
+      "rename, with {} free; the other {} hold architectural registers the trace has already used. A physical register is freed only when a newer "
+      "write of the same architectural register retires, and no older instruction is in flight, so the core cannot proceed. The register file must "
+      "hold every architectural register the trace uses, plus the registers one instruction renames.",
+      cpu, REGISTER_FILE_SIZE, instr.instr_id, needed, needed == 1 ? "" : "s", free, REGISTER_FILE_SIZE - free)};
+}
+
 long O3_CPU::schedule_instruction()
 {
   // Renaming is in program order: the walk stops at the first instruction the
@@ -448,9 +460,20 @@ long O3_CPU::schedule_instruction()
       // renamed this cycle. An already-scheduled instruction has claimed its
       // registers, so evaluating the gate against it (and breaking when free
       // registers fall below its destination count) wrongly blocks scheduling.
-      unsigned long sources_to_allocate = std::count_if(rob_it->source_registers.begin(), rob_it->source_registers.end(),
-                                                        [&alloc = std::as_const(reg_allocator)](auto srcreg) { return !alloc.isAllocated(srcreg); });
+      // Renaming maps an unmapped source on its first read, so a repeat of it
+      // allocates nothing: count each unmapped source register once.
+      const auto& sources = rob_it->source_registers;
+      unsigned long sources_to_allocate = 0;
+      for (auto src_it = std::begin(sources); src_it != std::end(sources); ++src_it) {
+        if (!reg_allocator.isAllocated(*src_it) && std::find(std::begin(sources), src_it, *src_it) == src_it) {
+          ++sources_to_allocate;
+        }
+      }
       if (reg_allocator.count_free_registers() < (sources_to_allocate + rob_it->destination_registers.size())) {
+        if (rob_it == std::begin(ROB)) {
+          // Nothing older is in flight, and only a retiring write frees a register.
+          throw_register_file_too_small(*rob_it, sources_to_allocate + rob_it->destination_registers.size());
+        }
         break;
       }
       do_scheduling(*rob_it);
@@ -841,15 +864,10 @@ void O3_CPU::print_deadlock()
   fmt::print("DEADLOCK! CPU {} cycle {}\n", cpu, current_time.time_since_epoch() / clock_period);
 
   auto instr_pack = [period = clock_period, this](const auto& entry) {
-    return std::tuple{entry.instr_id,
-                      entry.fetch_issued,
-                      entry.fetch_completed,
-                      entry.scheduled,
-                      entry.executed,
-                      entry.completed,
-                      reg_allocator.count_reg_dependencies(entry),
-                      entry.num_mem_ops() - entry.completed_mem_ops,
-                      entry.ready_time.time_since_epoch() / period};
+    return std::tuple{entry.instr_id, entry.fetch_issued, entry.fetch_completed, entry.scheduled, entry.executed, entry.completed,
+                      // Until do_scheduling renames an entry its operands are architectural IDs.
+                      entry.scheduled ? std::to_string(reg_allocator.count_reg_dependencies(entry)) : std::string{"-"},
+                      entry.num_mem_ops() - entry.completed_mem_ops, entry.ready_time.time_since_epoch() / period};
   };
   std::string_view instr_fmt{
       "instr_id: {} fetch_issued: {} fetch_completed: {} scheduled: {} executed: {} completed: {} num_reg_dependent: {} num_mem_ops: {} event: {}"};
@@ -872,9 +890,14 @@ void O3_CPU::print_deadlock()
   std::string_view lq_fmt{"instr_id: {} address: {} fetch_issued: {} event_cycle: {} waits on {}"};
 
   auto sq_pack = [period = clock_period](const auto& entry) {
+    // do_finish_store releases the waiting loads but not these references, so
+    // a slot may since be empty or hold a younger load waiting on nothing here.
     std::vector<uint64_t> depend_ids;
-    std::transform(std::begin(entry.lq_depend_on_me), std::end(entry.lq_depend_on_me), std::back_inserter(depend_ids),
-                   [](const std::optional<LSQ_ENTRY>& lq_entry) { return lq_entry->producer_id; });
+    for (const std::optional<LSQ_ENTRY>& lq_entry : entry.lq_depend_on_me) {
+      if (lq_entry.has_value() && lq_entry->producer_id == entry.instr_id) {
+        depend_ids.push_back(lq_entry->instr_id);
+      }
+    }
     return std::tuple{entry.instr_id, entry.virtual_address, entry.fetch_issued, entry.ready_time.time_since_epoch() / period, depend_ids};
   };
   std::string_view sq_fmt{"instr_id: {} address: {} fetch_issued: {} event_cycle: {} LQ waiting: {}"};
