@@ -120,7 +120,7 @@ auto PageTableWalker::step_translation(const mshr_type& source) -> std::optional
   packet.is_translated = true;
   packet.type = access_type::TRANSLATION;
 
-  bool success = lower_level->add_rq(packet);
+  bool success = lower_level->add_rq(std::move(packet));
   if (success) {
     return source;
   }

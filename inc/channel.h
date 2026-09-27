@@ -22,6 +22,7 @@
 #include <deque>
 #include <limits>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "access_type.h"
@@ -72,14 +73,20 @@ class channel
     std::vector<uint64_t> instr_depend_on_me{};
 
     response(champsim::address addr, champsim::address v_addr, champsim::address data_, uint32_t pf_meta, std::vector<uint64_t> deps)
-        : address(addr), v_address(v_addr), data(data_), pf_metadata(pf_meta), instr_depend_on_me(deps)
+        : address(addr), v_address(v_addr), data(data_), pf_metadata(pf_meta), instr_depend_on_me(std::move(deps))
     {
     }
-    explicit response(request req) : response(req.address, req.v_address, req.data, req.pf_metadata, req.instr_depend_on_me) {}
+    explicit response(request req) : response(req.address, req.v_address, req.data, req.pf_metadata, std::move(req.instr_depend_on_me)) {}
   };
 
-  template <typename R>
-  bool do_add_queue(R& queue, std::size_t queue_size, const typename R::value_type& packet);
+  template <typename R, typename P>
+  bool do_add_queue(R& queue, std::size_t queue_size, P&& packet);
+  template <typename P>
+  bool add_to_rq(P&& packet);
+  template <typename P>
+  bool add_to_wq(P&& packet);
+  template <typename P>
+  bool add_to_pq(P&& packet);
 
   std::size_t RQ_SIZE = std::numeric_limits<std::size_t>::max();
   std::size_t PQ_SIZE = std::numeric_limits<std::size_t>::max();
@@ -103,6 +110,11 @@ public:
   bool add_rq(const request_type& packet);
   bool add_wq(const request_type& packet);
   bool add_pq(const request_type& packet);
+  // These move the packet into the queue only if it is accepted; a rejected packet is left
+  // intact for its retry.
+  bool add_rq(request_type&& packet);
+  bool add_wq(request_type&& packet);
+  bool add_pq(request_type&& packet);
 
   [[nodiscard]] std::size_t rq_occupancy() const;
   [[nodiscard]] std::size_t wq_occupancy() const;

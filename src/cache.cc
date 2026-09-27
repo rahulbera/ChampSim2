@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
+#include <iterator>
 #include <numeric>
 #include <fmt/core.h>
 
@@ -32,6 +33,20 @@
 #include "util/bits.h"
 #include "util/span.h"
 #include "vmem.h"
+
+namespace
+{
+// Every requester gets a copy of the response except the last, which gets the original.
+template <typename R>
+void return_to_all(const std::vector<std::deque<R>*>& to_return, R response)
+{
+  if (std::empty(to_return)) {
+    return;
+  }
+  std::for_each(std::begin(to_return), std::prev(std::end(to_return)), [&response](auto* ret) { ret->push_back(response); });
+  to_return.back()->push_back(std::move(response));
+}
+} // namespace
 
 CACHE::CACHE(CACHE&& other)
     : operable(other),
@@ -95,9 +110,9 @@ auto CACHE::operator=(CACHE&& other) -> CACHE&
   return *this;
 }
 
-CACHE::tag_lookup_type::tag_lookup_type(const request_type& req, bool local_pref, bool skip)
+CACHE::tag_lookup_type::tag_lookup_type(request_type req, bool local_pref, bool skip)
     : address(req.address), v_address(req.v_address), data(req.data), ip(req.ip), instr_id(req.instr_id), pf_metadata(req.pf_metadata), cpu(req.cpu),
-      type(req.type), prefetch_from_this(local_pref), skip_fill(skip), is_translated(req.is_translated), instr_depend_on_me(req.instr_depend_on_me)
+      type(req.type), prefetch_from_this(local_pref), skip_fill(skip), is_translated(req.is_translated), instr_depend_on_me(std::move(req.instr_depend_on_me))
 {
 }
 
@@ -117,14 +132,17 @@ CACHE::fill_type CACHE::fill_type::merge(fill_type predecessor, fill_type succes
   std::set_union(std::begin(predecessor.to_return), std::end(predecessor.to_return), std::begin(successor.to_return), std::end(successor.to_return),
                  std::back_inserter(merged_return));
 
-  fill_type retval{(successor.type == access_type::PREFETCH) ? predecessor : successor};
-
   // set the time enqueued to the predecessor unless its a demand into prefetch, in which case we use the successor
-  retval.time_enqueued =
+  const auto time_enqueued =
       ((successor.type != access_type::PREFETCH && predecessor.type == access_type::PREFETCH)) ? successor.time_enqueued : predecessor.time_enqueued;
-  retval.instr_depend_on_me = merged_instr;
-  retval.to_return = merged_return;
-  retval.data_promise = predecessor.data_promise;
+  const auto data_promise = predecessor.data_promise;
+
+  // Both operands are this function's own copies, so the survivor is moved, not copied.
+  fill_type retval{std::move((successor.type == access_type::PREFETCH) ? predecessor : successor)};
+  retval.time_enqueued = time_enqueued;
+  retval.instr_depend_on_me = std::move(merged_instr);
+  retval.to_return = std::move(merged_return);
+  retval.data_promise = data_promise;
 
   if constexpr (champsim::debug_print) {
     if (successor.type == access_type::PREFETCH) {
@@ -207,7 +225,7 @@ bool CACHE::handle_fill(const fill_type& fill)
                  fill.data_promise->pf_metadata);
     }
 
-    auto success = lower_level->add_wq(writeback_packet);
+    auto success = lower_level->add_wq(std::move(writeback_packet));
     if (!success) {
       return false;
     }
@@ -239,10 +257,7 @@ bool CACHE::handle_fill(const fill_type& fill)
     sim_stats.total_miss_latency_cycles += (current_time - (fill.time_enqueued + clock_period)) / clock_period;
   sim_stats.fill.increment(std::pair{fill.type, fill.cpu});
 
-  response_type response{fill.address, fill.v_address, fill.data_promise->data, metadata_thru, fill.instr_depend_on_me};
-  for (auto* ret : fill.to_return) {
-    ret->push_back(response);
-  }
+  return_to_all(fill.to_return, response_type{fill.address, fill.v_address, fill.data_promise->data, metadata_thru, fill.instr_depend_on_me});
 
   return true;
 }
@@ -284,10 +299,7 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
       // for the same reason.
       data = champsim::address{vmem->va_to_pa(handle_pkt.cpu, champsim::page_number{handle_pkt.address}).first};
     }
-    response_type response{handle_pkt.address, handle_pkt.v_address, data, handle_pkt.pf_metadata, handle_pkt.instr_depend_on_me};
-    for (auto* ret : handle_pkt.to_return) {
-      ret->push_back(response);
-    }
+    return_to_all(handle_pkt.to_return, response_type{handle_pkt.address, handle_pkt.v_address, data, handle_pkt.pf_metadata, handle_pkt.instr_depend_on_me});
 
     return true;
   }
@@ -317,10 +329,7 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
   if (hit) {
     sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
 
-    response_type response{handle_pkt.address, handle_pkt.v_address, way->data, metadata_thru, handle_pkt.instr_depend_on_me};
-    for (auto* ret : handle_pkt.to_return) {
-      ret->push_back(response);
-    }
+    return_to_all(handle_pkt.to_return, response_type{handle_pkt.address, handle_pkt.v_address, way->data, metadata_thru, handle_pkt.instr_depend_on_me});
 
     way->dirty |= (handle_pkt.type == access_type::WRITE);
 
@@ -366,11 +375,7 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
                current_time.time_since_epoch() / clock_period);
   }
 
-  fill_type to_allocate{handle_pkt, current_time};
-
   cpu = handle_pkt.cpu;
-
-  auto mshr_pkt = mshr_and_forward_packet(handle_pkt);
 
   // check mshr
   auto fill_entry = std::find_if(std::begin(MSHR), std::end(MSHR), matches_address(handle_pkt.address));
@@ -391,23 +396,27 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
     }
 
     // COLLECT STATS
-    sim_stats.miss_merge.increment(std::pair{to_allocate.type, to_allocate.cpu});
+    sim_stats.miss_merge.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
 
-    *fill_entry = fill_type::merge(*fill_entry, to_allocate);
+    // Only this path needs the fill, and only the other needs the forwarded request, so each is built
+    // where it is used and moved on: every copy reallocates instr_depend_on_me and to_return.
+    *fill_entry = fill_type::merge(std::move(*fill_entry), fill_type{handle_pkt, current_time});
   } else {
     if (mshr_full) { // not enough MSHR resource
       return false;  // TODO should we allow prefetches anyway if they will not be filled to this level?
     }
 
+    auto mshr_pkt = mshr_and_forward_packet(handle_pkt);
+    const bool response_requested = mshr_pkt.second.response_requested;
     const bool send_to_rq = (prefetch_as_load || handle_pkt.type != access_type::PREFETCH);
-    bool success = send_to_rq ? lower_level->add_rq(mshr_pkt.second) : lower_level->add_pq(mshr_pkt.second);
+    bool success = send_to_rq ? lower_level->add_rq(std::move(mshr_pkt.second)) : lower_level->add_pq(std::move(mshr_pkt.second));
 
     if (!success) {
       return false;
     }
 
     // Allocate an MSHR
-    if (mshr_pkt.second.response_requested) {
+    if (response_requested) {
       MSHR.emplace_back(std::move(mshr_pkt.first));
     }
   }
@@ -427,7 +436,7 @@ bool CACHE::handle_write(const tag_lookup_type& handle_pkt)
 
   fill_type to_allocate{handle_pkt, current_time};
   to_allocate.data_promise.ready_at(current_time + (warmup ? champsim::chrono::clock::duration{} : FILL_LATENCY));
-  inflight_fills.push_back(to_allocate);
+  inflight_fills.push_back(std::move(to_allocate));
 
   sim_stats.misses.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
 
@@ -437,16 +446,22 @@ bool CACHE::handle_write(const tag_lookup_type& handle_pkt)
 template <bool UpdateRequest>
 auto CACHE::initiate_tag_check(champsim::channel* ul)
 {
-  return [time = current_time + (warmup ? champsim::chrono::clock::duration{} : HIT_LATENCY), ul](const auto& entry) {
-    CACHE::tag_lookup_type retval{entry};
+  // transform_while_n erases each entry right after transforming it, so the entry is moved from.
+  return [time = current_time + (warmup ? champsim::chrono::clock::duration{} : HIT_LATENCY), ul](auto& entry) {
+    bool response_requested = false;
+    if constexpr (UpdateRequest) {
+      response_requested = entry.response_requested;
+    }
+    CACHE::tag_lookup_type retval{std::move(entry)};
     retval.event_cycle = time;
 
     if constexpr (UpdateRequest) {
-      if (entry.response_requested) {
+      if (response_requested) {
         retval.to_return = {&ul->returned};
       }
     } else {
       (void)ul; // supress warning about ul being unused
+      (void)response_requested;
     }
 
     if constexpr (champsim::debug_print) {
@@ -740,7 +755,7 @@ void CACHE::issue_translation(tag_lookup_type& q_entry) const
     fwd_pkt.instr_depend_on_me = q_entry.instr_depend_on_me;
     fwd_pkt.is_translated = true;
 
-    q_entry.translate_issued = lower_translate->add_rq(fwd_pkt);
+    q_entry.translate_issued = lower_translate->add_rq(std::move(fwd_pkt));
     if constexpr (champsim::debug_print) {
       if (q_entry.translate_issued) {
         fmt::print("[TRANSLATE] do_issue_translation instr_id: {} paddr: {} vaddr: {} type: {}\n", q_entry.instr_id, q_entry.address, q_entry.v_address,
