@@ -314,14 +314,22 @@ def resolve(args):
             if fields.get('Architecture') == triplet:
                 packages.append({k: v for k, v in fields.items() if k in ('Package', 'Version', 'Architecture', 'Abi', 'Status')})
     dependency_inputs = {str(p.resolve()): digest(p) for p in files if p.is_file()}
+    if args.lto not in ('0', '1'):
+        raise ValueError('LTO must be 0 or 1')
+    if args.lto == '1' and args.mode != 'fast':
+        raise ValueError('LTO=1 requires BUILD_MODE=fast')
+    # LTO optimizes at link time, which sees none of the compile options, so the
+    # link repeats the mode's optimization and debug level.
+    lto = ['-flto=auto'] if args.lto == '1' else []
     assertions = int(args.mode != 'fast')
-    flags = common + options['cppflags'] + options['cxxflags'] + MODES[args.mode] + architecture + [f'-DCHAMPSIM_ENABLE_ASSERTIONS={assertions}']
+    flags = common + options['cppflags'] + options['cxxflags'] + MODES[args.mode] + lto + architecture + [f'-DCHAMPSIM_ENABLE_ASSERTIONS={assertions}']
     if args.flavor == 'test':
         flags += ['-DCHAMPSIM_TEST_BUILD=1']
     policy = {'schema_version': 1, 'mode': args.mode, 'assertions': assertions, 'flavor': args.flavor,
-              'isa': isa, 'architecture_options': architecture,
+              'isa': isa, 'architecture_options': architecture, 'lto': bool(lto),
               'compiler': {'command': command, 'target': target, 'version': run(command, '--version'), 'executables': compiler_paths},
-              'compile_options': flags, 'module_options': module, 'link_options': target_options + options['ldflags'] + architecture,
+              'compile_options': flags, 'module_options': module,
+              'link_options': target_options + options['ldflags'] + architecture + (MODES[args.mode] + lto if lto else []),
               'libraries': options['loadlibes'] + options['ldlibs'] + libraries,
               'option_inputs': inputs, 'dependencies': {'triplet': triplet, 'directory': str(dependency),
                   'build_mode': 'Release', 'vcpkg_revision': vcpkg_revision, 'packages': packages, 'isa_provenance': 'unknown (external installation)',
@@ -374,7 +382,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('inspect', 'prepare', 'paths', 'publish'))
     for name, default in [('cxx', 'g++'), ('mode', 'release'), ('flavor', 'sim'), ('isa', ''), ('triplet', ''),
-                          ('installed', 'vcpkg_installed'), ('native', '0'), ('native-root', ''), ('native-sanitize', '0'),
+                          ('installed', 'vcpkg_installed'), ('native', '0'), ('native-root', ''), ('native-sanitize', '0'), ('lto', '0'),
                           ('libraries', '-lCLI11 -llzma -lz -lbz2 -lzstd -lfmt'), ('test-libraries', '-lCatch2Main -lCatch2'),
                           ('obj', ''), ('dep', ''), ('binary', ''), ('registry', '.csconfig'), ('alias', '')]:
         parser.add_argument('--' + name, default=default)
