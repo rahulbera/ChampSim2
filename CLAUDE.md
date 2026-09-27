@@ -45,7 +45,7 @@ two ways, so time `fast`, not the default build. ChampSim assertions are disable
 `auto`, which adds `-flto=auto` to fast's compile options and `-O3 -g3 -flto=auto`
 to its link, since link-time optimization sees none of the compile options. That
 measured +2.9-4.6% KIPS on the three v2 protected traces and +8.6% on mcf (legacy
-DRAM; +1.7-4.7% native). `LTO=0` builds fast without it. `LTO=1` insists, and is
+DRAM; +1.7-4.7% native; [LTO/PGO log](docs/research-log/Performance/2026-09-27-lto-pgo.md)). `LTO=0` builds fast without it. `LTO=1` insists, and is
 refused outside fast or with Clang, which is not validated: Clang 12 rejects
 `-flto=auto`, and Clang's bitcode links only through lld or the LLVMgold plugin, so
 Clang fast builds get no LTO. `--build-info` records the outcome as `lto`. With
@@ -366,7 +366,10 @@ KIPS. The other four reports in
 perf studies that chose the second pass's targets and rank what is left (ROB
 schedule/execute/complete at 21-32% of sampled cycles), the build optimization
 campaign, and the rebase record mapping all 61 performance commits onto this
-branch.
+branch. The [LTO/PGO log](docs/research-log/Performance/2026-09-27-lto-pgo.md)
+records the LTO default, the `address_slice` fix it required, and the gate it was
+measured under (5M/10M, `lnc.toml`, narrower than the earlier campaigns'); PGO has
+not started.
 
 **A behavior-preserving optimization is gated by
 `tools/perf/compare_optimization.py`, not by `make test`.** It refuses any
