@@ -220,13 +220,16 @@ incremental before/after result.
 
 Use `make release`, `make debug`, or `make fast` for separate canonical binaries.
 Release is `-O3 -g3` with ChampSim assertions; fast uses the same optimization with
-ChampSim assertions disabled and, with GCC, link-time optimization (`LTO=auto`, the
-default; `LTO=0` removes it); debug uses `-O0 -g3 -fno-omit-frame-pointer`.
+ChampSim assertions disabled, gperftools' tcmalloc linked (`TCMALLOC=0` removes it)
+and, with GCC, link-time optimization (`LTO=auto`, the default; `LTO=0` removes it);
+debug uses `-O0 -g3 -fno-omit-frame-pointer`.
 The x64 default is `X86_ISA=x86-64-v2`; `X86_ISA=x86-64` retains a baseline control.
 Never infer a speed benefit from an ISA level or attribute v1/v2 differences to
 assertion removal, and never attribute a fast/release difference to assertion
-removal alone. Keep each comparison's toolchain and dependencies fixed; `lto` in
-`--build-info` says which a binary got.
+removal alone. Keep each comparison's toolchain and dependencies fixed; `lto` and
+`tcmalloc` in `--build-info` say which a binary got. An allocator can also be compared
+without rebuilding by giving the harness a two-line wrapper script that sets
+`LD_PRELOAD` and `exec`s the binary.
 
 `make print-build-paths BUILD_MODE=release` prints the canonical binary and
 object/dependency directories as JSON. `OBJ_ROOT`, `DEP_ROOT`, and `BIN_ROOT` are

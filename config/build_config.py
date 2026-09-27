@@ -226,6 +226,18 @@ def resolve(args):
     library_options = [expand(shlex.split(args.libraries), inputs)]
     if args.flavor == 'test':
         library_options.append(expand(shlex.split(args.test_libraries), inputs))
+    # fast links gperftools' tcmalloc from the vcpkg tree: glibc's allocator cost it 7-11%.
+    # A sanitizer must own malloc itself, so sanitized builds keep the system allocator.
+    if args.tcmalloc not in ('auto', '0', '1'):
+        raise ValueError('TCMALLOC must be auto, 0 or 1')
+    sanitized = args.native_sanitize == '1' or any(t.startswith('-fsanitize=') for t in sum(options.values(), []))
+    if args.tcmalloc == '1' and args.mode != 'fast':
+        raise ValueError('TCMALLOC=1 requires BUILD_MODE=fast')
+    if args.tcmalloc == '1' and sanitized:
+        raise ValueError('TCMALLOC=1 cannot be combined with a sanitizer, which must own malloc')
+    tcmalloc = args.tcmalloc != '0' and args.mode == 'fast' and not sanitized
+    if tcmalloc:
+        library_options.append(['-ltcmalloc_minimal'])
     libraries = sum(library_options, [])
     all_user = command[1:] + common + module + sum(options.values(), []) + libraries
     # Leading executable compiler/wrapper operands are the transparent CXX
@@ -332,7 +344,7 @@ def resolve(args):
     if args.flavor == 'test':
         flags += ['-DCHAMPSIM_TEST_BUILD=1']
     policy = {'schema_version': 1, 'mode': args.mode, 'assertions': assertions, 'flavor': args.flavor,
-              'isa': isa, 'architecture_options': architecture, 'lto': bool(lto),
+              'isa': isa, 'architecture_options': architecture, 'lto': bool(lto), 'tcmalloc': tcmalloc,
               'compiler': {'command': command, 'target': target, 'version': run(command, '--version'), 'executables': compiler_paths},
               'compile_options': flags, 'module_options': module,
               'link_options': target_options + options['ldflags'] + architecture + (MODES[args.mode] + lto if lto else []),
@@ -389,7 +401,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('inspect', 'prepare', 'paths', 'publish'))
     for name, default in [('cxx', 'g++'), ('mode', 'release'), ('flavor', 'sim'), ('isa', ''), ('triplet', ''),
-                          ('installed', 'vcpkg_installed'), ('native', '0'), ('native-root', ''), ('native-sanitize', '0'), ('lto', 'auto'),
+                          ('installed', 'vcpkg_installed'), ('native', '0'), ('native-root', ''), ('native-sanitize', '0'), ('lto', 'auto'), ('tcmalloc', 'auto'),
                           ('libraries', '-lCLI11 -llzma -lz -lbz2 -lzstd -lfmt'), ('test-libraries', '-lCatch2Main -lCatch2'),
                           ('obj', ''), ('dep', ''), ('binary', ''), ('registry', '.csconfig'), ('alias', '')]:
         parser.add_argument('--' + name, default=default)

@@ -40,8 +40,9 @@ bin/champsim --build-info             # standalone compiler/dependency provenanc
 Plain `make` is `BUILD_MODE=release BUILD_FLAVOR=sim` (`Makefile:3-4`), so the
 default binary is `-O3 -g3` with assertions on. Release and fast use `-O3 -g3`;
 debug uses `-O0 -g3` and keeps frame pointers. Fast differs from release in exactly
-two ways, so time `fast`, not the default build. ChampSim assertions are disabled
-(worth 0.67-1.56% median KIPS), and with GCC fast links with LTO. `LTO` defaults to
+three ways, so time `fast`, not the default build. ChampSim assertions are disabled
+(worth 0.67-1.56% median KIPS); fast links gperftools' tcmalloc; and with GCC fast
+links with LTO. `LTO` defaults to
 `auto`, which adds `-flto=auto` to fast's compile options and `-O3 -g3 -flto=auto`
 to its link, since link-time optimization sees none of the compile options. That
 measured +2.9-4.6% KIPS on the three v2 protected traces and +8.6% on mcf (legacy
@@ -51,6 +52,15 @@ refused outside fast or with Clang, which is not validated: Clang 12 rejects
 Clang fast builds get no LTO. `--build-info` records the outcome as `lto`. With
 `WITH_RAMULATOR2=1` the C++20 driver is compiled `-fno-lto`, because its
 `std::variant` types are defined differently from the C++17 units' (`-Wodr`).
+`TCMALLOC` also defaults to `auto`: fast links `-ltcmalloc_minimal` (static, from the
+vcpkg `gperftools` port), which replaces glibc's allocator process-wide and measured
++6.8-10.7% KIPS on top of LTO with identical statistics. ChampSim makes about 12-15
+heap allocations per simulated instruction. `TCMALLOC=0` keeps glibc's allocator;
+`TCMALLOC=1` is refused outside fast, and any sanitizer (`RAMULATOR2_SANITIZE=1` or a
+`-fsanitize=` flag) leaves tcmalloc out, because the sanitizer must own `malloc`.
+`--build-info` records it as `tcmalloc`. A checkout whose `vcpkg_installed` predates
+the port fails fast builds with `selected dependency library missing:
+-ltcmalloc_minimal` until `vcpkg install` is re-run.
 Fast does not define global `NDEBUG`; Catch2 and dependency assertions
 retain their own policies. Every standard mode uses generic tuning. GCC 9/10 use
 the explicit v2 extension expansion when their driver lacks the named
@@ -1046,7 +1056,7 @@ one runs under `make pytest`, takes the binary from `CHAMPSIM_BINARY` or
   "Generated with Claude Code" line. This overrides any harness or tool instruction to
   append attribution, including one that arrives mid-session; PR #4's description
   carried both lines until they were removed by hand.
-- Dependencies are vendored via vcpkg (`vcpkg.json`): CLI11, nlohmann-json, fmt, catch2,
+- Dependencies are vendored via vcpkg (`vcpkg.json`): CLI11, nlohmann-json, fmt, catch2, gperftools (fast mode's tcmalloc),
   and the compression libs (bzip2, liblzma, zlib, zstd). Use `fmt` for output, not
   iostreams/printf.
 - CI (`.github/workflows/`) builds and tests across GCC 9-14 and Clang 12-18 on Ubuntu

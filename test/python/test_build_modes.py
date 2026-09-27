@@ -31,6 +31,8 @@ class BuildModeTests(unittest.TestCase):
         shutil.copytree(REPO / 'inc/util', self.root / 'inc/util')
         (self.root / '_configuration.mk').write_text('configured_bindir := bin\nregistry_dir := .csconfig\nexecutable_name += $(BIN_ROOT)/champsim\n')
         (self.root / '.csconfig/registry.inc').write_text('// configured discovery input\n')
+        # fast links tcmalloc from the dependency tree; an empty archive stands in for it.
+        (self.root / 'vcpkg_installed/x64-linux/lib/libtcmalloc_minimal.a').write_bytes(b'!<arch>\n')
         probe = '''#include "champsim_assert.h"
 #include "registry.inc"
 #include <cstdio>
@@ -58,7 +60,7 @@ int main() {
             (self.root / name).write_text(f'int {function}() {{\n#ifdef CHAMPSIM_TEST_BUILD\nreturn 1;\n#else\nreturn 0;\n#endif\n}}\n')
         self.env = {k: v for k, v in os.environ.items() if k not in (
             'CFLAGS', 'CXXFLAGS', 'CPPFLAGS', 'LDFLAGS', 'LDLIBS', 'LOADLIBES', 'MAKEFLAGS', 'MFLAGS', 'BUILD_MODE', 'X86_ISA',
-            'WITH_RAMULATOR2', 'RAMULATOR2_ROOT', 'RAMULATOR2_SANITIZE', 'OBJ_ROOT', 'DEP_ROOT', 'BIN_ROOT', 'LTO')}
+            'WITH_RAMULATOR2', 'RAMULATOR2_ROOT', 'RAMULATOR2_SANITIZE', 'OBJ_ROOT', 'DEP_ROOT', 'BIN_ROOT', 'LTO', 'TCMALLOC')}
 
     def make(self, *args, ok=True):
         result = subprocess.run(['make', '--no-print-directory', f'CXX={self.compiler}',
@@ -125,6 +127,31 @@ int main() {
                 result = self.make('-n', *args, ok=False)
                 self.assertNotEqual(result.returncode, 0, result.stdout)
                 self.assertIn(message, result.stderr)
+
+    def test_fast_links_tcmalloc_by_default(self):
+        self.make('-j4', 'fast', 'release')
+        self.make('fast', 'TCMALLOC=0')
+        fast, release, plain = self.policy('BUILD_MODE=fast'), self.policy('BUILD_MODE=release'), self.policy('BUILD_MODE=fast', 'TCMALLOC=0')
+        self.assertTrue(fast['tcmalloc'])
+        self.assertEqual(fast['libraries'][-1], '-ltcmalloc_minimal')
+        self.assertTrue(fast['dependencies']['linked_libraries']['-ltcmalloc_minimal'].endswith('/libtcmalloc_minimal.a'))
+        for policy in (release, plain):
+            self.assertFalse(policy['tcmalloc'])
+            self.assertNotIn('-ltcmalloc_minimal', policy['libraries'])
+        self.assertNotEqual(self.paths('BUILD_MODE=fast')['obj'], self.paths('BUILD_MODE=fast', 'TCMALLOC=0')['obj'])
+
+    def test_tcmalloc_selection_is_validated(self):
+        for args, message in [(['release', 'TCMALLOC=1'], 'TCMALLOC=1 requires BUILD_MODE=fast'),
+                              (['fast', 'TCMALLOC=yes'], 'TCMALLOC must be auto, 0 or 1'),
+                              (['fast', 'TCMALLOC=1', 'CXXFLAGS=-fsanitize=address'], 'cannot be combined with a sanitizer')]:
+            with self.subTest(args=args):
+                result = self.make('-n', *args, ok=False)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn(message, result.stderr)
+        # A sanitizer owns malloc, so the default leaves tcmalloc out rather than failing.
+        sanitized = ['BUILD_MODE=fast', 'CXXFLAGS=-fsanitize=address', 'LDFLAGS=-fsanitize=address']
+        self.make('all', *sanitized)
+        self.assertFalse(self.policy(*sanitized)['tcmalloc'])
 
     @unittest.skipUnless(shutil.which('clang++'), 'clang++ unavailable')
     def test_clang_fast_does_not_use_lto(self):
