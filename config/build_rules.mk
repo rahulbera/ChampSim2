@@ -101,10 +101,12 @@ PUBLISH_ALIAS ?= 1
 policy_helper = python3 $(ROOT_DIR)/config/build_config.py
 policy_arguments = --obj=$(call shellquote,$(object_container)) --dep=$(call shellquote,$(dependency_container)) --binary=$(call shellquote,$(binary_container)) --registry=$(call shellquote,$(registry_dir)) --cxx=$(call shellquote,$(CXX)) --mode=$(call shellquote,$(BUILD_MODE)) --flavor=$(call shellquote,$(BUILD_FLAVOR)) --isa=$(call shellquote,$(X86_ISA)) $(if $(filter undefined,$(origin X86_ISA)),,--isa-explicit) --triplet=$(call shellquote,$(VCPKG_TARGET_TRIPLET)) --installed=$(call shellquote,$(VCPKG_INSTALLED_DIR)) --native=$(call shellquote,$(WITH_RAMULATOR2)) --native-root=$(call shellquote,$(RAMULATOR2_ROOT)) --native-sanitize=$(call shellquote,$(RAMULATOR2_SANITIZE)) --lto=$(call shellquote,$(LTO)) --cppflags=$(call shellquote,$(CPPFLAGS)) --cxxflags=$(call shellquote,$(CXXFLAGS)) --ldflags=$(call shellquote,$(LDFLAGS)) --ldlibs=$(call shellquote,$(LDLIBS)) --loadlibes=$(call shellquote,$(LOADLIBES)) --libraries=$(call shellquote,$(CHAMPSIM_LIBRARIES)) --test-libraries=$(call shellquote,$(CHAMPSIM_TEST_LIBRARIES))
 policy_selection := $(shell $(policy_helper) inspect $(policy_arguments))
-ifneq ($(words $(policy_selection)),3)
+ifneq ($(words $(policy_selection)),4)
 $(error Build policy selection failed; see diagnostic above)
 endif
 policy_leaf := $(word 1,$(policy_selection))/$(word 2,$(policy_selection))/$(BUILD_MODE)/$(word 3,$(policy_selection))/$(BUILD_FLAVOR)
+# Whether the resolved policy uses LTO: LTO=auto leaves that to the build helper.
+policy_lto := $(word 4,$(policy_selection))
 override OBJ_ROOT := $(object_container)/$(policy_leaf)
 override DEP_ROOT := $(dependency_container)/$(policy_leaf)
 override BIN_ROOT := $(binary_container)/$(policy_leaf)
@@ -139,7 +141,7 @@ $(native_library):
 	$(native_helper)
 # The driver is the one C++20 translation unit. Under LTO its std::variant-based types would be
 # merged with the C++17 units' differently defined ones (-Wodr), so it stays a regular object.
-native_private_options := -isystem $(call shellquote,$(abspath $(RAMULATOR2_ROOT))/src) -std=c++20$(if $(filter 1,$(LTO)), -fno-lto)
+native_private_options := -isystem $(call shellquote,$(abspath $(RAMULATOR2_ROOT))/src) -std=c++20$(if $(filter 1,$(policy_lto)), -fno-lto)
 native_link_options := -Wl,-rpath,$(call shellquote,$(abspath $(RAMULATOR2_ROOT))) -ldl
 endif
 $(OBJ_ROOT)/ramulator2_driver.o $(DEP_ROOT)/ramulator2_driver.d: private native_options = $(native_private_options)

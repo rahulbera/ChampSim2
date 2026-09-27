@@ -314,13 +314,19 @@ def resolve(args):
             if fields.get('Architecture') == triplet:
                 packages.append({k: v for k, v in fields.items() if k in ('Package', 'Version', 'Architecture', 'Abi', 'Status')})
     dependency_inputs = {str(p.resolve()): digest(p) for p in files if p.is_file()}
-    if args.lto not in ('0', '1'):
-        raise ValueError('LTO must be 0 or 1')
+    if args.lto not in ('auto', '0', '1'):
+        raise ValueError('LTO must be auto, 0 or 1')
     if args.lto == '1' and args.mode != 'fast':
         raise ValueError('LTO=1 requires BUILD_MODE=fast')
+    # Only GCC fast+LTO has been measured. Clang spells the option differently
+    # (Clang 12 rejects -flto=auto) and links bitcode only through lld or LLVMgold.
+    predefined = run(command + target_options, '-dM', '-E', '-x', 'c++', '-', input='')
+    gcc = re.search(r'^#define __GNUC__ ', predefined, re.M) is not None and re.search(r'^#define __clang__ ', predefined, re.M) is None
+    if args.lto == '1' and not gcc:
+        raise ValueError('LTO=1 is validated only with GCC; use LTO=0 (or leave LTO unset) with this compiler')
     # LTO optimizes at link time, which sees none of the compile options, so the
     # link repeats the mode's optimization and debug level.
-    lto = ['-flto=auto'] if args.lto == '1' else []
+    lto = ['-flto=auto'] if args.lto == '1' or (args.lto == 'auto' and args.mode == 'fast' and gcc) else []
     assertions = int(args.mode != 'fast')
     flags = common + options['cppflags'] + options['cxxflags'] + MODES[args.mode] + lto + architecture + [f'-DCHAMPSIM_ENABLE_ASSERTIONS={assertions}']
     if args.flavor == 'test':
@@ -383,7 +389,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('inspect', 'prepare', 'paths', 'publish'))
     for name, default in [('cxx', 'g++'), ('mode', 'release'), ('flavor', 'sim'), ('isa', ''), ('triplet', ''),
-                          ('installed', 'vcpkg_installed'), ('native', '0'), ('native-root', ''), ('native-sanitize', '0'), ('lto', '0'),
+                          ('installed', 'vcpkg_installed'), ('native', '0'), ('native-root', ''), ('native-sanitize', '0'), ('lto', 'auto'),
                           ('libraries', '-lCLI11 -llzma -lz -lbz2 -lzstd -lfmt'), ('test-libraries', '-lCatch2Main -lCatch2'),
                           ('obj', ''), ('dep', ''), ('binary', ''), ('registry', '.csconfig'), ('alias', '')]:
         parser.add_argument('--' + name, default=default)
@@ -407,7 +413,7 @@ def main():
     if args.action == 'inspect':
         # Make receives only path-safe identifiers. Compiler flags stay in JSON
         # and response files, avoiding a second shell/Make interpretation.
-        print(policy['compiler']['target'], policy['isa'], policy['policy_key'])
+        print(policy['compiler']['target'], policy['isa'], policy['policy_key'], int(policy['lto']))
         return
     obj = Path(args.obj)
     includes = ['-I' + str(obj), '-I' + args.registry, '-I' + str(Path('inc').resolve()),

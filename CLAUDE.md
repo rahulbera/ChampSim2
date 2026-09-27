@@ -39,10 +39,19 @@ bin/champsim --build-info             # standalone compiler/dependency provenanc
 
 Plain `make` is `BUILD_MODE=release BUILD_FLAVOR=sim` (`Makefile:3-4`), so the
 default binary is `-O3 -g3` with assertions on. Release and fast use `-O3 -g3`;
-debug uses `-O0 -g3` and keeps frame pointers. ChampSim assertions are enabled in
-debug/release and disabled in fast, which is the only intended difference between
-those two and is worth 0.67-1.56% median KIPS, so time `fast`, not the default
-build. Fast does not define global `NDEBUG`; Catch2 and dependency assertions
+debug uses `-O0 -g3` and keeps frame pointers. Fast differs from release in exactly
+two ways, so time `fast`, not the default build. ChampSim assertions are disabled
+(worth 0.67-1.56% median KIPS), and with GCC fast links with LTO. `LTO` defaults to
+`auto`, which adds `-flto=auto` to fast's compile options and `-O3 -g3 -flto=auto`
+to its link, since link-time optimization sees none of the compile options. That
+measured +2.9-4.6% KIPS on the three v2 protected traces and +8.6% on mcf (legacy
+DRAM; +1.7-4.7% native). `LTO=0` builds fast without it. `LTO=1` insists, and is
+refused outside fast or with Clang, which is not validated: Clang 12 rejects
+`-flto=auto`, and Clang's bitcode links only through lld or the LLVMgold plugin, so
+Clang fast builds get no LTO. `--build-info` records the outcome as `lto`. With
+`WITH_RAMULATOR2=1` the C++20 driver is compiled `-fno-lto`, because its
+`std::variant` types are defined differently from the C++17 units' (`-Wodr`).
+Fast does not define global `NDEBUG`; Catch2 and dependency assertions
 retain their own policies. Every standard mode uses generic tuning. GCC 9/10 use
 the explicit v2 extension expansion when their driver lacks the named
 architecture. Linux x64, little-endian AArch64 and the existing Darwin target

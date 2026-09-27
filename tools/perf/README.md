@@ -173,6 +173,11 @@ CPU 8), rejecting any difference in complete phase statistics or effective confi
 `--regression --warmup 100000 --instructions 500000 --repetitions 1` additionally
 covers both PTW modes, changed seeds/clocks, prefetching and DRAM geometry; its
 short-run timings are not performance claims. Build and run these sequentially.
+`--dram-model ramulator2` runs every simulation with the native backend (both
+binaries must be native-enabled, and a `--config` must set `ramulator2.config` as an
+absolute path, since each run has its own working directory); it still checks that
+each run used the model requested, and `--regression` refuses it because its controls
+set `pmem.*` keys.
 
 The harness *refuses* any difference in the complete `[phase]` statistics, the
 effective `[config]`, or the warmup/ROI retirement and cycle counts, so a non-inert
@@ -190,8 +195,8 @@ KIPS. `--timeout` (seconds per simulation, default 900) exists for that window;
 
 The trace manifest must be a non-empty JSON list with a matching `sha256` per
 entry, checked before the output directory is created or affinity is set.
-Everything here runs `configs/perf-hermes.toml` over
-`configs/champsim_config.toml`, legacy DRAM and `WITH_RAMULATOR2=0`. Never overlap
+Unless `--dram-model` says otherwise, everything here runs `configs/perf-hermes.toml`
+over `configs/champsim_config.toml`, legacy DRAM and `WITH_RAMULATOR2=0`. Never overlap
 a build, a test campaign or a profile with a timing run.
 
 The four `test_*.py` files beside these scripts are the harness's own tests, and
@@ -215,10 +220,13 @@ incremental before/after result.
 
 Use `make release`, `make debug`, or `make fast` for separate canonical binaries.
 Release is `-O3 -g3` with ChampSim assertions; fast uses the same optimization with
-ChampSim assertions disabled; debug uses `-O0 -g3 -fno-omit-frame-pointer`.
+ChampSim assertions disabled and, with GCC, link-time optimization (`LTO=auto`, the
+default; `LTO=0` removes it); debug uses `-O0 -g3 -fno-omit-frame-pointer`.
 The x64 default is `X86_ISA=x86-64-v2`; `X86_ISA=x86-64` retains a baseline control.
 Never infer a speed benefit from an ISA level or attribute v1/v2 differences to
-assertion removal. Keep each comparison's toolchain and dependencies fixed.
+assertion removal, and never attribute a fast/release difference to assertion
+removal alone. Keep each comparison's toolchain and dependencies fixed; `lto` in
+`--build-info` says which a binary got.
 
 `make print-build-paths BUILD_MODE=release` prints the canonical binary and
 object/dependency directories as JSON. `OBJ_ROOT`, `DEP_ROOT`, and `BIN_ROOT` are

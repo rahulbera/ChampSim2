@@ -58,7 +58,7 @@ int main() {
             (self.root / name).write_text(f'int {function}() {{\n#ifdef CHAMPSIM_TEST_BUILD\nreturn 1;\n#else\nreturn 0;\n#endif\n}}\n')
         self.env = {k: v for k, v in os.environ.items() if k not in (
             'CFLAGS', 'CXXFLAGS', 'CPPFLAGS', 'LDFLAGS', 'LDLIBS', 'LOADLIBES', 'MAKEFLAGS', 'MFLAGS', 'BUILD_MODE', 'X86_ISA',
-            'WITH_RAMULATOR2', 'RAMULATOR2_ROOT', 'RAMULATOR2_SANITIZE', 'OBJ_ROOT', 'DEP_ROOT', 'BIN_ROOT')}
+            'WITH_RAMULATOR2', 'RAMULATOR2_ROOT', 'RAMULATOR2_SANITIZE', 'OBJ_ROOT', 'DEP_ROOT', 'BIN_ROOT', 'LTO')}
 
     def make(self, *args, ok=True):
         result = subprocess.run(['make', '--no-print-directory', f'CXX={self.compiler}',
@@ -96,6 +96,44 @@ int main() {
             self.make(mode)
             self.assertEqual(binary.stat().st_mtime_ns, before)
         self.assertFalse((self.root / 'bin/champsim').exists())
+
+    def policy(self, *args):
+        return json.loads((Path(self.paths(*args)['obj']) / 'build-policy.json').read_text())
+
+    def test_fast_uses_gcc_lto_by_default(self):
+        self.make('-j4', 'fast', 'release')
+        self.make('fast', 'LTO=0')
+        fast, release, plain = self.policy('BUILD_MODE=fast'), self.policy('BUILD_MODE=release'), self.policy('BUILD_MODE=fast', 'LTO=0')
+        self.assertTrue(fast['lto'])
+        self.assertIn('-flto=auto', fast['compile_options'])
+        # Link-time optimization sees none of the compile options, so the link repeats them.
+        self.assertEqual(fast['link_options'][-3:], ['-O3', '-g3', '-flto=auto'])
+        for policy in (release, plain):
+            self.assertFalse(policy['lto'])
+            self.assertNotIn('-flto=auto', policy['compile_options'] + policy['link_options'])
+        self.assertNotEqual(self.paths('BUILD_MODE=fast')['obj'], self.paths('BUILD_MODE=fast', 'LTO=0')['obj'])
+        paths = self.paths('BUILD_MODE=fast')
+        if shutil.which('readelf'):
+            sections = subprocess.check_output(['readelf', '-SW', str(Path(paths['obj']) / 'core.o')], text=True)
+            self.assertIn('.gnu.lto_', sections)
+        self.assertEqual(self.execute(paths['binary']), 'optimized\nassertions=0 core=0 module=0\nv2\n')
+
+    def test_lto_selection_is_validated(self):
+        for args, message in [(['release', 'LTO=1'], 'LTO=1 requires BUILD_MODE=fast'), (['debug', 'LTO=1'], 'LTO=1 requires BUILD_MODE=fast'),
+                              (['fast', 'LTO=yes'], 'LTO must be auto, 0 or 1')]:
+            with self.subTest(args=args):
+                result = self.make('-n', *args, ok=False)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn(message, result.stderr)
+
+    @unittest.skipUnless(shutil.which('clang++'), 'clang++ unavailable')
+    def test_clang_fast_does_not_use_lto(self):
+        self.compiler = shutil.which('clang++')
+        self.make('fast')
+        self.assertFalse(self.policy('BUILD_MODE=fast')['lto'])
+        result = self.make('-n', 'fast', 'LTO=1', ok=False)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn('LTO=1 is validated only with GCC', result.stderr)
 
     def test_sim_test_flavors_and_alias_override(self):
         self.make('-j4', 'all', 'test', 'BUILD_MODE=fast', 'test_main_name=custom/tests')
