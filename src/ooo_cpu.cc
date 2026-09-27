@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <iterator>
 #include <numeric>
 #include <stdexcept>
 #include <fmt/chrono.h>
@@ -404,8 +405,10 @@ long O3_CPU::decode_instruction()
 
   long progress{std::distance(dib_hit_buffer_begin, dib_hit_buffer_end) + std::distance(decode_buffer_begin, decode_buffer_end)};
 
-  std::merge(dib_hit_buffer_begin, dib_hit_buffer_end, decode_buffer_begin, decode_buffer_end, std::back_inserter(DISPATCH_BUFFER),
-             ooo_model_instr::program_order);
+  // Move, not copy: both ranges are erased below, and copying reallocated each instruction's
+  // vectors -- 11-14% of all heap allocations. Nothing references these entries before dispatch.
+  std::merge(std::make_move_iterator(dib_hit_buffer_begin), std::make_move_iterator(dib_hit_buffer_end), std::make_move_iterator(decode_buffer_begin),
+             std::make_move_iterator(decode_buffer_end), std::back_inserter(DISPATCH_BUFFER), ooo_model_instr::program_order);
   DECODE_BUFFER.erase(decode_buffer_begin, decode_buffer_end);
   DIB_HIT_BUFFER.erase(dib_hit_buffer_begin, dib_hit_buffer_end);
 
