@@ -137,7 +137,9 @@ ifeq ($(WITH_RAMULATOR2),1)
 native_library := $(abspath $(RAMULATOR2_ROOT))/libramulator.so
 $(native_library):
 	$(native_helper)
-native_private_options := -isystem $(call shellquote,$(abspath $(RAMULATOR2_ROOT))/src) -std=c++20
+# The driver is the one C++20 translation unit. Under LTO its std::variant-based types would be
+# merged with the C++17 units' differently defined ones (-Wodr), so it stays a regular object.
+native_private_options := -isystem $(call shellquote,$(abspath $(RAMULATOR2_ROOT))/src) -std=c++20$(if $(filter 1,$(LTO)), -fno-lto)
 native_link_options := -Wl,-rpath,$(call shellquote,$(abspath $(RAMULATOR2_ROOT))) -ldl
 endif
 $(OBJ_ROOT)/ramulator2_driver.o $(DEP_ROOT)/ramulator2_driver.d: private native_options = $(native_private_options)

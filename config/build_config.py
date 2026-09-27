@@ -338,7 +338,8 @@ def resolve(args):
                          'mode': ('RelWithDebInfo C++20 Python=OFF Sanitizers=address,undefined'
                                   if args.native_sanitize == '1' else 'Release C++20 Python=OFF'),
                          'sanitizers': 'address,undefined' if args.native_sanitize == '1' else '', 'architecture_options': architecture,
-                         'driver_options': ['-isystem', str(Path(args.native_root).resolve() / 'src'), '-std=c++20'] if args.native == '1' else [],
+                         'driver_options': ['-isystem', str(Path(args.native_root).resolve() / 'src'), '-std=c++20'] + (['-fno-lto'] if lto else [])
+                         if args.native == '1' else [],
                          'link_options': ['-Wl,-rpath,' + str(Path(args.native_root).resolve()), '-ldl'] if args.native == '1' else []},
               'registry_directory': str(Path(args.registry).resolve()),
               'build_inputs': {str(p): digest(p) for p in (Path(__file__), Path('Makefile'), Path('config/build_rules.mk'), Path('config/ramulator2_build.py')) if p.is_file()}}
