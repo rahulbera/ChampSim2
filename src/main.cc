@@ -58,8 +58,12 @@ const std::size_t NUM_CPUS = champsim::defs::num_cpus;
 const unsigned BLOCK_SIZE = champsim::defs::block_size;
 const unsigned PAGE_SIZE = champsim::defs::page_size;
 #endif
-const unsigned LOG2_BLOCK_SIZE = champsim::lg2(BLOCK_SIZE);
-const unsigned LOG2_PAGE_SIZE = champsim::lg2(PAGE_SIZE);
+// From the compile-time constants, not from BLOCK_SIZE/PAGE_SIZE: a test build defines those in
+// 000-test-main.cc, which made these dynamically initialized, and defaults.hpp's namespace-scope
+// builders in other translation units read them as 0 whenever their initializers ran first (as
+// under -flto, which gave every default-built cache OFFSET_BITS 0).
+const unsigned LOG2_BLOCK_SIZE = champsim::lg2(static_cast<unsigned>(champsim::defs::block_size));
+const unsigned LOG2_PAGE_SIZE = champsim::lg2(static_cast<unsigned>(champsim::defs::page_size));
 
 #ifndef CHAMPSIM_TEST_BUILD
 int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
