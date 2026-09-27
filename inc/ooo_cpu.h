@@ -164,6 +164,8 @@ public:
   long decode_instruction();
   long dispatch_instruction();
   long schedule_instruction();
+  // The oldest instruction cannot rename, so the run can never proceed.
+  [[noreturn]] void throw_register_file_too_small(const ooo_model_instr& instr, unsigned long needed) const;
   long execute_instruction();
   long operate_lsq();
   long complete_inflight_instruction();

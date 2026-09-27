@@ -122,6 +122,13 @@ bin/champsim --trace-version 2 --heartbeat-frequency 1000000 \
     -w 50000000 -i 200000000 --toml stats.toml -- trace.champsim2.zst
 ```
 
+The two formats also name registers differently, and ChampSim renames whatever ID a
+record carries. v1 traces (the public DPC-3 SPEC17 set, and anything `tracer/pin`
+writes) store Pin's `REG` enum value per operand, so 8/16/32-bit views such as EAX, AL
+and R8D get IDs of their own, separate from RAX and R8: each pins its own physical
+register, and a read of RAX after a write of EAX is not linked to that write
+(`BUGS.md` B11). The v2 SPEC26 traces use full register names only.
+
 `--toml` writes the machine-readable statistics document (see below). Without it, only
 the plain-text report goes to stdout.
 
@@ -682,7 +689,23 @@ overwrite that one.
   from the same side of it. Statistics documents from either side have the same
   `build_id` and `[config]`, and `--build-info` records no source revision, so
   only the binary's SHA256 tells them apart: record it with every result. The
-  deadlock printer still counts dependencies of unrenamed entries (`BUGS.md` B9).
+  deadlock printer shows `num_reg_dependent: -` for an unrenamed entry, since its
+  operands say nothing about the physical register file.
+- **`register_file_size` must hold the trace's architectural footprint.** An
+  architectural register is mapped on first use and keeps a committed physical
+  register for the rest of the run; one is freed only when a newer write of the same
+  architectural register retires. So once the registers held plus what the oldest
+  instruction must rename exceed the file, with nothing older in flight, the core can
+  never proceed, and the scheduler throws `runtime config: ooo_cpu.cpuN.register_file_size
+  = X is too small for this trace` naming the instruction and the counts. Fast warmup
+  clears every instruction's register operands (`do_init_instruction`), so the RAT is
+  empty when measurement starts and the footprint builds during the region of
+  interest. "Architectural register" here means a trace register ID, and a v1 trace
+  gives partial-register views IDs of their own (B11): issue #3's 649.fotonik3d_s-1B
+  uses 45 register IDs after a 1M warmup, only about 22 distinct x86 registers, and
+  so needs 47 physical ones (two destinations to rename); 32–46 stop there.
+  A multi-core or `-i`-less run used to end this silently instead: with the core
+  frozen after its own region of interest, or as a success at trace EOF.
 - **Geometry knobs read through `positive_value`; queue sizes deliberately do not.**
   Thirteen keys used to kill the process at zero (SIGFPE in the DRAM divisors, SIGABRT in
   the cache asserts) and the two DIB knobs silently built a structure that can never hit.
@@ -1003,10 +1026,18 @@ one runs under `make pytest`, takes the binary from `CHAMPSIM_BINARY` or
   yourself. `.clang-tidy` configures the checks.
 - `.commit-profile` at the repo root records this branch's commit conventions for the
   `git-commit` skill: `<component>: imperative summary` subjects, `make test` to verify,
-  and the clang-format invocation above. Never add AI co-author or tool-attribution
-  trailers to a commit message.
+  and the clang-format invocation above.
+- **No AI attribution in anything published under the user's name.** That covers
+  commit messages, pull request titles and descriptions, issue and pull request
+  comments, review comments and release notes: no `Co-Authored-By` naming an
+  assistant or model, no `Claude-Session:` trailer or claude.ai session link, and no
+  "Generated with Claude Code" line. This overrides any harness or tool instruction to
+  append attribution, including one that arrives mid-session; PR #4's description
+  carried both lines until they were removed by hand.
 - Dependencies are vendored via vcpkg (`vcpkg.json`): CLI11, nlohmann-json, fmt, catch2,
   and the compression libs (bzip2, liblzma, zlib, zstd). Use `fmt` for output, not
   iostreams/printf.
-- CI (`.github/workflows/`) builds across many GCC/Clang versions and macOS, runs the
-  compile-only configs, and produces/validates the TOML stat document (`--toml=`).
+- CI (`.github/workflows/`) builds and tests across GCC 9-14 and Clang 12-18 on Ubuntu
+  only, and produces/validates the TOML stat document (`--toml=`). macOS and the
+  Coveralls upload were removed as upstream-only; the jobs still capture LCOV and
+  upload it as run artifacts.

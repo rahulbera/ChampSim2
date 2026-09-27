@@ -89,10 +89,10 @@ unsigned long RegisterAllocator::count_free_registers() const { return std::size
 
 int RegisterAllocator::count_reg_dependencies(const ooo_model_instr& instr) const
 {
-  // Outside tests only the deadlock printer calls this, and it does so for
-  // entries not renamed yet too, whose source_registers still hold the trace's
-  // architectural IDs. An ID past the physical register file names no
-  // physical register, so there is nothing to wait on.
+  // Outside tests only the deadlock printer calls this, and only for renamed
+  // entries. An instruction not renamed yet still holds the trace's
+  // architectural IDs, and an ID past the physical register file names no
+  // physical register, so it waits on nothing; the guard keeps that safe.
   return static_cast<int>(std::count_if(std::begin(instr.source_registers), std::end(instr.source_registers), [this](auto reg) {
     return reg >= 0 && static_cast<std::size_t>(reg) < std::size(physical_register_file) && !isValid(reg);
   }));
