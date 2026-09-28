@@ -47,13 +47,13 @@ SCENARIO("A register file that cannot rename the oldest instruction is a named e
   {
     do_nothing_MRC mock_L1I, mock_L1D;
     O3_CPU uut{core(mock_L1I, mock_L1D, 3, 1)};
-    uut.reg_allocator.rename_src_register(10);
-    uut.reg_allocator.rename_src_register(11);
-    REQUIRE(uut.reg_allocator.count_free_registers() == 1);
+    uut.ctx().rename_src_register(10);
+    uut.ctx().rename_src_register(11);
+    REQUIRE(uut.ctx().reg_allocator->count_free_registers() == 1);
 
     WHEN("The oldest instruction needs 2 registers and nothing older is in flight")
     {
-      uut.ROB.push_back(instruction(42, {}, {12, 13}));
+      uut.ctx().ROB.push_back(instruction(42, {}, {12, 13}));
 
       THEN("Scheduling reports the key, the size, and what the instruction needed")
       {
@@ -62,8 +62,8 @@ SCENARIO("A register file that cannot rename the oldest instruction is a named e
             uut.schedule_instruction(),
             Catch::Matchers::ContainsSubstring("ooo_cpu.cpu1.register_file_size = 3")
                 && Catch::Matchers::ContainsSubstring("the oldest instruction (instr_id 42) needs 2 registers to rename, with 1 free; the other 2 hold"));
-        REQUIRE_FALSE(uut.ROB.front().scheduled);
-        REQUIRE(uut.reg_allocator.count_free_registers() == 1);
+        REQUIRE_FALSE(uut.ctx().ROB.front().scheduled);
+        REQUIRE(uut.ctx().reg_allocator->count_free_registers() == 1);
       }
     }
   }
@@ -75,8 +75,8 @@ SCENARIO("An instruction short of registers waits while an older one is in fligh
   {
     do_nothing_MRC mock_L1I, mock_L1D;
     O3_CPU uut{core(mock_L1I, mock_L1D, 3)};
-    uut.ROB.push_back(instruction(1, {}, {10}));
-    uut.ROB.push_back(instruction(2, {}, {11, 12, 13}));
+    uut.ctx().ROB.push_back(instruction(1, {}, {10}));
+    uut.ctx().ROB.push_back(instruction(2, {}, {11, 12, 13}));
 
     WHEN("The scheduler runs")
     {
@@ -84,9 +84,9 @@ SCENARIO("An instruction short of registers waits while an older one is in fligh
 
       THEN("The older instruction is renamed and the younger waits for it, without an error")
       {
-        REQUIRE(uut.ROB.at(0).scheduled);
-        REQUIRE_FALSE(uut.ROB.at(1).scheduled);
-        REQUIRE(uut.reg_allocator.count_free_registers() == 2);
+        REQUIRE(uut.ctx().ROB.at(0).scheduled);
+        REQUIRE_FALSE(uut.ctx().ROB.at(1).scheduled);
+        REQUIRE(uut.ctx().reg_allocator->count_free_registers() == 2);
       }
     }
   }
@@ -99,8 +99,8 @@ SCENARIO("With enough registers the same pair renames together")
   {
     do_nothing_MRC mock_L1I, mock_L1D;
     O3_CPU uut{core(mock_L1I, mock_L1D, 4)};
-    uut.ROB.push_back(instruction(1, {}, {10}));
-    uut.ROB.push_back(instruction(2, {}, {11, 12, 13}));
+    uut.ctx().ROB.push_back(instruction(1, {}, {10}));
+    uut.ctx().ROB.push_back(instruction(2, {}, {11, 12, 13}));
 
     WHEN("The scheduler runs")
     {
@@ -108,9 +108,9 @@ SCENARIO("With enough registers the same pair renames together")
 
       THEN("Both are renamed")
       {
-        REQUIRE(uut.ROB.at(0).scheduled);
-        REQUIRE(uut.ROB.at(1).scheduled);
-        REQUIRE(uut.reg_allocator.count_free_registers() == 0);
+        REQUIRE(uut.ctx().ROB.at(0).scheduled);
+        REQUIRE(uut.ctx().ROB.at(1).scheduled);
+        REQUIRE(uut.ctx().reg_allocator->count_free_registers() == 0);
       }
     }
   }
@@ -122,13 +122,13 @@ SCENARIO("An oldest instruction that is not ready yet is not judged")
   {
     do_nothing_MRC mock_L1I, mock_L1D;
     O3_CPU uut{core(mock_L1I, mock_L1D, 1)};
-    uut.ROB.push_back(instruction(1, {}, {10, 11}));
-    uut.ROB.front().ready_time = champsim::chrono::clock::time_point{} + std::chrono::hours{1};
+    uut.ctx().ROB.push_back(instruction(1, {}, {10, 11}));
+    uut.ctx().ROB.front().ready_time = champsim::chrono::clock::time_point{} + std::chrono::hours{1};
 
     THEN("The scheduler neither renames it nor reports an error")
     {
       REQUIRE_NOTHROW(uut.schedule_instruction());
-      REQUIRE_FALSE(uut.ROB.front().scheduled);
+      REQUIRE_FALSE(uut.ctx().ROB.front().scheduled);
     }
   }
 }

@@ -250,7 +250,7 @@ public:
       // A BTB that never misses. Detection, type and the direct target come for
       // free. What answers for the other two groups depends on how far along the
       // cumulative series this configuration sits.
-      const ooo_model_instr* in = (intern != nullptr && !std::empty(intern->input_queue)) ? &intern->input_queue.front() : nullptr;
+      const ooo_model_instr* in = (intern != nullptr && !std::empty(intern->ctx().input_queue)) ? &intern->ctx().input_queue.front() : nullptr;
       if (in == nullptr || in->branch == NOT_BRANCH) {
         return {champsim::address{}, false};
       }
@@ -285,7 +285,7 @@ public:
 
     // The instruction under prediction is input_queue.front(); it is popped only
     // after do_init_instruction returns (src/ooo_cpu.cc:100-104).
-    const ooo_model_instr* instr = (intern != nullptr && !std::empty(intern->input_queue)) ? &intern->input_queue.front() : nullptr;
+    const ooo_model_instr* instr = (intern != nullptr && !std::empty(intern->ctx().input_queue)) ? &intern->ctx().input_queue.front() : nullptr;
     const bool oracle_applies = instr != nullptr && in_group<G>(instr->branch);
 
     if (btb_entry->type == direct_predictor::branch_info::RETURN) {

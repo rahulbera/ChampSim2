@@ -67,8 +67,8 @@ void ittage_32kb::update_btb(champsim::address ip, champsim::address branch_targ
   // only after do_init_instruction returns (src/ooo_cpu.cc) -- so the successor
   // is the following entry.
   champsim::address next_pc = branch_target;
-  if (!taken && intern_ != nullptr && std::size(intern_->input_queue) > 1) {
-    next_pc = std::next(std::begin(intern_->input_queue))->ip;
+  if (!taken && intern_ != nullptr && std::size(intern_->ctx().input_queue) > 1) {
+    next_pc = std::next(std::begin(intern_->ctx().input_queue))->ip;
   }
 
   shared().update(ip, branch_target, branch_type, next_pc);

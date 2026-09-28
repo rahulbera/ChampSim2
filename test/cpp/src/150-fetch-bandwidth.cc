@@ -19,8 +19,8 @@ SCENARIO("The fetch bandwidth limits the number of packets issued each cycle")
     std::array<champsim::operable*, 3> elements = {&uut, &mock_L1I, &mock_L1D};
 
     std::for_each(std::begin(addrs), std::end(addrs), [&](auto x) {
-      uut.IFETCH_BUFFER.push_back(champsim::test::instruction_with_ip(x));
-      uut.IFETCH_BUFFER.back().dib_checked = true;
+      uut.ctx().IFETCH_BUFFER.push_back(champsim::test::instruction_with_ip(x));
+      uut.ctx().IFETCH_BUFFER.back().dib_checked = true;
     });
 
     WHEN("The fetch operates")
