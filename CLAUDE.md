@@ -378,8 +378,11 @@ schedule/execute/complete at 21-32% of sampled cycles), the build optimization
 campaign, and the rebase record mapping all 61 performance commits onto this
 branch. The [LTO/PGO log](docs/research-log/Performance/2026-09-27-lto-pgo.md)
 records the LTO default, the `address_slice` fix it required, and the gate it was
-measured under (5M/10M, `lnc.toml`, narrower than the earlier campaigns'); PGO has
-not started.
+measured under (5M/10M, `lnc.toml`, narrower than the earlier campaigns'). It also
+records the PGO probe, which no build uses yet. Its first profile slowed mcf 13-33% by
+un-inlining the legacy DRAM mapping, which the integer mapping (`14e03499`) removed.
+Since then no trace was slower under PGO on either backend (+11-29%), but a PGO build's
+gain moves about ±3% with unrelated source changes.
 
 **A behavior-preserving optimization is gated by
 `tools/perf/compare_optimization.py`, not by `make test`.** It refuses any
