@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cfenv>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <fmt/core.h>
 
@@ -599,36 +600,120 @@ unsigned long DRAM_ADDRESS_MAPPING::swizzle_bits(champsim::address address, unsi
   return permute_field;
 }
 
+// The getters decode with plain shifts and masks rather than address_slice objects. The slice
+// constructors take their 16-byte extents by value, and whenever GCC declines to inline one --
+// under LTO, and again under PGO, whose training rarely reaches legacy DRAM -- each call
+// passes the extent through memory and stalls store forwarding in the scheduler's comparator.
+// This arithmetic is fast whatever the compiler inlines. swizzle_bits() keeps the slice-based
+// definition, and 703-dram-address-mapping.cc pins the getters against it.
+namespace
+{
+using mapping_type = DRAM_ADDRESS_MAPPING;
+
+constexpr uint64_t low_bits(uint64_t width) { return width >= 64 ? ~uint64_t{0} : (uint64_t{1} << width) - 1; }
+
+template <std::size_t I>
+uint64_t field_width(const mapping_type::slicer_type& slicer)
+{
+  const auto extent = slicer.get<I>();
+  return champsim::to_underlying(extent.upper) - champsim::to_underlying(extent.lower);
+}
+
+// Each getter used to build all seven slices, and one reaching past the address threw from its
+// constructor. The slicer is contiguous from bit 0, so the row, topmost, is the one to check.
+void check_representable(const mapping_type::slicer_type& slicer)
+{
+  if (slicer.get<mapping_type::SLICER_ROW_IDX>().upper > champsim::address::bits) {
+    champsim::detail::throw_unrepresentable_bound("Upper bound is not representable in the underlying type");
+  }
+}
+
+// address_slice::to<unsigned long>(), for a platform where unsigned long is narrower.
+unsigned long to_ulong(uint64_t value)
+{
+  if constexpr (std::numeric_limits<unsigned long>::digits < 64) {
+    if (value > std::numeric_limits<unsigned long>::max()) {
+      throw std::domain_error{"Contained value overflows the target type"};
+    }
+  }
+  return static_cast<unsigned long>(value);
+}
+
+template <std::size_t I>
+uint64_t decode(const mapping_type::slicer_type& slicer, champsim::address address)
+{
+  const auto lower = champsim::to_underlying(slicer.get<I>().lower);
+  return lower >= 64 ? 0 : (address.to<uint64_t>() >> lower) & low_bits(field_width<I>(slicer));
+}
+
+// swizzle_bits() for a nonzero segment size. Its loop compares each segment's row-relative
+// upper bound with the row's absolute one, so it runs row_upper / segment_size times and
+// includes a partial final segment; a segment wholly above the row width adds nothing. Each
+// segment contributes its bits [segment_offset, segment_offset + field_bits), clipped to the
+// segment.
+unsigned long fold_row(const mapping_type::slicer_type& slicer, champsim::address address, uint64_t segment_size, uint64_t segment_offset, unsigned long field,
+                       uint64_t field_bits)
+{
+  if (field_bits == 0 || segment_offset >= segment_size) {
+    return field;
+  }
+  const auto row = decode<mapping_type::SLICER_ROW_IDX>(slicer, address);
+  const auto row_width = field_width<mapping_type::SLICER_ROW_IDX>(slicer);
+  const auto segments = champsim::to_underlying(slicer.get<mapping_type::SLICER_ROW_IDX>().upper) / segment_size;
+  const auto term_mask = low_bits(std::min(field_bits, segment_size - segment_offset));
+  auto position = segment_offset;
+  for (uint64_t segment = 0; segment < segments && position < row_width; ++segment, position += segment_size) {
+    field ^= static_cast<unsigned long>((row >> position) & term_mask);
+  }
+  return field;
+}
+} // namespace
+
 unsigned long DRAM_ADDRESS_MAPPING::get_channel(champsim::address address) const
 {
-  unsigned long channel = std::get<SLICER_CHANNEL_IDX>(address_slicer(address)).to<unsigned long>();
+  check_representable(address_slicer);
   // channel bits should be xor'd with each row bit
-  unsigned long c_bits = champsim::size(get<SLICER_CHANNEL_IDX>(address_slicer));
-  return (swizzle_bits(address, 1, champsim::data::bits{0}, channel, c_bits));
+  return fold_row(address_slicer, address, 1, 0, to_ulong(decode<SLICER_CHANNEL_IDX>(address_slicer, address)),
+                  field_width<SLICER_CHANNEL_IDX>(address_slicer));
 }
-unsigned long DRAM_ADDRESS_MAPPING::get_rank(champsim::address address) const { return std::get<SLICER_RANK_IDX>(address_slicer(address)).to<unsigned long>(); }
+unsigned long DRAM_ADDRESS_MAPPING::get_rank(champsim::address address) const
+{
+  check_representable(address_slicer);
+  return to_ulong(decode<SLICER_RANK_IDX>(address_slicer, address));
+}
 unsigned long DRAM_ADDRESS_MAPPING::get_bankgroup(champsim::address address) const
 {
-  unsigned long bankgroup = std::get<SLICER_BANKGROUP_IDX>(address_slicer(address)).to<unsigned long>();
-
-  unsigned long bg_bits = champsim::size(get<SLICER_BANKGROUP_IDX>(address_slicer));
-  unsigned long bk_bits = champsim::size(get<SLICER_BANK_IDX>(address_slicer));
-  return (swizzle_bits(address, bg_bits + bk_bits, champsim::data::bits{0}, bankgroup, bg_bits));
+  check_representable(address_slicer);
+  const auto bankgroup = to_ulong(decode<SLICER_BANKGROUP_IDX>(address_slicer, address));
+  const auto bg_bits = field_width<SLICER_BANKGROUP_IDX>(address_slicer);
+  const auto bk_bits = field_width<SLICER_BANK_IDX>(address_slicer);
+  if (bg_bits + bk_bits == 0) {
+    // One bank in one group: swizzle_bits() never terminates here, a separate correctness issue left as it was.
+    return swizzle_bits(address, 0, champsim::data::bits{0}, bankgroup, 0);
+  }
+  return fold_row(address_slicer, address, bg_bits + bk_bits, 0, bankgroup, bg_bits);
 }
 unsigned long DRAM_ADDRESS_MAPPING::get_bank(champsim::address address) const
 {
-  unsigned long bank = std::get<SLICER_BANK_IDX>(address_slicer(address)).to<unsigned long>();
-
-  unsigned long bg_bits = champsim::size(get<SLICER_BANKGROUP_IDX>(address_slicer));
-  unsigned long bk_bits = champsim::size(get<SLICER_BANK_IDX>(address_slicer));
+  check_representable(address_slicer);
+  const auto bank = to_ulong(decode<SLICER_BANK_IDX>(address_slicer, address));
+  const auto bg_bits = field_width<SLICER_BANKGROUP_IDX>(address_slicer);
+  const auto bk_bits = field_width<SLICER_BANK_IDX>(address_slicer);
+  if (bg_bits + bk_bits == 0) {
+    return swizzle_bits(address, 0, champsim::data::bits{0}, bank, 0);
+  }
   // bank bits should be xor'd with select row bits
-
-  return (swizzle_bits(address, bg_bits + bk_bits, champsim::data::bits{bg_bits}, bank, bk_bits));
+  return fold_row(address_slicer, address, bg_bits + bk_bits, bg_bits, bank, bk_bits);
 }
-unsigned long DRAM_ADDRESS_MAPPING::get_row(champsim::address address) const { return std::get<SLICER_ROW_IDX>(address_slicer(address)).to<unsigned long>(); }
+unsigned long DRAM_ADDRESS_MAPPING::get_row(champsim::address address) const
+{
+  check_representable(address_slicer);
+  return to_ulong(decode<SLICER_ROW_IDX>(address_slicer, address));
+}
 unsigned long DRAM_ADDRESS_MAPPING::get_column(champsim::address address) const
 {
-  return std::get<SLICER_COLUMN_IDX>(address_slicer(address)).to<unsigned long>();
+  check_representable(address_slicer);
+  return to_ulong(decode<SLICER_COLUMN_IDX>(address_slicer, address));
 }
 
 champsim::data::bytes MEMORY_CONTROLLER::size() const { return champsim::data::bytes{(1ll << address_mapping.address_slicer.bit_size())}; }
