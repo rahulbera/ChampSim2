@@ -99,14 +99,16 @@ publication_binary := $(executable_name)
 PUBLISH_ALIAS ?= 1
 
 policy_helper = python3 $(ROOT_DIR)/config/build_config.py
-policy_arguments = --obj=$(call shellquote,$(object_container)) --dep=$(call shellquote,$(dependency_container)) --binary=$(call shellquote,$(binary_container)) --registry=$(call shellquote,$(registry_dir)) --cxx=$(call shellquote,$(CXX)) --mode=$(call shellquote,$(BUILD_MODE)) --flavor=$(call shellquote,$(BUILD_FLAVOR)) --isa=$(call shellquote,$(X86_ISA)) $(if $(filter undefined,$(origin X86_ISA)),,--isa-explicit) --triplet=$(call shellquote,$(VCPKG_TARGET_TRIPLET)) --installed=$(call shellquote,$(VCPKG_INSTALLED_DIR)) --native=$(call shellquote,$(WITH_RAMULATOR2)) --native-root=$(call shellquote,$(RAMULATOR2_ROOT)) --native-sanitize=$(call shellquote,$(RAMULATOR2_SANITIZE)) --lto=$(call shellquote,$(LTO)) --tcmalloc=$(call shellquote,$(TCMALLOC)) --cppflags=$(call shellquote,$(CPPFLAGS)) --cxxflags=$(call shellquote,$(CXXFLAGS)) --ldflags=$(call shellquote,$(LDFLAGS)) --ldlibs=$(call shellquote,$(LDLIBS)) --loadlibes=$(call shellquote,$(LOADLIBES)) --libraries=$(call shellquote,$(CHAMPSIM_LIBRARIES)) --test-libraries=$(call shellquote,$(CHAMPSIM_TEST_LIBRARIES))
+policy_arguments = --obj=$(call shellquote,$(object_container)) --dep=$(call shellquote,$(dependency_container)) --binary=$(call shellquote,$(binary_container)) --registry=$(call shellquote,$(registry_dir)) --cxx=$(call shellquote,$(CXX)) --mode=$(call shellquote,$(BUILD_MODE)) --flavor=$(call shellquote,$(BUILD_FLAVOR)) --isa=$(call shellquote,$(X86_ISA)) $(if $(filter undefined,$(origin X86_ISA)),,--isa-explicit) --triplet=$(call shellquote,$(VCPKG_TARGET_TRIPLET)) --installed=$(call shellquote,$(VCPKG_INSTALLED_DIR)) --native=$(call shellquote,$(WITH_RAMULATOR2)) --native-root=$(call shellquote,$(RAMULATOR2_ROOT)) --native-sanitize=$(call shellquote,$(RAMULATOR2_SANITIZE)) --lto=$(call shellquote,$(LTO)) --tcmalloc=$(call shellquote,$(TCMALLOC)) --pgo=$(call shellquote,$(PGO)) --pgo-profile=$(call shellquote,$(PGO_PROFILE)) --cppflags=$(call shellquote,$(CPPFLAGS)) --cxxflags=$(call shellquote,$(CXXFLAGS)) --ldflags=$(call shellquote,$(LDFLAGS)) --ldlibs=$(call shellquote,$(LDLIBS)) --loadlibes=$(call shellquote,$(LOADLIBES)) --libraries=$(call shellquote,$(CHAMPSIM_LIBRARIES)) --test-libraries=$(call shellquote,$(CHAMPSIM_TEST_LIBRARIES))
 policy_selection := $(shell $(policy_helper) inspect $(policy_arguments))
-ifneq ($(words $(policy_selection)),4)
+ifneq ($(words $(policy_selection)),5)
 $(error Build policy selection failed; see diagnostic above)
 endif
 policy_leaf := $(word 1,$(policy_selection))/$(word 2,$(policy_selection))/$(BUILD_MODE)/$(word 3,$(policy_selection))/$(BUILD_FLAVOR)
 # Whether the resolved policy uses LTO: LTO=auto leaves that to the build helper.
 policy_lto := $(word 4,$(policy_selection))
+# PGO mode chosen by the helper (off, use, or generate for `make pgo-train`).
+policy_pgo := $(word 5,$(policy_selection))
 override OBJ_ROOT := $(object_container)/$(policy_leaf)
 override DEP_ROOT := $(dependency_container)/$(policy_leaf)
 override BIN_ROOT := $(binary_container)/$(policy_leaf)
@@ -162,8 +164,11 @@ get_base_objs = $(call get_object_list,$(base_source_dir),$(OBJ_ROOT),$1)
 test_base_objs = $(call get_object_list,$(test_source_dir),$(OBJ_ROOT)/test,TEST)
 selected_objects := $(call get_base_objs,$(if $(filter test,$(BUILD_FLAVOR)),TEST,SIM)) $(if $(filter test,$(BUILD_FLAVOR)),$(test_base_objs)) $(base_module_objs) $(nonbase_module_objs)
 attach_options = $(addprefix @,$(filter %.options,$^))
+# GCC hashes internal-linkage functions with the auxiliary base name it derives from -o, so a PGO
+# profile would be tied to one build directory; a -dumpdir relative to the source root is not.
+pgo_object_options = $(if $(filter use generate,$(policy_pgo)),-dumpdir obj$(patsubst $(OBJ_ROOT)%,%,$(@D))/)
 define obj_recipe
-	$(CXX) $(attach_options) $(native_options) -c -o $@ $(filter %.cc,$^)
+	$(CXX) $(attach_options) $(native_options)$(if $(pgo_object_options), $(pgo_object_options)) -c -o $@ $(filter %.cc,$^)
 endef
 define dep_recipe
 	$(CXX) $(attach_options) $(native_options) -MM -MP -MT $@ -MT $(patsubst $(DEP_ROOT)/%.d,$(OBJ_ROOT)/%.o,$@) -MF $@ $(filter %.cc,$^)

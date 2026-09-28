@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "warmup_instructions": 1000000,
+  "simulation_instructions": 3000000,
+  "runs": [
+    {
+      "trace": "version2.1/spec26/708.sqlite_r.sp0.champsim2.zst",
+      "trace_version": 2,
+      "configs": [
+        "configs/lnc.toml"
+      ]
+    },
+    {
+      "trace": "version1/spec17/605.mcf_s-1536B.champsimtrace.xz",
+      "trace_version": 1,
+      "configs": [
+        "configs/lnc.toml"
+      ]
+    },
+    {
+      "trace": "version1/gap/bc-0.trace.gz",
+      "trace_version": 1,
+      "configs": [
+        "configs/lnc.toml"
+      ]
+    }
+  ]
+}

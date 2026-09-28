@@ -7,6 +7,11 @@ RAMULATOR2_ROOT ?=
 RAMULATOR2_SANITIZE ?= 0
 LTO ?= auto
 TCMALLOC ?= auto
+PGO ?= auto
+PGO_PROFILE ?=
+TRACE_ROOT ?=
+PGO_TRAIN ?=
+PGO_CHECK ?=
 OBJ_ROOT ?= .csconfig
 DEP_ROOT ?= $(OBJ_ROOT)
 VCPKG_INSTALLED_DIR ?= $(ROOT_DIR)/vcpkg_installed
@@ -31,16 +36,20 @@ $(error BUILD_MODE conflicts with the named mode target)
 endif
 endif
 endif
-.PHONY: all test debug release fast clean compile_commands print-build-paths ramulator2 pytest configclean compile_commands_clean maketest
+.PHONY: all test debug release fast clean compile_commands print-build-paths ramulator2 pytest configclean compile_commands_clean maketest pgo-train pgo-check
 all test clean compile_commands print-build-paths ramulator2:
 	+@$(MAKE) --no-print-directory CHAMPSIM_INNER=1 BUILD_FLAVOR=$(if $(filter test,$@),test,$(BUILD_FLAVOR)) $@
 debug release fast:
 	+@$(MAKE) --no-print-directory CHAMPSIM_INNER=1 BUILD_MODE=$@ BUILD_FLAVOR=sim PUBLISH_ALIAS=0 all
 # Explicit compatibility paths (notably CI's test executable) are ordinary builds.
-other_goals := $(filter-out all test clean compile_commands print-build-paths ramulator2 debug release fast pytest configclean compile_commands_clean maketest,$(MAKECMDGOALS))
+other_goals := $(filter-out all test clean compile_commands print-build-paths ramulator2 debug release fast pytest configclean compile_commands_clean maketest pgo-train pgo-check,$(MAKECMDGOALS))
 .PHONY: $(other_goals)
 $(other_goals):
 	+@$(MAKE) --no-print-directory CHAMPSIM_INNER=1 BUILD_FLAVOR=$(if $(filter $(test_main_name),$@),test,$(BUILD_FLAVOR)) $@
+# PGO profiles (config/pgo.py, pgo/README.md). Build variables on this command line reach the
+# builds config/pgo.py starts through MAKEFLAGS.
+pgo-train pgo-check:
+	+python3 $(ROOT_DIR)/config/pgo.py $(patsubst pgo-%,%,$@) --trace-root=$(call shellquote,$(TRACE_ROOT)) --native=$(call shellquote,$(WITH_RAMULATOR2)) --plan=$(call shellquote,$(if $(filter pgo-train,$@),$(PGO_TRAIN),$(PGO_CHECK))) --profile=$(call shellquote,$(PGO_PROFILE))
 pytest:
 	PYTHONPATH=$(PYTHONPATH):$(ROOT_DIR) python3 -m unittest discover -v --start-directory=test/python
 configclean compile_commands_clean maketest:

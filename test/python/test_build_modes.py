@@ -1,5 +1,6 @@
 """Execute the real Make rules with small actual compiler fixtures."""
 import concurrent.futures
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -60,7 +61,8 @@ int main() {
             (self.root / name).write_text(f'int {function}() {{\n#ifdef CHAMPSIM_TEST_BUILD\nreturn 1;\n#else\nreturn 0;\n#endif\n}}\n')
         self.env = {k: v for k, v in os.environ.items() if k not in (
             'CFLAGS', 'CXXFLAGS', 'CPPFLAGS', 'LDFLAGS', 'LDLIBS', 'LOADLIBES', 'MAKEFLAGS', 'MFLAGS', 'BUILD_MODE', 'X86_ISA',
-            'WITH_RAMULATOR2', 'RAMULATOR2_ROOT', 'RAMULATOR2_SANITIZE', 'OBJ_ROOT', 'DEP_ROOT', 'BIN_ROOT', 'LTO', 'TCMALLOC')}
+            'WITH_RAMULATOR2', 'RAMULATOR2_ROOT', 'RAMULATOR2_SANITIZE', 'OBJ_ROOT', 'DEP_ROOT', 'BIN_ROOT', 'LTO', 'TCMALLOC',
+            'PGO', 'PGO_PROFILE', 'TRACE_ROOT', 'PGO_TRAIN', 'PGO_CHECK')}
 
     def make(self, *args, ok=True):
         result = subprocess.run(['make', '--no-print-directory', f'CXX={self.compiler}',
@@ -153,11 +155,86 @@ int main() {
         self.make('all', *sanitized)
         self.assertFalse(self.policy(*sanitized)['tcmalloc'])
 
+    def gcc_version(self):
+        macros = subprocess.check_output([self.compiler, '-dM', '-E', '-x', 'c++', '-'], input='', text=True)
+        values = dict(line.split()[1:3] for line in macros.splitlines() if line.startswith('#define __GNUC'))
+        return f"{values['__GNUC__']}.{values['__GNUC_MINOR__']}"
+
+    def train(self):
+        """make pgo-train on the fixture, whose binary ignores its arguments and stands in for ChampSim."""
+        traces = self.root / 'traces'
+        traces.mkdir()
+        (traces / 'one.champsimtrace').write_bytes(b'trace')
+        (self.root / 'probe.toml').write_text('# training config\n')
+        plan = {'schema_version': 1, 'warmup_instructions': 10, 'simulation_instructions': 20,
+                'runs': [{'trace': 'one.champsimtrace', 'trace_version': 1, 'configs': ['probe.toml']}]}
+        (self.root / 'plan.json').write_text(json.dumps(plan))
+        self.make('pgo-train', f'TRACE_ROOT={traces}', 'PGO_TRAIN=plan.json')
+        return self.root / 'pgo/legacy-dram' / f'gcc-{self.gcc_version()}'
+
+    def test_pgo_train_writes_a_profile_that_fast_builds_use(self):
+        if int(self.gcc_version().split('.')[0]) < 11:
+            self.skipTest('PGO needs GCC 11 or newer')
+        self.make('fast')
+        self.assertEqual(self.policy('BUILD_MODE=fast')['pgo']['mode'], 'off')
+        profile = self.train()
+        names = sorted(p.name for p in profile.iterdir())
+        # Portable names: relative to the source root, and to the object tree's obj/ -dumpdir.
+        self.assertIn('obj#core.gcda', names)
+        self.assertIn('obj#modules#branch#probe#probe.gcda', names)
+        self.assertIn('MANIFEST.json', names)
+        manifest = json.loads((profile / 'MANIFEST.json').read_text())
+        self.assertEqual((manifest['dram_model'], manifest['compiler']['gcc_version']), ('legacy-dram', self.gcc_version()))
+        self.assertEqual(manifest['training']['runs'][0]['sha256'], hashlib.sha256(b'trace').hexdigest())
+        self.make('fast')
+        policy = self.policy('BUILD_MODE=fast')
+        self.assertEqual(policy['pgo']['mode'], 'use')
+        self.assertIn('-fprofile-partial-training', policy['compile_options'])
+        self.assertIn('-fprofile-prefix-path=' + str(self.root), policy['compile_options'])
+        self.assertIn('-fprofile-use=' + str(profile.resolve()), policy['link_options'])
+        self.assertEqual(self.execute(self.paths('BUILD_MODE=fast')['binary']), 'optimized\nassertions=0 core=0 module=0\nv2\n')
+        dry = self.make('-n', '-B', 'fast').stdout
+        self.assertRegex(dry, r'-dumpdir obj/modules/branch/probe/ -c -o \S+/modules/branch/probe/probe\.o')
+        # A changed profile is a different build.
+        before = self.paths('BUILD_MODE=fast')['obj']
+        (profile / 'MANIFEST.json').write_text(json.dumps(dict(manifest, created='later')))
+        self.assertNotEqual(self.paths('BUILD_MODE=fast')['obj'], before)
+        self.make('fast', 'PGO=0')
+        self.assertEqual(self.policy('BUILD_MODE=fast', 'PGO=0')['pgo']['mode'], 'off')
+
+    def test_pgo_selection_is_validated(self):
+        profile = self.root / 'pgo/legacy-dram' / f'gcc-{self.gcc_version()}'
+        for args, message in [(['fast', 'PGO=yes'], 'PGO must be auto, 0 or 1'),
+                              (['release', 'PGO=1'], 'PGO=1 requires a fast, unsanitized GCC 11+ build'),
+                              (['fast', 'PGO=1'], 'PGO=1: no usable profile'),
+                              (['fast', 'PGO=generate'], 'PGO=generate needs PGO_PROFILE')]:
+            with self.subTest(args=args):
+                result = self.make('-n', *args, ok=False)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn(message, result.stderr)
+        # A profile from another compiler version is skipped by auto and refused by PGO=1.
+        profile.mkdir(parents=True)
+        (profile / 'MANIFEST.json').write_text(json.dumps({'dram_model': 'legacy-dram', 'compiler': {'gcc_version': '1.0'}}))
+        (profile / 'obj#core.gcda').write_bytes(b'')
+        self.make('fast')
+        policy = self.policy('BUILD_MODE=fast')
+        self.assertEqual(policy['pgo']['mode'], 'off')
+        self.assertIn('trained with GCC 1.0', policy['pgo']['reason'])
+        result = self.make('-n', 'fast', 'PGO=1', ok=False)
+        self.assertIn('trained with GCC 1.0', result.stderr)
+
+    def test_include_paths_are_relative_to_the_source_root(self):
+        self.make('all')
+        options = (Path(self.paths()['obj']) / 'absolute.options').read_text().split()
+        self.assertIn('-Iinc', options)
+        self.assertEqual(options[options.index('-isystem') + 1], 'vcpkg_installed/x64-linux/include')
+
     @unittest.skipUnless(shutil.which('clang++'), 'clang++ unavailable')
     def test_clang_fast_does_not_use_lto(self):
         self.compiler = shutil.which('clang++')
         self.make('fast')
         self.assertFalse(self.policy('BUILD_MODE=fast')['lto'])
+        self.assertEqual(self.policy('BUILD_MODE=fast')['pgo']['mode'], 'off')
         result = self.make('-n', 'fast', 'LTO=1', ok=False)
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn('LTO=1 is validated only with GCC', result.stderr)

@@ -40,9 +40,10 @@ bin/champsim --build-info             # standalone compiler/dependency provenanc
 Plain `make` is `BUILD_MODE=release BUILD_FLAVOR=sim` (`Makefile:3-4`), so the
 default binary is `-O3 -g3` with assertions on. Release and fast use `-O3 -g3`;
 debug uses `-O0 -g3` and keeps frame pointers. Fast differs from release in exactly
-three ways, so time `fast`, not the default build. ChampSim assertions are disabled
-(worth 0.67-1.56% median KIPS); fast links gperftools' tcmalloc; and with GCC fast
-links with LTO. `LTO` defaults to
+four ways, so time `fast`, not the default build. ChampSim assertions are disabled
+(worth 0.67-1.56% median KIPS); fast links gperftools' tcmalloc; with GCC fast
+links with LTO; and with GCC 11+ fast uses a PGO profile from `pgo/` when one matches.
+`LTO` defaults to
 `auto`, which adds `-flto=auto` to fast's compile options and `-O3 -g3 -flto=auto`
 to its link, since link-time optimization sees none of the compile options. That
 measured +2.9-4.6% KIPS on the three v2 protected traces and +8.6% on mcf (legacy
@@ -61,6 +62,23 @@ heap allocations per simulated instruction. `TCMALLOC=0` keeps glibc's allocator
 `--build-info` records it as `tcmalloc`. A checkout whose `vcpkg_installed` predates
 the port fails fast builds with `selected dependency library missing:
 -ltcmalloc_minimal` until `vcpkg install` is re-run.
+`PGO` defaults to `auto` too: a fast, unsanitized GCC 11+ build compiles with
+`-fprofile-use -fprofile-partial-training` when `pgo/<legacy-dram|ramulator2>/gcc-<major.minor>/`
+holds a profile whose `MANIFEST.json` names the same GCC version and DRAM model
+(`WITH_RAMULATOR2` picks the model). GCC reads only its own version's profiles, so a
+different compiler simply builds without one. Measured on top of LTO and tcmalloc: +10-29% on
+every trace since the integer DRAM mapping (`14e03499`), none slower. The first profile slowed mcf
+13-33%, because training left the legacy DRAM mapping cold and GCC stopped inlining it. `PGO=0`
+builds without a profile; `PGO=1` insists; `PGO_PROFILE=<dir>` names another profile; the
+profile's contents join the build fingerprint; `--build-info` records `pgo`, and why it is off.
+`make pgo-train TRACE_ROOT=<catalog>` regenerates the profile from `pgo/train-<model>.json`,
+and `make pgo-check` gates PGO against non-PGO fast for parity and speed. Profiles are portable
+between checkouts and build directories only because of three build details, so keep all three:
+`-fprofile-prefix-path=<source root>`, the compile rule's `-dumpdir obj/<object dir>/` (GCC
+hashes internal-linkage functions with the object's auxiliary name), and include paths relative
+to the source root (and with the header's path, for such functions in headers). A PGO build's
+speed moves about ±3% with unrelated source changes, so gate behavior-preserving optimizations
+on `PGO=0` builds. [`pgo/README.md`](pgo/README.md) is the operating manual.
 Fast does not define global `NDEBUG`; Catch2 and dependency assertions
 retain their own policies. Every standard mode uses generic tuning. GCC 9/10 use
 the explicit v2 extension expansion when their driver lacks the named
@@ -379,10 +397,9 @@ campaign, and the rebase record mapping all 61 performance commits onto this
 branch. The [LTO/PGO log](docs/research-log/Performance/2026-09-27-lto-pgo.md)
 records the LTO default, the `address_slice` fix it required, and the gate it was
 measured under (5M/10M, `lnc.toml`, narrower than the earlier campaigns'). It also
-records the PGO probe, which no build uses yet. Its first profile slowed mcf 13-33% by
-un-inlining the legacy DRAM mapping, which the integer mapping (`14e03499`) removed.
-Since then no trace was slower under PGO on either backend (+11-29%), but a PGO build's
-gain moves about ±3% with unrelated source changes.
+records the PGO campaign behind `PGO=auto`: the first profile's mcf regression and the
+integer DRAM mapping (`14e03499`) that removed it, native Ramulator, partial training,
+staleness, GCC 11, and the portability conditions.
 
 **A behavior-preserving optimization is gated by
 `tools/perf/compare_optimization.py`, not by `make test`.** It refuses any
