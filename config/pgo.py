@@ -114,7 +114,9 @@ def train(args):
         'schema_version': 1, 'dram_model': dram, 'created': stamp(),
         'compiler': {'gcc_version': version, 'version': policy['compiler']['version'].splitlines()[0],
                      'command': policy['compiler']['command']},
-        'source': {'commit': git('rev-parse', 'HEAD') or None, 'dirty': bool(git('status', '--porcelain', '--untracked-files=no'))},
+        # Tracked files that differ from the commit, so a reader can tell a documentation edit from code.
+        'source': {'commit': git('rev-parse', 'HEAD') or None,
+                   'modified': sorted(line.split(maxsplit=1)[1] for line in git('status', '--porcelain', '--untracked-files=no').splitlines())},
         'training': {'plan': str(plan_path), 'warmup_instructions': plan['warmup_instructions'],
                      'simulation_instructions': plan['simulation_instructions'],
                      'runs': [{'trace': r['trace'], 'trace_version': r['trace_version'], 'sha256': r['sha256'],
