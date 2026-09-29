@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "dram_model": "legacy-dram",
+  "created": "2026-09-29T23:18:31+02:00",
+  "compiler": {
+    "gcc_version": "11.3",
+    "version": "g++ (Ubuntu 11.3.0-1ubuntu1~22.04) 11.3.0",
+    "command": [
+      "g++"
+    ]
+  },
+  "source": {
+    "commit": "8581d5008b0314eabf33c344227cb354c38aae9f",
+    "modified": []
+  },
+  "training": {
+    "plan": "pgo/train-legacy-dram.json",
+    "warmup_instructions": 5000000,
+    "simulation_instructions": 10000000,
+    "runs": [
+      {
+        "trace": "version2.1/spec26/706.stockfish_r.sp0.champsim2.zst",
+        "trace_version": 2,
+        "sha256": "9193eaf2e5583029a4f6b43ba328d7a3b100b1bbf6e3eeceecf37cadfdf5696a",
+        "bytes": 2455320658,
+        "seconds": 120.1,
+        "configs": [
+          {
+            "path": "configs/lnc.toml",
+            "sha256": "5b159229f6b0a4cb8b3eb92477a17c09014d9c216ca5f7686df2b47e459caadf"
+          }
+        ]
+      },
+      {
+        "trace": "version2.1/spec26/714.cpython_r.sp0.champsim2.zst",
+        "trace_version": 2,
+        "sha256": "8edd015eb68cd5a98ccd4a451917ad3e8a25e1374e00919365eeb9862342d5f1",
+        "bytes": 2718042328,
+        "seconds": 125.7,
+        "configs": [
+          {
+            "path": "configs/lnc.toml",
+            "sha256": "5b159229f6b0a4cb8b3eb92477a17c09014d9c216ca5f7686df2b47e459caadf"
+          }
+        ]
+      },
+      {
+        "trace": "version2.1/spec26/723.llvm_r.sp1.champsim2.zst",
+        "trace_version": 2,
+        "sha256": "909a92429125e1aebcd4d819b78d410d26cc0d26deee31cbbccf0c4ee277963a",
+        "bytes": 1652173424,
+        "seconds": 120.4,
+        "configs": [
+          {
+            "path": "configs/lnc.toml",
+            "sha256": "5b159229f6b0a4cb8b3eb92477a17c09014d9c216ca5f7686df2b47e459caadf"
+          }
+        ]
+      },
+      {
+        "trace": "version2.1/spec26/735.gem5_r.sp1.champsim2.zst",
+        "trace_version": 2,
+        "sha256": "698a283f7526131d48dbe8222ff48ddd0bfd7e02b795a9346995977513b34365",
+        "bytes": 2102796535,
+        "seconds": 149.1,
+        "configs": [
+          {
+            "path": "configs/lnc.toml",
+            "sha256": "5b159229f6b0a4cb8b3eb92477a17c09014d9c216ca5f7686df2b47e459caadf"
+          }
+        ]
+      },
+      {
+        "trace": "version2.1/spec26/753.ns3_r.sp0.champsim2.zst",
+        "trace_version": 2,
+        "sha256": "feb33d10fc674c6e9d585d4aa828b5c4e188f8ae14db7293c2babe438e5b1ca4",
+        "bytes": 1264218178,
+        "seconds": 121.8,
+        "configs": [
+          {
+            "path": "configs/lnc.toml",
+            "sha256": "5b159229f6b0a4cb8b3eb92477a17c09014d9c216ca5f7686df2b47e459caadf"
+          }
+        ]
+      },
+      {
+        "trace": "version2.1/spec26/777.zstd_r.sp0.champsim2.zst",
+        "trace_version": 2,
+        "sha256": "acb95e0693c6dc75f8bf01773f678f14fd529e4b798c051c44f0611203f7348d",
+        "bytes": 669393951,
+        "seconds": 119.7,
+        "configs": [
+          {
+            "path": "configs/lnc.toml",
+            "sha256": "5b159229f6b0a4cb8b3eb92477a17c09014d9c216ca5f7686df2b47e459caadf"
+          }
+        ]
+      },
+      {
+        "trace": "version1/spec17/607.cactuBSSN_s-2421B.champsimtrace.xz",
+        "trace_version": 1,
+        "sha256": "ae2cf28160028687bd3bdecf9135aeace9553b506d731230176087e1cee26559",
+        "bytes": 257158316,
+        "seconds": 160.4,
+        "configs": [
+          {
+            "path": "configs/lnc.toml",
+            "sha256": "5b159229f6b0a4cb8b3eb92477a17c09014d9c216ca5f7686df2b47e459caadf"
+          }
+        ]
+      },
+      {
+        "trace": "version1/gap/bfs-10.trace.gz",
+        "trace_version": 1,
+        "sha256": "3ced82c6a2aed2be01fb00e55ceaad23182328c3ced4d0911c51bc5c8beb25fc",
+        "bytes": 549827164,
+        "seconds": 215.1,
+        "configs": [
+          {
+            "path": "configs/lnc.toml",
+            "sha256": "5b159229f6b0a4cb8b3eb92477a17c09014d9c216ca5f7686df2b47e459caadf"
+          }
+        ]
+      },
+      {
+        "trace": "version1/spec17/654.roms_s-1390B.champsimtrace.xz",
+        "trace_version": 1,
+        "sha256": "0d915683e82975441e2c05245ac68e657021faa2b62aef55addac9538d769f1d",
+        "bytes": 484677384,
+        "seconds": 284.1,
+        "configs": [
+          {
+            "path": "configs/lnc.toml",
+            "sha256": "5b159229f6b0a4cb8b3eb92477a17c09014d9c216ca5f7686df2b47e459caadf"
+          }
+        ]
+      },
+      {
+        "trace": "version2.1/spec26/723.llvm_r.sp1.champsim2.zst",
+        "trace_version": 2,
+        "sha256": "909a92429125e1aebcd4d819b78d410d26cc0d26deee31cbbccf0c4ee277963a",
+        "bytes": 1652173424,
+        "seconds": 389.1,
+        "configs": [
+          {
+            "path": "pgo/train-modules.toml",
+            "sha256": "3556b1b84d890a1aa7d450ed7659bf40c37a3071e22d83943722f5b6ba1aae06"
+          }
+        ]
+      }
+    ]
+  },
+  "profile_files": 69
+}

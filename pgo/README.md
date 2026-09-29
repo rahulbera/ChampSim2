@@ -13,6 +13,7 @@ pgo/
   check-legacy-dram.json  check-ramulator2.json   what `make pgo-check` measures
   train-modules.toml                              module overlay for one training run
   legacy-dram/gcc-13.3/   MANIFEST.json + obj#*.gcda
+  legacy-dram/gcc-11.3/   ...  (trained on kratos2, the cluster's compiler)
   ramulator2/gcc-13.3/    ...
 ```
 
