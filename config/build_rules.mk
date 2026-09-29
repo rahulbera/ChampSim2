@@ -199,8 +199,12 @@ $(DEP_ROOT)/modules/%.d: $$(module_prereqs) | $$(dir $$@)
 $(sort $(dir $(selected_objects)) $(dir $(patsubst $(OBJ_ROOT)/%.o,$(DEP_ROOT)/%.d,$(selected_objects))) $(dir $(canonical_binary))):
 	mkdir -p $@
 
+# Make hands its jobserver only to recipe lines marked +, and GCC's -flto=auto uses the
+# jobserver when it can reach it, else one LTO job per CPU whatever -j says. A literal + would
+# also run the link under -n/-q/-t, so the mark is added only when make executes recipes.
+link_jobserver := $(if $(make_no_execute),,+)
 $(canonical_binary): $(selected_objects) $(OBJ_ROOT)/ramulator2_build.h $(OBJ_ROOT)/link.options $(OBJ_ROOT)/libraries.options $(native_library) | $$(dir $$@)
-	$(CXX) @$(OBJ_ROOT)/link.options -o $@ $(filter %.o,$^) $(native_library) @$(OBJ_ROOT)/libraries.options $(native_link_options)
+	$(link_jobserver)$(CXX) @$(OBJ_ROOT)/link.options -o $@ $(filter %.o,$^) $(native_library) @$(OBJ_ROOT)/libraries.options $(native_link_options)
 
 # Publish by atomic symlink replacement, so running executables retain their inode.
 publication_target := $(if $(filter test,$(BUILD_FLAVOR)),$(test_main_name),$(publication_binary))

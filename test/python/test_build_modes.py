@@ -296,6 +296,42 @@ int main() {
         self.assertEqual(dep.stat().st_mtime_ns, stamp)
         self.assertGreaterEqual(obj.stat().st_mtime_ns, header.stat().st_mtime_ns)
 
+    def test_link_reaches_the_jobserver_only_when_executing(self):
+        # GCC's -flto=auto keeps to make's -j only through the jobserver, which make passes only
+        # to recipe lines marked +. On a shared host an unmarked link started one LTO job per CPU.
+        log = self.root / 'links.txt'
+        wrapper = self.root / 'jobserver-probe'
+        wrapper.write_text(f'''#!/usr/bin/env python3
+import os, re, sys
+args = sys.argv[1:]
+if '-o' in args and args[args.index('-o') + 1].endswith('/champsim'):
+    auth = re.search(r'--jobserver-auth=(\\S+)', os.environ.get('MAKEFLAGS', ''))
+    usable = False
+    if auth and auth.group(1).startswith('fifo:'):
+        usable = os.path.exists(auth.group(1)[5:])
+    elif auth:
+        try:
+            for fd in auth.group(1).split(','):
+                os.fstat(int(fd))
+            usable = True
+        except (ValueError, OSError):
+            pass
+    with open({str(log)!r}, 'a') as stream:
+        stream.write(f'{{usable}}\\n')
+os.execv('/usr/bin/g++', ['/usr/bin/g++', *args])
+''')
+        wrapper.chmod(0o755)
+        self.compiler = str(wrapper)
+        self.make('-j2', 'fast')
+        self.assertEqual(log.read_text().split(), ['True'])
+        # The mark must not make -n, -q or -t run the link.
+        binary = Path(self.paths('BUILD_MODE=fast')['binary'])
+        binary.unlink()
+        for flag in ('-n', '-q', '-t'):
+            self.make(flag, '-j2', 'fast', ok=flag != '-q')
+            self.assertEqual(log.read_text().split(), ['True'], flag)
+        self.assertFalse(binary.exists() and binary.stat().st_size)
+
     def test_alias_switch_back_to_existing_mode(self):
         self.make('all')
         self.make('all', 'BUILD_MODE=fast')

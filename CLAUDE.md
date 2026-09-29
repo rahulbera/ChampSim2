@@ -47,7 +47,10 @@ links with LTO; and with GCC 11+ fast uses a PGO profile from `pgo/` when one ma
 `auto`, which adds `-flto=auto` to fast's compile options and `-O3 -g3 -flto=auto`
 to its link, since link-time optimization sees none of the compile options. That
 measured +2.9-4.6% KIPS on the three v2 protected traces and +8.6% on mcf (legacy
-DRAM; +1.7-4.7% native; [LTO/PGO log](docs/research-log/Performance/2026-09-27-lto-pgo.md)). `LTO=0` builds fast without it. `LTO=1` insists, and is
+DRAM; +1.7-4.7% native; [LTO/PGO log](docs/research-log/Performance/2026-09-27-lto-pgo.md)). `LTO=0` builds fast without it.
+The link recipe carries make's `+` mark (except under `-n`/`-q`/`-t`), because `-flto=auto`
+keeps to `-j` only through make's jobserver: unmarked, GCC started one LTO job per CPU, 48 on
+the shared kratos2 login node under `make -j8`. `LTO=1` insists, and is
 refused outside fast or with Clang, which is not validated: Clang 12 rejects
 `-flto=auto`, and Clang's bitcode links only through lld or the LLVMgold plugin, so
 Clang fast builds get no LTO. `--build-info` records the outcome as `lto`. With
