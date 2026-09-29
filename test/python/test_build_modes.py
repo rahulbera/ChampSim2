@@ -169,7 +169,10 @@ int main() {
         plan = {'schema_version': 1, 'warmup_instructions': 10, 'simulation_instructions': 20,
                 'runs': [{'trace': 'one.champsimtrace', 'trace_version': 1, 'configs': ['probe.toml']}]}
         (self.root / 'plan.json').write_text(json.dumps(plan))
-        self.make('pgo-train', f'TRACE_ROOT={traces}', 'PGO_TRAIN=plan.json')
+        result = self.make('-j2', 'pgo-train', f'TRACE_ROOT={traces}', 'PGO_TRAIN=plan.json')
+        # pgo.py's builds must join make's jobserver: cut off from it they build with -j1, and
+        # GCC's -flto=auto falls back to one LTO job per CPU.
+        self.assertNotIn('jobserver unavailable', result.stdout + result.stderr)
         return self.root / 'pgo/legacy-dram' / f'gcc-{self.gcc_version()}'
 
     def test_pgo_train_writes_a_profile_that_fast_builds_use(self):

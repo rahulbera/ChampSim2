@@ -39,10 +39,26 @@ def make_flags():
     return words[0] if words and not words[0].startswith('-') and '=' not in words[0] else ''
 
 
+def jobserver_fds():
+    """The pipe through which the parent make shares its job slots (GNU make before 4.4)."""
+    match = re.search(r'--jobserver-(?:auth|fds)=(\d+),(\d+)', os.environ.get('MAKEFLAGS', ''))
+    if not match:
+        return ()
+    fds = tuple(int(fd) for fd in match.groups())
+    try:
+        for fd in fds:
+            os.fstat(fd)
+    except OSError:  # started from a recipe without '+': the pipe is closed
+        return ()
+    return fds
+
+
 def make(*args):
     # The recipe's '+' passes the jobserver; without one (make run without -j), build in parallel anyway.
     jobs = [] if '--jobserver' in os.environ.get('MAKEFLAGS', '') else [f'-j{os.cpu_count()}']
-    subprocess.run(['make', '--no-print-directory', *jobs, *args], check=True)
+    # subprocess closes inherited descriptors, which would cut the child make off from the
+    # jobserver: it then builds with -j1, and GCC's -flto=auto starts one LTO job per CPU.
+    subprocess.run(['make', '--no-print-directory', *jobs, *args], check=True, pass_fds=jobserver_fds())
 
 
 def build_paths(*args):
