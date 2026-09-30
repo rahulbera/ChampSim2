@@ -19,6 +19,7 @@ pgo/
 
 - **One profile per DRAM model.** `legacy-dram` is used by builds with `WITH_RAMULATOR2=0`, and
   `ramulator2` by builds with `WITH_RAMULATOR2=1`. Each is trained only on its own backend.
+  The native backend requires GCC 13, so a `ramulator2` profile only exists for GCC 13 versions.
 - **One profile per exact GCC `major.minor`.** GCC ignores profile data written by any other
   version (the files are stamped, `B33*` for 13.3). A cluster that builds with GCC 11 needs a
   profile trained with that GCC 11.
