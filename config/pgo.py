@@ -158,6 +158,24 @@ def train(args):
     print(f'pgo-train: wrote {destination} ({len(files)} profile files, GCC {version}, {dram}); review and commit it', flush=True)
 
 
+def native_config_overlay(configs, work):
+    """compare_optimization.py runs each simulation in its own directory, but ramulator2.config names
+    the YAML relative to the process working directory. Training runs from the source root, so give
+    the checks the same file through an overlay holding its absolute path. Returns [] or [overlay]."""
+    import tomllib  # Python 3.11+, which the check's harness needs anyway
+    value = None
+    for config in configs:
+        data = tomllib.loads(Path(config).read_text())
+        if 'schema_version' in data.get('meta', {}):  # a statistics document: its [config] is the source
+            data = data.get('config', {})
+        value = data.get('ramulator2', {}).get('config', value)
+    if value is None or Path(value).is_absolute():
+        return []
+    overlay = work / f'ramulator2-config-{hashlib.sha256(value.encode()).hexdigest()[:12]}.toml'
+    overlay.write_text(f'[ramulator2]\nconfig = {json.dumps(str(Path(value).resolve()))}\n')
+    return [str(overlay)]
+
+
 def check(args):
     dram = 'ramulator2' if args.native == '1' else 'legacy-dram'
     plan_path = Path(args.plan or f'pgo/check-{dram}.json')
@@ -180,6 +198,7 @@ def check(args):
                    '--instructions', str(plan['simulation_instructions']), '--repetitions', str(args.repetitions)]
         command += sum((['--config', str(Path(c).resolve())] for c in run.get('configs', [])), [])
         if dram == 'ramulator2':
+            command += sum((['--config', c] for c in native_config_overlay(run.get('configs', []), work)), [])
             command += ['--dram-model', 'ramulator2']
         with (work / f'{name}.log').open('w') as stream:
             result = subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT)
