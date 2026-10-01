@@ -28,19 +28,19 @@ TEST_CASE("Execution timestamps only its own loads and stores in either phase")
     target.destination_memory = {champsim::address{0x6000}, champsim::address{0x7000}};
   }
   cpu.do_memory_scheduling(target);
-  REQUIRE(std::count_if(std::begin(cpu.LQ), std::end(cpu.LQ), [](const auto& entry) { return entry.has_value(); }) == 1 + (has_loads ? 2 : 0));
-  REQUIRE(cpu.SQ.size() == 1u + (has_stores ? 2u : 0u));
+  REQUIRE(std::count_if(std::begin(cpu.ctx().LQ), std::end(cpu.ctx().LQ), [](const auto& entry) { return entry.has_value(); }) == 1 + (has_loads ? 2 : 0));
+  REQUIRE(cpu.ctx().SQ.size() == 1u + (has_stores ? 2u : 0u));
 
   cpu.do_execution(target);
   const auto ready = cpu.current_time + (warmup ? champsim::chrono::clock::duration{} : cpu.EXEC_LATENCY);
   CHECK(target.executed);
   CHECK(target.ready_time == ready);
-  for (const auto& entry : cpu.LQ) {
+  for (const auto& entry : cpu.ctx().LQ) {
     if (entry) {
       CHECK(entry->ready_time == (entry->instr_id == target.instr_id ? ready : champsim::chrono::clock::time_point::max()));
     }
   }
-  for (const auto& entry : cpu.SQ) {
+  for (const auto& entry : cpu.ctx().SQ) {
     CHECK(entry.ready_time == (entry.instr_id == target.instr_id ? ready : champsim::chrono::clock::time_point::max()));
   }
 }

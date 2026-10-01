@@ -33,8 +33,8 @@ struct phase_environment : champsim::environment {
       const auto tick = current_time.time_since_epoch().count();
       env.operations.emplace_back(id, tick);
       if (id == 'F') {
-        ++env.first.num_retired;
-        env.second.num_retired += (tick % 2 == 0);
+        ++env.first.ctx().num_retired;
+        env.second.ctx().num_retired += (tick % 2 == 0);
         env.first.current_time = env.second.current_time = current_time;
       }
       return 1;
@@ -100,6 +100,6 @@ TEST_CASE("A trace reaching EOF completes every remaining CPU on that tick")
   CHECK(env.endings == expected_endings);
   CHECK(env.first.sim_instr() == 1);
   CHECK(env.second.sim_instr() == 0);
-  CHECK(env.first.input_queue.size() == 1);
-  CHECK(env.second.input_queue.empty());
+  CHECK(env.first.ctx().input_queue.size() == 1);
+  CHECK(env.second.ctx().input_queue.empty());
 }

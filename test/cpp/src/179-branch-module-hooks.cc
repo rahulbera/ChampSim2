@@ -114,7 +114,7 @@ TEST_CASE("A branch predictor is notified when a branch completes execution")
   instr.executed = true;
   instr.completed = false;
   instr.ready_time = champsim::chrono::clock::time_point{};
-  uut.ROB.push_back(instr);
+  uut.ctx().ROB.push_back(instr);
 
   for (auto op : std::array<champsim::operable*, 3>{{&uut, &mock_L1I, &mock_L1D}}) {
     op->_operate();
@@ -144,7 +144,7 @@ TEST_CASE("A non-branch instruction does not trigger the execute-resolve hook")
   instr.executed = true;
   instr.completed = false;
   instr.ready_time = champsim::chrono::clock::time_point{};
-  uut.ROB.push_back(instr);
+  uut.ctx().ROB.push_back(instr);
 
   for (auto op : std::array<champsim::operable*, 3>{{&uut, &mock_L1I, &mock_L1D}}) {
     op->_operate();

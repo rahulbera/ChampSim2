@@ -107,11 +107,11 @@ void cbp6_runlts_norv::last_branch_result(champsim::address ip, champsim::addres
   // path, where ChampSim has already handed us the true direction and target;
   // reading ahead at prediction time would be a causality violation.
   champsim::address next_pc = branch_target;
-  if (intern_ != nullptr && std::size(intern_->input_queue) > 1) {
-    next_pc = std::next(std::begin(intern_->input_queue))->ip;
+  if (intern_ != nullptr && std::size(intern_->ctx().input_queue) > 1) {
+    next_pc = std::next(std::begin(intern_->ctx().input_queue))->ip;
   }
 
-  const auto instr_id = (intern_ != nullptr && !std::empty(intern_->input_queue)) ? intern_->input_queue.front().instr_id : 0;
+  const auto instr_id = (intern_ != nullptr && !std::empty(intern_->ctx().input_queue)) ? intern_->ctx().input_queue.front().instr_id : 0;
   shared_host().resolve(ip, taken, branch_type, next_pc, intern_ == nullptr || !intern_->warmup, instr_id);
 }
 
@@ -119,7 +119,7 @@ void cbp6_runlts_norv::branch_predictor_final_stats()
 {
   // ROI instruction count, so the reported MPKI matches the window ChampSim
   // reports its own statistics over.
-  const auto roi_instructions = (intern_ != nullptr) ? intern_->roi_stats.instrs() : 0ULL;
+  const auto roi_instructions = (intern_ != nullptr) ? intern_->ctx().roi_stats.instrs() : 0ULL;
   shared_host().finish(static_cast<uint64_t>(roi_instructions));
 }
 
