@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "warmup_instructions": 5000000,
+  "simulation_instructions": 10000000,
+  "runs": [
+    {
+      "trace": "version2.1/spec26/706.stockfish_r.sp0.champsim2.zst",
+      "trace_version": 2,
+      "configs": [
+        "configs/lnc.toml",
+        "configs/ramulator2.toml"
+      ]
+    },
+    {
+      "trace": "version2.1/spec26/714.cpython_r.sp0.champsim2.zst",
+      "trace_version": 2,
+      "configs": [
+        "configs/lnc.toml",
+        "configs/ramulator2.toml"
+      ]
+    },
+    {
+      "trace": "version2.1/spec26/723.llvm_r.sp1.champsim2.zst",
+      "trace_version": 2,
+      "configs": [
+        "configs/lnc.toml",
+        "configs/ramulator2.toml"
+      ]
+    },
+    {
+      "trace": "version2.1/spec26/735.gem5_r.sp1.champsim2.zst",
+      "trace_version": 2,
+      "configs": [
+        "configs/lnc.toml",
+        "configs/ramulator2.toml"
+      ]
+    },
+    {
+      "trace": "version2.1/spec26/753.ns3_r.sp0.champsim2.zst",
+      "trace_version": 2,
+      "configs": [
+        "configs/lnc.toml",
+        "configs/ramulator2.toml"
+      ]
+    },
+    {
+      "trace": "version2.1/spec26/777.zstd_r.sp0.champsim2.zst",
+      "trace_version": 2,
+      "configs": [
+        "configs/lnc.toml",
+        "configs/ramulator2.toml"
+      ]
+    },
+    {
+      "trace": "version1/spec17/607.cactuBSSN_s-2421B.champsimtrace.xz",
+      "trace_version": 1,
+      "configs": [
+        "configs/lnc.toml",
+        "configs/ramulator2.toml"
+      ]
+    },
+    {
+      "trace": "version1/gap/bfs-10.trace.gz",
+      "trace_version": 1,
+      "configs": [
+        "configs/lnc.toml",
+        "configs/ramulator2.toml"
+      ]
+    },
+    {
+      "trace": "version1/spec17/654.roms_s-1390B.champsimtrace.xz",
+      "trace_version": 1,
+      "configs": [
+        "configs/lnc.toml",
+        "configs/ramulator2.toml"
+      ]
+    },
+    {
+      "trace": "version2.1/spec26/723.llvm_r.sp1.champsim2.zst",
+      "trace_version": 2,
+      "configs": [
+        "pgo/train-modules.toml",
+        "configs/ramulator2.toml"
+      ]
+    }
+  ]
+}
