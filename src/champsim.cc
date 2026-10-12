@@ -41,8 +41,8 @@ namespace champsim
 long do_cycle(std::vector<std::reference_wrapper<operable>>& operables, const std::vector<std::reference_wrapper<O3_CPU>>& cpus,
               std::vector<tracereader>& traces, const std::vector<std::vector<std::size_t>>& trace_index, champsim::chrono::clock& global_clock)
 {
-  std::sort(std::begin(operables), std::end(operables),
-            [](const champsim::operable& lhs, const champsim::operable& rhs) { return lhs.current_time < rhs.current_time; });
+  std::stable_sort(std::begin(operables), std::end(operables),
+                   [](const champsim::operable& lhs, const champsim::operable& rhs) { return lhs.current_time < rhs.current_time; });
 
   // Operate
   long progress{0};
