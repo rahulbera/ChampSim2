@@ -35,33 +35,46 @@ static_assert(impl_type::storage_bits == static_cast<long>(7 + 1) * (1L << 9) * 
 
 // Static storage duration, as with the CBP6 tenants: the vendored predictor's
 // initialisation is not guaranteed to write every member, and static storage is
-// zero-initialised before construction. One independent predictor per hardware
-// context; the array stays function-local (rather than a member) so every element
-// still gets that zero-init-before-construct treatment.
-std::array<impl_type, champsim::defs::max_contexts>& shared()
+// zero-initialised before construction. One independent predictor per
+// (core, context): the outer dimension is defs::num_cpus so core N's slot N is
+// never shared with core M's slot N (Stage 6 hazard B -- the old context-only
+// keying aliased ctx0 across cores). The array stays function-local (rather
+// than a member) so every element still gets zero-init-before-construct.
+std::array<std::array<impl_type, champsim::defs::max_contexts>, champsim::defs::num_cpus>& shared()
 {
-  static std::array<impl_type, champsim::defs::max_contexts> instances;
+  static std::array<std::array<impl_type, champsim::defs::max_contexts>, champsim::defs::num_cpus> instances;
   return instances;
+}
+
+// Null-safe core index: tests drive this module without a bound core
+// (intern_ == nullptr; see test/cpp/src/186-module-per-context-isolation.cc).
+// Those always target core 0. In production every module instance is bound to
+// exactly one O3_CPU by the environment.
+std::size_t core_of(const O3_CPU* cpu)
+{
+  return cpu == nullptr ? 0 : cpu->cpu;
 }
 } // namespace
 
 void ittage_32kb::configure(const champsim::runtime_config& cfg, std::string_view prefix)
 {
-  for (auto& inst : shared())
-    inst.configure_direct(cfg, prefix);
+  for (auto& per_core : shared())
+    for (auto& inst : per_core)
+      inst.configure_direct(cfg, prefix);
 }
 
 void ittage_32kb::initialize_btb()
 {
   // initialize() is a no-op today, but run it per context so any future
   // per-instance initialisation stays correct.
-  for (auto& inst : shared())
-    inst.initialize();
+  for (auto& per_core : shared())
+    for (auto& inst : per_core)
+      inst.initialize();
 }
 
 std::pair<champsim::address, bool> ittage_32kb::btb_prediction(champsim::address ip, champsim::context_index context, champsim::address_space_id asid)
 {
-  return shared()[context.value].prediction(ip, asid);
+  return shared()[core_of(intern_)][context.value].prediction(ip, asid);
 }
 
 void ittage_32kb::update_btb(champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type, champsim::context_index context,
@@ -79,5 +92,5 @@ void ittage_32kb::update_btb(champsim::address ip, champsim::address branch_targ
     next_pc = std::next(std::begin(intern_->contexts[context.value].input_queue))->ip;
   }
 
-  shared()[context.value].update(ip, branch_target, branch_type, next_pc, asid);
+  shared()[core_of(intern_)][context.value].update(ip, branch_target, branch_type, next_pc, asid);
 }

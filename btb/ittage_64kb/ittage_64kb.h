@@ -29,8 +29,8 @@ public:
   ittage_64kb() : btb(nullptr) {}
 
   // ITTAGE's vendored predictor relies on static zero-initialisation, so the
-  // per-context storage is a function-local static array rather than a member
-  // (see the .cc). The capability advertises per-context isolation.
+  // per-(core, context) storage is a function-local static array rather than a
+  // member (see the .cc). The capability advertises per-context isolation.
   static constexpr champsim::modules::smt_capability capability = champsim::modules::smt_capability::per_context;
 
   // Only the direct predictor is settable; this module's own tables are
