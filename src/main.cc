@@ -369,6 +369,11 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 
   try {
     std::vector<champsim::tracereader> traces;
+    // repeat = simulation_given ties rewind to -i/--simulation-instructions by
+    // design: a short trace loops until the instruction count is met. That is
+    // the -i contract, not a defect, so it is left unguarded. An empty trace
+    // under -i therefore rewinds without progress (a user error, out of scope);
+    // see the stage 6 summary for the recorded boundary.
     std::transform(std::begin(trace_names), std::end(trace_names), std::back_inserter(traces),
                    [knob_cloudsuite, trace_version, repeat = simulation_given, i = uint8_t(0)](auto name) mutable {
                      return get_tracereader(name, i++, knob_cloudsuite, repeat, trace_version);
