@@ -25,6 +25,8 @@ struct fixed_ptw_fixture {
     cfg.set("vmem.randomization=false");
     cfg.set("vmem.minor_fault_penalty=9999");
     cfg.set("ptw.cpu0_ptw.model=fixed");
+    cfg.set("ptw.cpu1_ptw.model=fixed"); // both PTWs fixed -> no CR3 page allocated, so the
+                                         // first data page stays 0x100000 (asserted below)
     for (auto value : overrides) {
       cfg.set(value);
     }
