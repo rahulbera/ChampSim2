@@ -20,7 +20,7 @@ namespace champsim::defs
 {
 // One binary per core count: multi-core development follows single-core
 // iteration, so this is deliberately not a runtime knob.
-inline constexpr std::size_t num_cpus = 1;
+inline constexpr std::size_t num_cpus = 2;
 
 // The compile-time bound on hardware contexts per core (SMT threads). Stage 3
 // replicates per-context module state in arrays of this size, and the
