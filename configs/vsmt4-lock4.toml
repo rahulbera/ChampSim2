@@ -1,0 +1,26 @@
+# vSMT4 V0 lock 4: single-core dual-context (N=2) fotonik3d x2.
+#
+# Overlay on configs/sample.toml. --config may repeat and is applied in
+# command-line order (last definition of a key wins), so apply this AFTER
+# sample.toml:
+#
+#   ./bin/champsim --config configs/sample.toml --config configs/vsmt4-lock4.toml \
+#     --trace-version=1 -w 1000000 -i 3000000 \
+#     -- TRACE TRACE
+#
+# (Equivalent to sample.toml + `--set ooo_cpu.cpu0.num_contexts=2`; this file
+# just makes the lock reproducible from the repo without a --set.)
+#
+# Config symmetry: on a num_cpus=1 build both hardware contexts share the single
+# [ooo_cpu.cpu0] section -- there is no [ooo_cpu.cpu1], so there is no cpu1
+# fallback-to-default skew of the kind Stage 6 found on num_cpus=2. num_contexts
+# is the only knob lock 4 adds beyond sample.toml.
+#
+# Physical addresses: identical across the two contexts by design -- the same
+# trace is replayed twice and translated through one shared PTW/vmem, so both
+# threads walk the same VA->PA mapping. This is the same-program two-thread lock
+# (shared-structure interleaving), NOT a multi-program contention lock, so the
+# Stage 6 "non-overlapping physical addresses" red-line does not apply here.
+
+[ooo_cpu.cpu0]
+num_contexts = 2
