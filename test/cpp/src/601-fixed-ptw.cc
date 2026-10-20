@@ -4,6 +4,7 @@
 #include <memory>
 #include <string_view>
 
+#include "defs.h" // champsim::defs::num_cpus
 #include "static_environment.h"
 #include "vmem.h"
 
@@ -66,6 +67,9 @@ struct fixed_ptw_fixture {
 
 TEST_CASE("Fixed PTW completes after 200 CPU cycles without lower-level traffic", "[fixed-ptw]")
 {
+  if constexpr (champsim::defs::num_cpus < 2) {
+    SKIP("requires num_cpus >= 2");
+  }
   fixed_ptw_fixture f;
   f.issue();
   f.tick(); // Admission at 250 ps; deadline 50,250 ps.
@@ -198,6 +202,9 @@ TEST_CASE("Fixed PTW rejects invalid configuration before running", "[fixed-ptw]
 
 TEST_CASE("Detailed PTW does not silently consume the inactive fixed-latency setting", "[fixed-ptw]")
 {
+  if constexpr (champsim::defs::num_cpus < 2) {
+    SKIP("requires num_cpus >= 2");
+  }
   fixed_ptw_fixture f{"ptw.cpu0_ptw.model=detailed", "ptw.cpu0_ptw.fixed_latency=200"};
   const auto unused = f.cfg.unconsulted_keys();
   REQUIRE(unused.size() == 1);

@@ -1,11 +1,15 @@
 #include <catch.hpp>
 #include <memory>
 
+#include "defs.h" // champsim::defs::num_cpus
 #include "static_environment.h"
 #include "vmem.h"
 
 TEST_CASE("Multicore detailed PTW separates per-ASID pages and shares only the CR3 root", "[ptw-multicore]")
 {
+  if constexpr (champsim::defs::num_cpus < 2) {
+    SKIP("requires num_cpus >= 2");
+  }
   // 6.5a verdict on the third 6.4 debt: under two-core DETAILED mode the two
   // PTWs do NOT displace each other's PTE/data pages -- those are keyed by the
   // REQUEST ASID ({0,0} vs {1,1}) -- but they DO share one CR3 root, because

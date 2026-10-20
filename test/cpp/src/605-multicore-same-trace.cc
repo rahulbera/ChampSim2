@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "champsim.h"
+#include "defs.h" // champsim::defs::num_cpus
 #include "instruction.h"
 #include "operable.h"
 #include "static_environment.h"
@@ -36,6 +37,9 @@ constexpr champsim::address load_vaddr{0x12345000};
 // mode is a missing coherence protocol, not a checkable invariant here.
 TEST_CASE("Two cores running the same trace land in non-overlapping physical pages", "[multicore]")
 {
+  if constexpr (champsim::defs::num_cpus < 2) {
+    SKIP("requires num_cpus >= 2");
+  }
   champsim::runtime_config cfg;
   cfg.set("dram-model=legacy");
   cfg.set("pmem.bank_rows=64");
