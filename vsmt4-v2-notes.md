@@ -111,4 +111,102 @@ per-context 定额：
 `8dcc3227...`（与 equal 基线逐位一致），IPC 2.34，stderr 0 次断言。**active 模式在
 N=1 下逐位等于 equal**。
 
+---
+
+## 3. V2.3 锁复跑（V2.2 后立即，协议见 V2 开工指令）
+
+口径：锁文件 `$HOME/SMT-experiment/stage1/vsmt4-v2.3/`。归一化 sha = stdout
+`grep -vE 'Simulation time:| runs /|\.champsimtrace'` 后 `sha256sum`。二进制 = V2.2
+（`23e974f0`），跑 N=4 前已回退 TEMP active-transition dump、重建至干净态。
+
+### 3.1 三把 N=1 锁（逐位，PASS）
+
+| 锁 | sha256（norm） | 判定 |
+|---|---|---|
+| 锁 1 baseline | `8dcc32274d22bdbfc687873ce9a30654dd81bd3694a1f8d2f613bdc2202094f6` | 逐位一致 |
+| 锁 2 prf64 | `9bb10576f07f5e12983d7711a01ad2811be871b9f76b9f155ce46986a659ea56` | 逐位一致 |
+| 锁 3 sched64 | `8dcc32274d22bdbfc687873ce9a30654dd81bd3694a1f8d2f613bdc2202094f6` | 逐位一致 |
+
+与 V1 基线（`vsmt4-v1-summary.md` §1）逐位相同。active 模式在 N=1 下退化为
+`ROB_SIZE/1`，三个锁全部复现 V1 值。
+
+### 3.2 锁 4（N=2 fotonik3d×2）三项协议
+
+| 协议 | 结果 | 判定 |
+|---|---|---|
+| ① ×2 确定性 | `ca19795f57b008f4cab12a55e6bcb0adcec1fc996007bfe02836af7bec7c9491` ×2 | PASS（逐位） |
+| ② 全跑 sha vs V1 | `ca19795f...` ≠ V1 `71b7dd7a...`；equal 对照 = `71b7dd7a...`（逐位复现 V1） | 变化确属 active，见下 |
+| ③ 稳态共驻窗口 IPC | active=2 段分母恒 256 = equal 定额，行为逐位同 V1 | 模型级 PASS，见下 |
+
+**①** 两跑逐位一致（`lock4-run1.norm` == `lock4-run2.norm`）。
+
+**②** 变化量：cycles 2828581 → **2826242**（**−0.083%**），ctx1 指令 3014764 →
+3002387。equal 对照（当前二进制 `rob_partition=equal`）归一化 sha =
+`71b7dd7a172c1f38849d84fc36b2ae8c7d479773a87b781906f06a2020eea77d`，**逐位复现 V1
+值**，证明变化**唯一**来自 `active` 分母。断言（`rob_occupied() <= ROB_SIZE`）全程
+0 触发。
+
+**② 的关键偏差（对 V1.5 存档的修正）**：锁 4 协议②假定「对照 V1.5 存档：稳态
+299/340 采样恒 2、尾部 drain 掉 1→0」，即 active<2 只在尾部。**per-change dump
+推翻了这一前提**。`lock4-active-dump` 全程逐变化点记录 active，ROI 内统计：
+
+| 量 | 值 |
+|---|---|
+| ROI cycles（active 跑） | 2826242 |
+| active<2 区间数（ROI 内） | 118 770 |
+| active<2 总周期 | 512 196（**~18.1%** of ROI） |
+| 区间时长 min / median / mean / max | 1 / 4 / 4.3 / 169 |
+| ≤5 cycle（瞬时抖动） | 90 042 段 |
+| 6–50 cycle | 28 720 段 |
+| >50 cycle | 8 段 |
+| 落在 ROI 末 10% 的 active<2 | 48 499（仅 **9.5%**） |
+
+active<2 占总 ROI **18%** 且**贯穿全程**（末 10% 只占 9.5% ≈ 均匀分布，**非尾
+concentrated**），是 ~11.9 万段 median 4 cycle 的**前端 stall 瞬抖**，不是「尾部
+drain」。V1.5 存档的「稳态恒 2、尾部掉 1」是 **10K 周期采样伪像**：median 4 cycle
+的掉档在 10K 采样下命中率 ≈ 4/10000，全程不可见；只有尾部掉档变长（8 段 >50
+cycle，最长 169）才被采样撞见。所以**弹性在 ROI 全程被反复（短暂）触发**，非仅
+尾部。
+
+**③** 模型级验证：`rob_capacity()` 在 `active=2` 时 = `ROB_SIZE/2 = 256`，与 equal
+定额逐位同值；故 active=2 的周期里分母不变、行为与 V1 逐位相同（equal 对照已证
+V2 二进制在 equal 路径逐位 = V1）。变化**全部**源于 active<2 周期（分母 512≠256）。
+注意：active<2 的**第一段在暖机期就出现**（cycle 2355 active=1，全跑第 3 条
+transition；暖机止于 ~572871），故 V1/V2 在暖机期即播种分叉、进 ROI 前已非逐位；
+ROI 内首个 active<2 是 572887（ROI 起 16 cycle）。分叉后即使回到 active=2，轨迹也
+因早前弹性微扰级联偏移；故「稳态 IPC 与 V1 逐位一致」只在**首个 active<2（暖机
+2355）之前的共驻前缀**严格成立，其后是 ≈0.08% 量级的级联差，非逐位。
+
+### 3.3 N=4 前后对比（equal V1.6 vs active，同 config）
+
+| config | 指标 | equal（V1.6） | active（V2.2） | Δ |
+|---|---|---|---|---|
+| fotonik3d×4 | cycles | 4 889 832 | 4 886 027 | **−0.078%** |
+| fotonik3d×4 | 合计 IPC | 2.458 | 2.459 | ~0 |
+| hetero×4 | cycles | 8 137 219 | 8 404 813 | **+3.29%** |
+| hetero×4 | 合计 IPC | 1.895 | 1.850 | **−2.4%** |
+
+**fotonik×4（同构）**：cycles −0.08%，中性。4 槽同 trace 近同步，掉档对称、回填
+快，弹性微扰净趋零。
+
+**hetero×4（异构）**：**回退 +3.29% cycles / −2.4% IPC**。per-context IPC：sqlite
+0.3687→0.3569（−3.2%）、omnetpp 0.3762→0.3588（−4.6%）、llvm 0.4214→0.4050（
+−3.9%）、**vpr 0.7287→0.7295（≈0）**。三个慢线程集体掉 3–5%，快线程 vpr 纹丝不动
+——正是**再入场饥饿**（re-entry starvation）签名：弹性分母撤销了每线程**保底定额**
+（equal 每槽恒 128），active 掉档时存活线程吃满 `ROB_SIZE/active`（如 active=3 →
+各 170，Σ=510），第 4 个线程掉档后回填时只剩 2 个空位（门② `rob_occupied() <
+ROB_SIZE` 卡死），直到有存活线程退休腾位；慢线程（内存 stall 频繁 → 频繁掉档）最
+先被饿，快线程 vpr 全程吃饱。这是 V2 开工指令 V2.2「风险：活跃数抖动 → 容量抖动，
+去抖属 V3、V2 先记录不处理」的**量化落地**，非 bug，不顺手修。
+
+### 3.4 V2.3 结论
+
+1. 三锁逐位 PASS，锁 4 确定性 PASS，equal 对照逐位复现 V1 → **active 是唯一变化源
+   、N=1/N=2 稳态零回归**。
+2. 锁 4 变化 −0.08%，N=4 同构 −0.08%，量级一致且近零：**满负荷共驻下弹性近中性**。
+3. **异构满负荷回退 +3.3%**：弹性撤销保底定额 + 门② → 掉档线程再入场饥饿。这是
+   V2 规格已预告的「抖动容量」现象，去抖（V3）前就是这个代价；也是 V2.4 欠载验收
+   的关键对照——**满负荷短抖是弹性的代价区，持续欠载才是弹性的收益区**（V2.4 用截
+   短 trace 制造持续欠载去测收益）。
+
 
