@@ -86,6 +86,15 @@ public:
   // vector growth cannot leave a stale reference behind.
   std::vector<champsim::core_context> contexts;
 
+  // V1.5 buried SMT-shape telemetry. `mode` is the static context count this core
+  // was built with (= num_contexts); `active` is the per-cycle count of contexts
+  // whose ROB is non-empty. BURIED: no resource-allocation formula reads either
+  // yet -- they are dead data until V2 wires `active` into the shared-budget
+  // denominators. Adding them is a pure add (zero behavior): the three N=1 locks
+  // and lock 4 must stay byte-identical.
+  const std::size_t mode;
+  std::size_t active = 0;
+
   // Front-end arbitration state (Stage 3.4). `fetch_round_robin` picks which
   // context a shared front-end width serves first this cycle (fetch/decode/DIB);
   // `dispatch_owner` names the context that owns the dispatch round. Both advance
@@ -325,6 +334,7 @@ public:
         cpu(b.m_cpu),
         shared_prf(std::make_unique<RegisterAllocator>(b.m_register_file_size)),
         contexts(b.m_num_contexts, champsim::core_context{shared_prf.get(), b.m_lq_size, b.m_dib_set, b.m_dib_way, b.m_dib_window}),
+        mode(b.m_num_contexts),
         IFETCH_BUFFER_SIZE(b.m_ifetch_buffer_size), DISPATCH_BUFFER_SIZE(b.m_dispatch_buffer_size), DECODE_BUFFER_SIZE(b.m_decode_buffer_size),
         REGISTER_FILE_SIZE(b.m_register_file_size), ROB_SIZE(b.m_rob_size), SQ_SIZE(b.m_sq_size), DIB_HIT_BUFFER_SIZE(b.m_dib_hit_buffer_size),
         rob_partition_(b.m_rob_partition),

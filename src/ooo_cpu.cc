@@ -61,6 +61,10 @@ long O3_CPU::operate()
   dispatch_owner = (dispatch_owner + 1) % contexts.size();
   backend_round_robin = (backend_round_robin + 1) % contexts.size();
 
+  // V1.5: refresh the buried `active` telemetry (contexts with a live ROB). Pure
+  // add -- nothing downstream reads it yet, so this changes no behavior.
+  active = static_cast<std::size_t>(std::count_if(std::begin(contexts), std::end(contexts), [](const champsim::core_context& c) { return !c.ROB.empty(); }));
+
   return progress;
 }
 
