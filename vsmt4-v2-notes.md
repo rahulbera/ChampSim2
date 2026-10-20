@@ -209,4 +209,83 @@ ROB_SIZE` 卡死），直到有存活线程退休腾位；慢线程（内存 sta
    的关键对照——**满负荷短抖是弹性的代价区，持续欠载才是弹性的收益区**（V2.4 用截
    短 trace 制造持续欠载去测收益）。
 
+---
+
+## 4. V2.4 欠载验收（截短 trace → EOF → 持续欠载）
+
+口径：`configs/sample.toml` + `configs/vsmt4-n4.toml`（num_contexts=4, prf=256,
+rob=512, rob_partition=active）+ `--set sim.trace_repeat=false`，`-w 1M -i 3M`，
+`--heartbeat-frequency 250000`。截短 trace = fotonik3d 前 2M 记录
+（`fotonik3d-2M.champsimtrace`，128 MB，暖机 1M + 量测 1M 后 EOF）。equal 对照 =
+`--set ooo_cpu.cpu0.rob_partition=equal`。
+
+前置改动：在 V2.2「本 Stage 唯一代码改动」之外新增一个**驱动级旋钮**
+`sim.trace_repeat`（默认 true = 现行 -i 回卷契约；false = 截短 trace EOF 掉干而非
+回卷）。这是 V2.4 制造持续欠载的前提——`-i` 与回卷耦合，截短 trace 没有它就回卷、
+永不到 EOF。零默认行为：N=1 baseline 锁复跑逐位一致（`8dcc3227...`）。属回传清单
+第 7 项偏差申报。
+
+### 4.1 参考点（单/双线程）
+
+| 参考 | 口径 | IPC |
+|---|---|---|
+| standalone prf256 | N=1 fotonik3d，rob512 | 2.65 |
+| standalone prf256 rob128 | N=1，ROB 定额 128 | 2.481 |
+| standalone prf128（baseline 锁） | N=1，默认 prf | 2.34 |
+| N=2 ref（co-fotonik-dual-v15） | fotonik3d×2 | ctx0 1.061 / ctx1 1.066（合计 2.127）|
+
+register-file 敏感度（N=1 fotonik3d 4M，rob512，`-w 1M -i 3M`）：prf
+48/64/96/128/192/256 → IPC 0.706/1.778/2.216/2.34/2.58/2.65。**fotonik3d 对 prf
+相当敏感，prf256 才饱和**——这是 4.5 根因分析的关键。
+
+### 4.2 场景 A（ctx0/1 full + ctx2/3 截短）
+
+| config | cycles | ctx0 / ctx1 / ctx2 / ctx3 IPC |
+|---|---|---|
+| equal | 3 667 043 | 0.9437 / 0.8181 / 0.2725 / 0.2721 |
+| active | 3 669 542（+0.068%） | 0.9464 / 0.8175 / 0.2725 / 0.2709 |
+
+尾部（两存活线程，active=2 → cap 256 = equal N=2 定额）：aggregate heartbeat IPC
+~2.13–2.22，per-thread ~1.1 ≈ N=2 ref 1.06（+3%）。**判 ② PASS**：欠载到 2 线程时
+尾部回涨到 N=2 参考水平，弹性与 equal 定额逐位同值（V2.3 §3.2 ③ 已证）。
+
+### 4.3 场景 B（ctx0 full + ctx1/2/3 截短）
+
+| config | cycles | ctx0（幸存）IPC |
+|---|---|---|
+| equal | 2 536 217 | 1.183 |
+| active | 2 536 393（+0.0069%） | 1.183 |
+| active prf512 | 2 399 218 | 1.25 |
+
+尾部幸存线程 heartbeat IPC（aggregate 8M→10M，只剩 ctx0）：**~2.2**（prf256）、
+**~2.44**（prf512），对照 standalone **2.65**。**判 ① FAIL**：幸存线程未达
+standalone，prf256 下差 ~17%、prf512 下仍差 ~8%。**equal 与 active 逐位一致
+（Δ<0.01%）**——弹性 ROB 对欠载幸存线程的吞吐**几乎零作用**。
+
+### 4.4 判 ④：容量 dump（active → cap）
+
+b-active stderr 全程逐变化点记录 `[CAP] cycle active cap`（TEMP 埋点，已回退）。
+unique (active,cap) 计数：`active=1 cap=512` ×11 673、`active=2 cap=256` ×40 850、
+`active=3 cap=170` ×101 766、`active=4 cap=128` ×69 761、`active=0 cap=512` ×4 560。
+**判 ④ PASS**：尾部明确出现 `active=1 cap=512`（ROB 分母确达 SIZE/1），弹性分母
+本身工作正常。
+
+### 4.5 结论：ROB 弹性必要但不充分（判 ① 失败根因）
+
+1. **分母侧（④）PASS、分子侧（①）FAIL**：ROB 容量确达 SIZE/1，但幸存线程吞吐
+   **未随之上涨**。欠载下 equal 与 active 逐位一致（Δ<0.01%），说明幸存线程的瓶颈
+   **不是 ROB**，而是另一个共享资源。
+2. **主因 = 寄存器堆粘滞**：`shared_prf` 共享池按「新写退休才释放」规则运行，线程
+   掉干（EOF）后**不再产生新写 → 其架构寄存器永不复用**。3 个死线程各自扣住其 prf
+   配额，幸存线程在 prf256 下只剩 ~115 可用寄存器。证据：prf512 把幸存尾部从 2.2
+   抬到 2.44。V2.2 §2.3 审计把寄存器堆记为「共享池 + 水位线守恒，不切分」，
+   **漏记了这条粘滞**——即回传清单第 6 项的「漏网刚性点」。
+3. **残余 ~8%（2.44 vs 2.65）**：prf512 下仍差 8%，归因于另一非弹性共享资源，最
+   可能是 4 路同 trace 共驻对共享 hashed_perceptron 的污染（perfect_branch 因
+   「namespace 全局态、单 core/context 专用」无法用于多 context 隔离验证）。
+4. **结论**：V2 只动 ROB 一变量，**POWER 14.2 欠载不坍缩（under-commit
+   non-collapse）没有复现**。欠载收益要求寄存器堆（以及可能的取指/预测仲裁）同样
+   弹性化——这正是 V5 推迟的范围，本次给出量化下限：**弹性 ROB 对欠载幸存线程的
+   吞吐贡献 ≈ 0**，收益被寄存器堆粘滞全部吃光。
+
 
