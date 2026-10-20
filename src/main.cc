@@ -193,6 +193,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   // anywhere is a clean diagnostic and exit 1, never an uncaught exception.
   champsim::simulation_knobs sim_knobs{};
   std::optional<configured_environment> built_environment{};
+  bool trace_repeat = true;
   try {
     // Heartbeat precedence: the explicit CLI flag beats the store, which
     // beats the configuration's baked default. positive_value gives the store
@@ -211,6 +212,11 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
       runtime_cfg.override_effective("sim.heartbeat_frequency", heartbeat_frequency);
     }
     sim_knobs.livelock_period = runtime_cfg.positive_value<uint64_t>("sim.livelock_period", sim_knobs.livelock_period);
+    // Default true = a trace rewinds at EOF under -i (the -i contract). False
+    // lets a truncated trace drain at EOF instead of looping, which V2.4 needs
+    // to build a real under-commit: a short trace must stop, not rewind.
+    // Consulted unconditionally so it never trips the unconsulted-key check.
+    trace_repeat = runtime_cfg.value<bool>("sim.trace_repeat", trace_repeat);
 
     built_environment.emplace(runtime_cfg);
     auto deadlock_default = sim_knobs.deadlock_cycle;
@@ -369,13 +375,15 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 
   try {
     std::vector<champsim::tracereader> traces;
-    // repeat = simulation_given ties rewind to -i/--simulation-instructions by
-    // design: a short trace loops until the instruction count is met. That is
-    // the -i contract, not a defect, so it is left unguarded. An empty trace
-    // under -i therefore rewinds without progress (a user error, out of scope);
-    // see the stage 6 summary for the recorded boundary.
+    // repeat ties trace rewind to -i/--simulation-instructions: a short trace
+    // loops until the instruction count is met, which is the -i contract, not
+    // a defect. sim.trace_repeat (default true) decouples the two so a run can
+    // let truncated traces drain at EOF instead of rewinding -- V2.4's
+    // under-commit scenario needs a real EOF, not a loop. An empty trace under
+    // -i with repeat on therefore rewinds without progress (a user error, out
+    // of scope); see the stage 6 summary for the recorded boundary.
     std::transform(std::begin(trace_names), std::end(trace_names), std::back_inserter(traces),
-                   [knob_cloudsuite, trace_version, repeat = simulation_given, i = uint8_t(0)](auto name) mutable {
+                   [knob_cloudsuite, trace_version, repeat = trace_repeat && simulation_given, i = uint8_t(0)](auto name) mutable {
                      return get_tracereader(name, i++, knob_cloudsuite, repeat, trace_version);
                    });
 
