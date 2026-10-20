@@ -25,8 +25,9 @@ inline constexpr std::size_t num_cpus = 1;
 // The compile-time bound on hardware contexts per core (SMT threads). Stage 3
 // replicates per-context module state in arrays of this size, and the
 // environment's module-selection guard refuses a core carrying more contexts
-// than this. Stage 3 targets dual-context; raise it before a wider-SMT build.
-inline constexpr std::size_t max_contexts = 2;
+// than this. Stage 3 targeted dual-context; vSMT4 V1 raises it to 4 for the
+// static four-slot machine (the 4 per-context arrays scale with this bound).
+inline constexpr std::size_t max_contexts = 4;
 
 inline constexpr std::size_t block_size = 64;
 inline constexpr std::size_t page_size = 4096;
