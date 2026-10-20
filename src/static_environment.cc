@@ -188,17 +188,22 @@ std::size_t configured_num_contexts(const champsim::runtime_config& cfg, const s
   return value;
 }
 
-// Stage 5.2b: the ROB partition policy is a parameter, but only `equal` is
-// implemented. A future dynamic-sharing value is refused loudly here rather than
-// silently treated as equal, so the one code path that maps the policy to a
-// quota (O3_CPU::rob_capacity) stays a single, obvious place to extend.
+// The ROB partition policy is a parameter with two values. `equal` is the rigid
+// Stage 5.2b split (rob_size / num_contexts); `active` is the V2 elastic split
+// (rob_size / max(1, active)) that reclaims an idle context's quota. Anything
+// else is refused loudly here rather than silently treated as equal, so the one
+// code path that maps the policy to a quota (O3_CPU::rob_capacity) stays a
+// single, obvious place to extend.
 champsim::rob_partition configured_rob_partition(const champsim::runtime_config& cfg, const std::string& key)
 {
   const auto value = cfg.value<std::string>(key, "equal");
   if (value == "equal") {
     return champsim::rob_partition::equal;
   }
-  throw std::runtime_error{"runtime config: " + key + " must be 'equal' (dynamic ROB sharing is not implemented)"};
+  if (value == "active") {
+    return champsim::rob_partition::active;
+  }
+  throw std::runtime_error{"runtime config: " + key + " must be 'equal' or 'active'"};
 }
 
 // The simulation's time quantum: do_phase() ticks the shared clock by the

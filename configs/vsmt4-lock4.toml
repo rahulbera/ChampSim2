@@ -24,3 +24,10 @@
 
 [ooo_cpu.cpu0]
 num_contexts = 2
+# V2.2: elastic ROB partition. Under `active` the steady co-resident window
+# (both contexts' ROB non-empty -> active = 2) gives rob_size/2, exactly the V1
+# equal quota, so steady-state two-context output must match the V1 lock-4 value.
+# The tail (one context drains -> active = 1) gains rob_size/1, the only region
+# where a V2 run may differ from the V1 (equal) sha. The V1 equal split is the
+# protected lock-4 baseline (tag vsmt4-v1, commit 82e0b223).
+rob_partition = "active"

@@ -61,9 +61,20 @@ long O3_CPU::operate()
   dispatch_owner = (dispatch_owner + 1) % contexts.size();
   backend_round_robin = (backend_round_robin + 1) % contexts.size();
 
-  // V1.5: refresh the buried `active` telemetry (contexts with a live ROB). Pure
-  // add -- nothing downstream reads it yet, so this changes no behavior.
+  // V1.5: refresh the buried `active` telemetry (contexts with a live ROB). V2.2
+  // now wires `active` into rob_capacity() under the `active` partition; the
+  // count is the end-of-cycle value, so the denominator lags dispatch by one cycle.
   active = static_cast<std::size_t>(std::count_if(std::begin(contexts), std::end(contexts), [](const champsim::core_context& c) { return !c.ROB.empty(); }));
+
+  // V2.2 total-capacity conservation invariant: the single ROB_SIZE budget is
+  // never exceeded. `equal` conserves it by fixed per-context quota, so the
+  // assertion is only meaningful (and only guaranteed) under `active`, where the
+  // aggregate dispatch gate (rob_occupied() < ROB_SIZE) is what holds it. It is
+  // scoped to `active` because unit tests legitimately inject ROB entries
+  // directly (past dispatch) with the builder's default rob_size, which the
+  // per-context quota cannot reflect. Over-capacity only ever stops new
+  // admission, never clears in-flight entries.
+  CHAMPSIM_ASSERT(rob_partition_ != champsim::rob_partition::active || rob_occupied() <= ROB_SIZE);
 
   return progress;
 }
@@ -553,18 +564,33 @@ void O3_CPU::do_dib_update(champsim::core_context& c, const ooo_model_instr& ins
 
 std::size_t O3_CPU::rob_capacity() const
 {
-  // Single entry point for the ROB partition policy. Only `equal` exists today:
-  // each context gets a fixed ROB_SIZE / num_contexts quota, so the aggregate
-  // in-flight ROB entries across contexts can never exceed the core's one
-  // ROB_SIZE budget (total-capacity conservation -- Stage 5.2b). With one
-  // context this is exactly ROB_SIZE, so single-context output is unchanged.
-  // A future dynamic-sharing policy (idle-quota reclamation, watermarks) plugs in
-  // here as a new champsim::rob_partition value and a new case, nowhere else.
+  // Single entry point for the ROB partition policy. `equal` (Stage 5.2b) grants
+  // each context a fixed ROB_SIZE / num_contexts quota, so the aggregate in-flight
+  // ROB entries across contexts can never exceed the core's one ROB_SIZE budget
+  // (total-capacity conservation). `active` (V2) is the elastic split: the quota
+  // follows the *actually active* context count (contexts with a non-empty ROB,
+  // refreshed at the end of operate()), reclaiming an idle context's quota so an
+  // under-committed run can push a surviving context's ROB toward the full budget.
+  // With one context both are exactly ROB_SIZE, so single-context output is
+  // unchanged.
   switch (rob_partition_) {
     case champsim::rob_partition::equal:
       return ROB_SIZE / contexts.size();
+    case champsim::rob_partition::active:
+      // max(1, ...) degenerates the N=1 case to ROB_SIZE/1 (the original formula)
+      // and guards the active == 0 instant before any context has dispatched.
+      return ROB_SIZE / std::max<std::size_t>(1, active);
   }
-  return ROB_SIZE; // unreachable: rob_partition_ is validated to `equal` at construction
+  return ROB_SIZE; // unreachable: rob_partition_ is validated at construction
+}
+
+std::size_t O3_CPU::rob_occupied() const
+{
+  std::size_t total = 0;
+  for (const auto& c : contexts) {
+    total += std::size(c.ROB);
+  }
+  return total;
 }
 
 long O3_CPU::dispatch_instruction()
@@ -595,6 +621,7 @@ long O3_CPU::dispatch_instruction_impl(champsim::core_context& c, champsim::band
 
   // dispatch DISPATCH_WIDTH instructions into the ROB
   while (dispatch_bw.has_remaining() && !std::empty(c.DISPATCH_BUFFER) && c.DISPATCH_BUFFER.front().ready_time <= current_time && std::size(c.ROB) != rob_capacity()
+         && rob_occupied() < ROB_SIZE
          && ((std::size_t)std::count_if(std::begin(c.LQ), std::end(c.LQ), [](const auto& lq_entry) { return !lq_entry.has_value(); })
              >= std::size(c.DISPATCH_BUFFER.front().source_memory))
          && ((std::size(c.DISPATCH_BUFFER.front().destination_memory) + std::size(c.SQ)) <= SQ_SIZE)) {

@@ -33,12 +33,20 @@ class core_builder_module_type_holder
 };
 
 // How a core's single ROB budget (rob_size) is divided among its hardware
-// contexts. Only `equal` is implemented: a fixed equal quota per context
-// (rob_size / num_contexts), the total-capacity-conserving baseline -- the
-// aggregate in-flight ROB entries across contexts can never exceed one rob_size
-// budget. Dynamic sharing (reclaiming an idle context's quota, watermark-based
-// partition) is a future extension behind this enum, not implemented here.
-enum class rob_partition { equal };
+// contexts.
+//
+//   equal  -- a fixed equal quota per context (rob_size / num_contexts), the
+//             total-capacity-conserving baseline: the aggregate in-flight ROB
+//             entries across contexts can never exceed one rob_size budget.
+//             This is the Stage 5.2b "rigid split" and remains the N=1 lock
+//             and V2.4-control denominator.
+//   active -- the quota follows the *actually active* context count
+//             (rob_size / max(1, active)), where `active` is the per-cycle
+//             count of contexts with a non-empty ROB. Idle-context quota is
+//             reclaimed, so an under-committed run can push a surviving
+//             context's ROB toward the full budget. At N=1 this is exactly
+//             rob_size/1 = equal, so single-context output is unchanged.
+enum class rob_partition { equal, active };
 
 namespace detail
 {
@@ -163,8 +171,8 @@ public:
   self_type& rob_size(std::size_t rob_size_);
 
   /**
-   * Specify how the ROB budget is divided among hardware contexts. Only
-   * `equal` is implemented (see rob_partition).
+   * Specify how the ROB budget is divided among hardware contexts. `equal` and
+   * `active` are implemented (see rob_partition).
    */
   self_type& rob_partition(champsim::rob_partition rob_partition_);
 

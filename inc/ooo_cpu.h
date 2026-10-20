@@ -115,7 +115,8 @@ public:
   const std::size_t IFETCH_BUFFER_SIZE, DISPATCH_BUFFER_SIZE, DECODE_BUFFER_SIZE, REGISTER_FILE_SIZE, ROB_SIZE, SQ_SIZE, DIB_HIT_BUFFER_SIZE;
   // How the core's single ROB_SIZE budget is divided among contexts. rob_capacity()
   // is the one entry point that turns this into a per-context quota (see
-  // champsim::rob_partition); a future dynamic-sharing policy plugs in there.
+  // champsim::rob_partition); `active` feeds the denominator under the
+  // champsim::rob_partition::active policy.
   const champsim::rob_partition rob_partition_;
   champsim::bandwidth::maximum_type FETCH_WIDTH, DECODE_WIDTH, DISPATCH_WIDTH, SCHEDULER_SIZE, EXEC_WIDTH, DIB_INORDER_WIDTH;
   champsim::bandwidth::maximum_type LQ_WIDTH, SQ_WIDTH;
@@ -178,8 +179,16 @@ public:
   long dispatch_instruction_impl(champsim::core_context& c, champsim::bandwidth& dispatch_bw);
   // Per-context ROB capacity under rob_partition_. Stage 5.2b: the core's total
   // ROB budget is one ROB_SIZE, conserved across contexts (sum over contexts <=
-  // ROB_SIZE); `equal` grants each context a fixed ROB_SIZE / num_contexts quota.
+  // ROB_SIZE); `equal` grants each context a fixed ROB_SIZE / num_contexts quota,
+  // `active` grants ROB_SIZE / max(1, active) -- the V2 elastic denominator.
   std::size_t rob_capacity() const;
+  // Aggregate ROB occupancy across contexts. This is the second (anti-
+  // oversubscription) half of the dispatch gate: under `active`, the per-context
+  // quota can momentarily exceed the conserved budget (active lags one cycle),
+  // so admission also requires the running total to stay below ROB_SIZE. Under
+  // `equal` the per-context quota already conserves the total, so this gate is
+  // always satisfied and changes nothing.
+  std::size_t rob_occupied() const;
   long schedule_instruction_impl(champsim::core_context& c, long& occupied, long capacity, unsigned long sibling_need);
   long execute_instruction_impl(champsim::core_context& c, champsim::bandwidth& exec_bw);
   long complete_inflight_instruction_impl(champsim::core_context& c, champsim::bandwidth& complete_bw);

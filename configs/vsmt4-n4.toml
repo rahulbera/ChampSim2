@@ -20,3 +20,9 @@
 [ooo_cpu.cpu0]
 num_contexts = 4
 register_file_size = 256
+# V2.2: elastic ROB partition. The per-context ROB quota follows the *active*
+# context count (rob_size / max(1, active)) instead of a fixed rob_size/4, so an
+# under-committed run (a context's ROB draining) reclaims the idle quota. The V1
+# equal split (rob_size/4) is the baseline recorded in vsmt4-v1-summary.md and
+# the V2.4 control (tag vsmt4-v1, commit 82e0b223).
+rob_partition = "active"
