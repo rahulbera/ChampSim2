@@ -286,3 +286,48 @@ asid 隔离完整），而是**共享分支预测器**的前端串扰：
 2. **终止语义的 V3 影响**：无 per-context 停 fetch + 全体达标才结束 → 先达标者超调
    与「SMT-IPC 相对速度」成正比（异 trace 组 vpr 超调 2.9M、近 2×）。V3 的 trace-EOF
    下折、以及未来「谁达标谁停 fetch」若要落地，都在 §7.1 这条规则上改。
+
+---
+
+## 9. V1.4：12 个 unsupported singleton 能力表核销（只记录，不修）
+
+能力判定机制：模块声明 `static constexpr smt_capability capability` 即 opt-in；**不
+声明者默认 `unsupported`**（`inc/modules.h:280-295`），guard 在 `num_contexts>1` 时抛
+「keeps its state in namespace-scope globals」（`inc/modules.h:316`）。12 个默认
+unsupported = cbp6×4 + perfect/ideal×8。逐条核实「真·全局单例」还是「保守 guard」：
+
+| 模块 | 类别 | 状态存哪 | 判定 |
+|---|---|---|---|
+| cbp6_tagescl64 | branch | namespace-scope 全局表（头注释自述） | **真·全局单例** |
+| cbp6_tagescl192 | branch | namespace-scope 全局表 | **真·全局单例** |
+| cbp6_runlts_norv | branch | namespace-scope 全局表 | **真·全局单例** |
+| cbp6_ddtage | branch | namespace-scope 全局表 | **真·全局单例** |
+| perfect_branch | branch | 无状态（读 `ctx().input_queue.front().branch_taken`） | 保守 guard |
+| perfect_btb | btb | 无状态（读 `ctx().input_queue.front().branch_target`） | 保守 guard |
+| perfect_direct | btb | 成员表 `direct_predictor`（asid_word 折入索引） | 保守 guard |
+| perfect_indirect | btb | 成员表 `indirect_predictor`+`return_stack` | 保守 guard |
+| perfect_return | btb | 同上（`btb_impl<group::ras>`） | 保守 guard |
+| ideal_btb | btb | 成员表，同上 | 保守 guard |
+| ideal_btb_pibtb | btb | 成员表，同上 | 保守 guard |
+| ideal_btb_pibtb_pras | btb | 成员表，同上 | 保守 guard |
+
+判定说明：
+
+- **cbp6×4 = 真·全局单例**：vendored 竞赛预测器把表放在 namespace-scope 全局，所有
+  instance 共享；guard 的拒绝**准确且必要**（`cbp6_tagescl64.h:11-14` 等自述）。
+- **perfect/ideal×8 = 保守 guard**：状态是**成员表**（`btb_impl` 持有 `ras`/`direct`/
+  `indirect` 成员，`inc/perfect_group/perfect_group.h:246-248`），非 namespace-scope；
+  `direct/indirect` 索引折入 `asid_word`（`:119,163,169`），理论上 `shared` 可行。但
+  guard 的拒绝**仍是正确**的，因为两处残留：
+  1. `btb_impl::prediction` / `perfect_branch` / `perfect_btb` 用 `intern->ctx()`
+     （=`contexts.front()`）读 input_queue 做 branch-type 判定，**不认识 context**
+     （`:257`）——多 context 下会读错槽位，须改 `contexts[asid[0]]` 才能 opt-in。
+  2. `return_stack::calibrate_call_size` 有个 `static int num_times_returned_backwards`
+     （`:212`）——只是 WARNING 节流计数器（限 10 条），不影响预测结果，但严格说仍是
+     function-local 单例。
+
+**结论**：12 个拒绝全部**成立**（cbp6×4 必要、perfect/ideal×8 保守但保护了 latent
+`ctx()` 缺陷）。V1 要用的 `hashed_perceptron`（`capability=shared`，
+`hashed_perceptron.h:54`）与 `basic_btb`（`capability=shared`，`basic_btb.h:23`）
+都不在这 12 个里，**不被阻挡**；但 hashed_perceptron 的 `shared` 是 §7.4 那类「权重按
+asid、历史共享」的前端串扰口径，与这里「安全共享」的承诺边界已在 §7.4/§8.1 记清。
