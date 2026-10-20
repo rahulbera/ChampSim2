@@ -1,5 +1,6 @@
 #include "register_allocator.h"
 
+#include <algorithm>
 #include <stdexcept>
 
 #include "champsim_assert.h"
@@ -31,6 +32,11 @@ void RegisterAllocator::free_register(PHYSICAL_REGISTER_ID physreg)
 bool RegisterAllocator::isValid(PHYSICAL_REGISTER_ID physreg) const { return physical_register_file.at(physreg).valid; }
 
 unsigned long RegisterAllocator::count_free_registers() const { return std::size(free_registers); }
+
+unsigned long RegisterAllocator::count_busy_registers() const
+{
+  return std::count_if(std::begin(physical_register_file), std::end(physical_register_file), [](const physical_register& reg) { return reg.busy; });
+}
 
 int RegisterAllocator::count_reg_dependencies(const ooo_model_instr& instr) const
 {

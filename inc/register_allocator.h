@@ -40,6 +40,11 @@ public:
   void free_register(PHYSICAL_REGISTER_ID physreg);
   bool isValid(PHYSICAL_REGISTER_ID physreg) const;
   unsigned long count_free_registers() const;
+  // Number of physical registers currently allocated. A register is allocated
+  // exactly when busy (rename sets busy, free_register clears it), so this plus
+  // count_free_registers() always equals the file size -- the free-pool
+  // conservation invariant V2.5 asserts every cycle.
+  unsigned long count_busy_registers() const;
   int count_reg_dependencies(const ooo_model_instr& instr) const;
   void print_deadlock();
 

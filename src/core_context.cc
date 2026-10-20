@@ -80,6 +80,23 @@ bool champsim::core_context::isAllocated(PHYSICAL_REGISTER_ID archreg) const
   return frontend_RAT[static_cast<std::size_t>(archreg)] != -1;
 }
 
+void champsim::core_context::reclaim_registers()
+{
+  // After a full drain frontend_RAT == backend_RAT: every destination write has
+  // retired, so each register this thread holds is exactly one committed
+  // backend_RAT entry. Free them all and clear both tables. The producer-
+  // identity check is the same one retire_dest_register relies on -- a register
+  // is private to its thread, so this can never free a sibling's register.
+  for (auto phys : backend_RAT) {
+    if (phys != -1) {
+      CHAMPSIM_ASSERT(reg_allocator->physical_register_file.at(phys).context.value == this->ctx_index.value);
+      reg_allocator->free_register(phys);
+    }
+  }
+  frontend_RAT.fill(-1);
+  backend_RAT.fill(-1);
+}
+
 // The RAT half of the deadlock printer, printed back-to-back with
 // RegisterAllocator::print_deadlock() (the physical-file half) so the combined
 // output matches the original single-function version.

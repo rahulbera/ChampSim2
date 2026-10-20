@@ -66,6 +66,25 @@ long O3_CPU::operate()
   // count is the end-of-cycle value, so the denominator lags dispatch by one cycle.
   active = static_cast<std::size_t>(std::count_if(std::begin(contexts), std::end(contexts), [](const champsim::core_context& c) { return !c.ROB.empty(); }));
 
+  // V2.5: reclaim a finished thread's physical registers once its trace has
+  // EOF'd and its pipeline is fully drained. "Fully drained" is stricter than
+  // "ROB empty": the front-end buffers (input_queue/IFETCH/DECODE/DIB_HIT/
+  // DISPATCH) still feed the ROB after EOF, and dispatch can stall behind a
+  // sibling holding the aggregate budget, so reclaiming on ROB-empty alone could
+  // free registers out from under instructions still waiting to be renamed. Only
+  // when every buffer, the ROB and both queues are empty is frontend_RAT ==
+  // backend_RAT (the committed architectural state), and nothing of this thread
+  // can ever be renamed again. Under the default repeat=true trace_eof is never
+  // set, so this loop is dead code and single-context output is untouched.
+  for (auto& c : contexts) {
+    if (c.trace_eof && !c.finished && c.ROB.empty() && c.DISPATCH_BUFFER.empty() && c.DECODE_BUFFER.empty() && c.DIB_HIT_BUFFER.empty()
+        && c.IFETCH_BUFFER.empty() && c.input_queue.empty()
+        && std::all_of(std::begin(c.LQ), std::end(c.LQ), [](const auto& entry) { return !entry.has_value(); }) && c.SQ.empty()) {
+      c.reclaim_registers();
+      c.finished = true;
+    }
+  }
+
   // V2.2 total-capacity conservation invariant: the single ROB_SIZE budget is
   // never exceeded. `equal` conserves it by fixed per-context quota, so the
   // assertion is only meaningful (and only guaranteed) under `active`, where the
@@ -75,6 +94,14 @@ long O3_CPU::operate()
   // per-context quota cannot reflect. Over-capacity only ever stops new
   // admission, never clears in-flight entries.
   CHAMPSIM_ASSERT(rob_partition_ != champsim::rob_partition::active || rob_occupied() <= ROB_SIZE);
+
+  // V2.5 free-pool conservation invariant: a physical register is either free or
+  // allocated (busy), never both and never neither, so the free count plus the
+  // busy count always equals the file size. This is what catches a double-free
+  // (free list overcounts) or a leak (busy count undercounts) introduced by
+  // reclamation; a reclaimed (finished) context holds zero busy registers, so it
+  // contributes nothing to the right-hand term.
+  CHAMPSIM_ASSERT(shared_prf->count_free_registers() + shared_prf->count_busy_registers() == REGISTER_FILE_SIZE);
 
   return progress;
 }

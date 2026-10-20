@@ -288,4 +288,130 @@ unique (active,cap) 计数：`active=1 cap=512` ×11 673、`active=2 cap=256` ×
    弹性化——这正是 V5 推迟的范围，本次给出量化下限：**弹性 ROB 对欠载幸存线程的
    吞吐贡献 ≈ 0**，收益被寄存器堆粘滞全部吃光。
 
+---
+
+## 5. V2.5 线程完成寄存器回收（粘滞 PRF 缺陷修复）
+
+### 5.1 缺陷与修复定位（定性）
+
+V2.4 场景 B 判① FAIL 的根因是**共享 PRF 粘滞**：释放规则是「同一架构寄存器的新写
+退休后才释放旧物理寄存器」，线程 EOF 掉干后不再产生新写 → 其最终映射（fotonik3d
+实测 **45 个提交态物理寄存器/线程**）永久扣住。3 个死线程扣住 135/256，幸存线程在
+prf256 下只剩 ~115 可用（standalone 需 192–256 才饱和）。
+
+- **性质：lifetime 修复，不是 PRF 弹性**（弹性 = V5.5 硬上限/总量缩放）。存活线程的
+  分配策略（水位线/allocate/release）完全不动。
+- **行为对齐依据**：POWER 14.2 欠载不坍缩；EOF = 工作完成 = 槽位空 = 零占用。真硬件
+  空闲线程的寄存器结构未公开 → 记为开放项，按行为对齐、不虚构结构。
+
+### 5.2 机制
+
+触发 = 该 context 的 trace EOF（`sim.trace_repeat=false` 才可能）+ **全流水线排干**
+（ROB + 全部前端缓冲 + LQ/SQ 全空）。「排干」比「ROB 空」更严格：EOF 后 input_queue/
+IFETCH/DECODE/DIB_HIT/DISPATCH 仍向 ROB 送数，且 dispatch 可能被持有聚合预算的兄弟
+线程卡住；仅在 ROB 空时就回收会把尚未改名指令的寄存器提前放掉。排干后
+frontend_RAT == backend_RAT（= 提交态架构映射），每个非 -1 的 backend_RAT 条目都是
+该线程独占的一个物理寄存器。
+
+动作 = 按 rename map 释放全部物理寄存器回空闲池、清空/invalidate 两套 RAT、context
+永不再分配。断言（debug/release 常开）= **空闲池守恒**：`count_free + count_busy ==
+REGISTER_FILE_SIZE`（busy ⟺ allocated，改名只发生在 ROB 内、无 squash 释放路径，守恒
+严格成立）。回收完成线程 busy=0、对右端零贡献。默认 `trace_repeat=true` 下 EOF 永不
+触发 → 回收路径是死代码（N=1/N=4 满负荷逐位零行为）。
+
+### 5.3 改动点（file:line）
+
+| 位置 | 内容 |
+|---|---|
+| `inc/core_context.h:128` | 声明 `void reclaim_registers();` |
+| `inc/core_context.h:162-163` | 新增 `bool trace_eof = false; bool finished = false;`（+ 注释） |
+| `src/core_context.cc:83-98` | `reclaim_registers()`：遍历 backend_RAT 逐个 `free_register`（带 producer 归属断言），再 `frontend_RAT.fill(-1)` / `backend_RAT.fill(-1)` |
+| `inc/register_allocator.h:47` | 声明 `unsigned long count_busy_registers() const;`（守恒不变量注释） |
+| `src/register_allocator.cc:3,36-39` | `#include <algorithm>`；`count_busy_registers()` = `count_if(…, busy)` |
+| `src/champsim.cc:64-70` | do_cycle 读 trace 前：`if (trace.eof()) ctx.trace_eof = true;` |
+| `src/ooo_cpu.cc:69-91` | operate() 内回收触发循环（排干条件 + `reclaim_registers()` + `finished=true`） |
+| `src/ooo_cpu.cc:104-110` | operate() 末空闲池守恒断言 |
+
+### 5.4 锁复跑 + N=4 满负荷回归（PASS，逐位）
+
+口径同 V2.3 §3（归一化 sha）。回收路径在 `trace_repeat=true` 下是死代码，守恒断言
+只读 → 全部逐位复现 V1/V2.3。
+
+| 锁 | sha256（norm） | 判定 |
+|---|---|---|
+| 锁 1 baseline | `8dcc3227…94f6` | = V1 逐位 |
+| 锁 2 prf64 | `9bb10576…ea56` | = V1 逐位 |
+| 锁 3 sched64 | `8dcc3227…94f6` | = V1 逐位 |
+| 锁 4 run1 == run2 | `ca19795f…c9491` ×2 | = V2.3 逐位，×2 确定性 PASS |
+| n4-fotonikx4 | `aa5acbdb…b11b12` | = V2.3 active 逐位 |
+| n4-hetero | `9c230993…e8c3d2` | = V2.3 active 逐位 |
+
+### 5.5 场景 B / A 重跑（判①② 重判）
+
+口径同 V2.4 §4（`sim.trace_repeat=false`，截短 trace）。TEMP 回收 dump 已回退、以
+干净二进制重建后复现。
+
+| config | cycles V2.4 | cycles V2.5 | Δ |
+|---|---|---|---|
+| b-equal | 2 536 217 | 2 519 365 | **−0.66%** |
+| b-active | 2 536 393 | 2 474 252 | **−2.45%** |
+| b-active-prf512 | 2 399 218 | 2 399 218 | **0（逐位）** |
+| a-equal | 3 667 043 | 3 581 606 | **−2.33%** |
+| a-active | 3 669 542 | 3 597 691 | **−1.96%** |
+
+**幸存线程尾部 IPC**（aggregate 8M→10M，只剩 ctx0 的窗口 IPC = 窗口指令/窗口周期）：
+
+| config | 尾部 IPC | 对照 |
+|---|---|---|
+| b-active（prf256 + 回收） | **2.368** | V2.4 无回收 ~2.2 |
+| b-active-prf512（饱和上界） | **2.428** | V2.4 ~2.44，逐位复现 |
+| b-equal（prf256 + 回收） | 2.247 | ROB 定额 128 仍封顶 |
+| standalone prf256 | 2.65 | 残余上界 |
+
+**判①（场景 B 幸存尾部）改判 PASS**：prf256 尾部 2.368 vs prf512 上界 2.428，差距
+**2.47% < 3%**。V2.4 无回收时该差距 ~10%（2.2 vs 2.44），回收把它关到判据内。
+prf512 逐位复现 V2.4（`d516f087…`）是**归因自检**：回收对不缺寄存器的 prf512 零
+作用，唯一变化源就是寄存器回收本身。
+
+**判②（场景 A）重判 PASS（无回退，轻微增益）**：尾部（两幸存线程）aggregate
+heartbeat IPC ~2.26–2.28（V2.4 ~2.13–2.22），仍 ≥ N=2 ref 2.127；回收让两幸存线程
+从 166 共享寄存器回到满 256，整体 −2%。
+
+### 5.6 寄存器 dump（回收前后）
+
+回收触发时点逐线程 dump 空闲池（TEMP 埋点，已回退）：
+
+```
+b-active: [RECLAIM] ctx1 free=32→77  ctx3 free=80→125  ctx2 free=166→211  (各 freed=45, total 256)
+```
+
+- **每线程回收 45 个物理寄存器**（= 提交态架构映射；CLAUDE.md 的「45 register IDs →
+  47 physical」是 2 目的地改名下的在飞峰值，排干后只剩 45 提交态）。
+- **场景 B**：3 × 45 = 135 归还；空闲池轨迹 **32 → 211**。幸存线程可用寄存器从
+  ~115（V2.4 估算 256−3×47）→ **~211 空闲 / ~256 全量**（仅自持 45 提交态）。
+- 实测空闲池最低 32（比估算 115 更惨：幸存线程还压着 ~44 在飞未提交寄存器）。
+
+### 5.7 守恒断言触发情况
+
+全部 12 次运行（3 锁 + 锁4×2 + N=4×2 + 场景 5）stderr **0 次**「ChampSim assertion
+failed」；回收内 producer 归属断言、空闲池守恒断言均 0 触发。守恒不变量
+`free + busy == REGISTER_FILE_SIZE` 全程成立（无双重释放、无泄漏）。
+
+### 5.8 惊喜/不确定项
+
+1. **回收不区分 rob_partition**：它是寄存器 lifetime 修复，与 ROB 切分正交，故
+   **b-equal 也变化**（−0.66%）。这是预期内但 V2.4 表未列出的新现象。
+2. **回收「揭开」了 ROB 弹性的收益**：V2.4 §4.5 结论「弹性 ROB 对欠载幸存吞吐贡献
+   ≈ 0」在回收后**不再成立**——post-fix 下 b-active vs b-equal = **−1.79%**（2 519 365
+   → 2 474 252），寄存器粘滞被清掉后 ROB 分母收益重新可见。这是本修复最有价值的副
+   产物：它证明 V2 的 ROB 弹性（V2.2）方向正确，只是被 PRF 粘滞盖住了。
+3. **残余 2.47%（prf256 vs prf512）**：prf256 下幸存线程有 256−45=211 空闲，略低于
+   独立 standalone 的 211+（同名、无兄弟污染）；prf512 给 467 空闲、彻底饱和。211 已
+   在饱和边缘（prf 敏感曲线 192→2.58 / 256→2.65），故残余在判据内但非零。
+4. **残余 ~8%（prf512 2.43 vs standalone 2.65）仍在**：归因于 4 路同 trace 共驻对共享
+   hashed_perceptron 的污染，属 V2.5 范围外（同 V2.4 §4.5 点 3），未动。
+5. **回收触发点实测在 cycle ~2.8M**（场景 B），即兄弟线程 EOF 后 drain 需 ~1.8M
+   cycle（暖机止 ~1.2M + 量测 ~1.6M）才排干——「排干」条件比「ROB 空」晚很多，印证
+   5.2 的严格触发必要性。
+
 

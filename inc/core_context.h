@@ -119,6 +119,14 @@ struct core_context {
   void reset_frontend_RAT();
   bool isAllocated(PHYSICAL_REGISTER_ID archreg) const;
 
+  // V2.5: release every physical register this context's drained architectural
+  // state still holds back to the shared free pool, and clear both RATs. Called
+  // only after the trace has EOF'd and the pipeline (front-end through ROB and
+  // LSQ) is empty, so frontend_RAT == backend_RAT and each mapped register is
+  // exactly one backend_RAT entry. Idempotent in effect: an empty RAT frees
+  // nothing.
+  void reclaim_registers();
+
   // The RAT half of the deadlock printer; RegisterAllocator::print_deadlock()
   // prints the physical-file half. Called back-to-back in that order by
   // O3_CPU::print_deadlock() so the combined output matches the original.
@@ -144,6 +152,15 @@ struct core_context {
   // begin_phase; set once by O3_CPU::record_roi_completion so the first crossing
   // wins and later cycles cannot overwrite sim_stats.roi_cycles.
   bool roi_complete_recorded = false;
+
+  // V2.5: thread completion, armed by the phase loop when this context's trace
+  // reaches EOF (only reachable with sim.trace_repeat=false; under the default
+  // repeat=true the tracereader never reports EOF, so both flags stay false and
+  // this whole path is dead code). `trace_eof` means no more input will ever
+  // arrive; `finished` is latched once the pipeline has fully drained and its
+  // physical registers have been reclaimed, after which it never allocates again.
+  bool trace_eof = false;
+  bool finished = false;
 
   champsim::chrono::clock::time_point last_heartbeat_time{};
   long long last_heartbeat_instr = 0;

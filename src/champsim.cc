@@ -61,6 +61,13 @@ long do_cycle(std::vector<std::reference_wrapper<operable>>& operables, const st
     for (std::size_t c = 0; c < std::size(cpu.contexts); ++c) {
       auto& ctx = cpu.contexts[c];
       auto& trace = traces.at(trace_index.at(cpu.cpu).at(c));
+      // V2.5: arm register reclamation once this context's trace is exhausted.
+      // Under the default repeat=true the tracereader never reports EOF, so this
+      // stays false and reclamation is dead code; with sim.trace_repeat=false it
+      // lets the core reclaim a drained thread's physical registers.
+      if (trace.eof()) {
+        ctx.trace_eof = true;
+      }
       for (auto pkt_count = cpu.IN_QUEUE_SIZE - static_cast<long>(std::size(ctx.input_queue)); !trace.eof() && pkt_count > 0; --pkt_count) {
         ctx.input_queue.push_back(trace());
       }
