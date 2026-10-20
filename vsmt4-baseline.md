@@ -1,8 +1,9 @@
-# vSMT4 V0 baseline（单核路线）
+# vSMT4 baseline（单核路线，V0 + V1.2）
 
 > 分支 `smt-vsmt4`，起点 `b1f05f8c`（Stage 6 收尾），标签 `vsmt4-baseline`。
-> V0 的唯一机制改动是把 `num_cpus` 翻回 1，其余零机制改动。本文沉淀三把 N=1 锁、
+> V0 的唯一机制改动是把 `num_cpus` 翻回 1，其余零机制改动。§1–§6 沉淀三把 N=1 锁、
 > 锁 4（N=2）、单核 `make test` 基线、4-trace 供给侦察、stage3-debt a~d 归类。
+> §7–§8 是 V1.2 的终止语义定论 + 4-trace 链校验（asid / 前端串扰 / PRF 足迹）。
 
 ---
 
@@ -171,3 +172,117 @@ hashed_perceptron + basic_btb）；c 是广播 vs 精确 waiter 的准确性后�
    从寄存器用法推断，见运行期 WARNING）。
 3. **物理地址口径**：锁 4 是「同程序重叠足迹」锁，不是「多程序非重叠」锁；Stage 6 的
    非重叠红线对锁 4 不适用，对将来的异 trace 多程序锁（sqlite+omnetpp）才生效。
+
+---
+
+## 7. V1.2：终止语义 + 4-trace 链校验
+
+（V1.3 已把 `max_contexts` 2→4，本节两套 4-trace config 均在 `num_contexts=4` 下端到端
+运行。口径：`configs/sample.toml` + `configs/vsmt4-n4.toml`，`-w 1M -i 3M`。）
+
+### 7.1 终止语义（锁 4 ctx1>3M / ctx0 恰 3M 之谜，读码定论）
+
+读 `src/champsim.cc` + `src/ooo_cpu.cc` 的结束条件，确切规则：
+
+- **结束条件 = 全体达标**（`src/champsim.cc:176-180`）：core complete 当且仅当**每个**
+  context 满足 `retired >= length` **或** 该 context 的 trace 已 EOF；外层 `while`
+  循环（`:115`）在全部 core complete 时退出。这是唯一结束判据。
+- **没有「谁达标谁停 fetch」**：核心 fetch 段（`O3_CPU::initialize_instruction`，
+  `src/ooo_cpu.cc:119-150`）**不认识 `length`** —— 只受「共享 fetch 带宽 + 分支预测」
+  门控；trace 供给（`do_cycle`，`src/champsim.cc:64`）只按 `!trace.eof()` 续喂。故一个
+  先达标的 context **继续取指、继续退休**，直到全体达标、阶段结束。
+- **退休是共享 RETIRE_WIDTH=5 的轮转**（`src/ooo_cpu.cc:1300-1309`）：每周期全体
+  context 合计最多退 5 条。所以「最后达标」者超调 ≤ 5（落点 ≈ 恰 3M），而先达标者
+  的**超调 = 它与最慢者退休进度差**，可很大。
+
+实测印证（`-w 1M -i 3M`）：
+
+| 组 | 各 context 最终 instructions（target 3M） |
+|---|---|
+| 锁 4 N=2 | ctx0 **3000000**、ctx1 3014764（+14764） |
+| fotonik3d×4 | ctx0 **3000000**、ctx1 3014001、ctx2 3002665、ctx3 3001986 |
+| 异 trace×4 | sqlite **3000001**、omnetpp 3061527、llvm 3429233、vpr 5929323 |
+
+最慢者（每组第一列，SMT 下 IPC 最低）落点 ≈ 恰 3M；其余按 SMT-IPC 相对速度比例超调
+（异 trace 组 vpr SMT-IPC 0.73 ≈ sqlite 0.37 的 1.97× → 超调 ≈ 2.9M）。这正是「全体
+达标才结束、无 per-context 停 fetch」的直接后果。**V3 的 trace-EOF 下折正吃这条**
+（`:180` 的 `|| eof` 分支：短 trace EOF 即算达标、不再参与退休判定）。
+
+### 7.2 asid 确认：ctx0..3 = {0,0},{1,1},{2,2},{3,3}
+
+代码链完整核销（与 §4 侦察一致，运行态确认）：
+
+- `src/main.cc:385-393`：`trace_index` 行主序 core-major/context-minor，
+  `trace 0→(core0,ctx0) … trace 3→(core0,ctx3)`。
+- `src/main.cc:377-380`：tracereader 按**位置**构造（`i++` 从 0），
+  `inc/instruction.h:298/301`：`ooo_model_instr{slot, instr}` → `asid = {slot, slot}`。
+- `src/champsim.cc:55-57`：`do_cycle` 不重派 asid，asid 随 trace 落点。
+- `test/cpp/src/605` 已 pin 同机制（2-context），4-context 是同一代码路径
+  （`max_contexts=4` 后 `contexts` 数组放大）。
+
+故 ctx0..3 的 asid 确定是 `{0,0},{1,1},{2,2},{3,3}`；stats 文档无 asid 字段，此为代码
+确定性结论（非运行期观测）。
+
+### 7.3 组 (a)：fotonik3d×4（容量方向，v1 同 trace ×4）
+
+| context | instructions | cycles | ipc | mpki | acc% |
+|---|---|---|---|---|---|
+| ctx0 | 3000000 | 4889832 | 0.61 | 32.83 | 86.19 |
+| ctx1 | 3014001 | 4889832 | 0.62 | 32.76 | 86.22 |
+| ctx2 | 3002665 | 4889832 | 0.61 | 32.75 | 86.23 |
+| ctx3 | 3001986 | 4889832 | 0.61 | 32.83 | 86.19 |
+
+合计 IPC ≈ 2.46（12.0M 指令 / 4.89M 周期）。单跑 fotonik3d = 2.34 / mpki 2.53。方向
+判据：合计 IPC 2.46 仅 ≈ 单跑 2.34（远低于 4×2.34=9.36），容量方向争用明显（共享
+前端带宽 + 共享 PRF + 分支预测器污染）。4 context 各 mpki 从单跑 2.53 → 32.8（×13），
+是**共享 hashed_perceptron 全局历史**的串扰（见 7.4 机制），非 asid/地址空间串扰。
+
+### 7.4 组 (b)：4 条异 trace ×4（隔离方向，v2）
+
+选材：sqlite sp0 / omnetpp sp0 / llvm sp1 / vpr sp0（全 v2；版本单一全局旗标不可混
+fotonik3d v1）。`--trace-version=2`，`register_file_size=256`。单跑分母是同一二进制、
+同 `-w 1M -i 3M` 的单 context 跑（`sa-*.toml`），非 -i 200M 的 prf 扫描值（两者区域
+不同、不可比）。
+
+| context | trace | 单跑 IPC | SMT4 IPC | 比值 | 单跑 mpki | SMT4 mpki | 比值 |
+|---|---|---|---|---|---|---|---|
+| ctx0 | sqlite | 0.80 | 0.37 | 0.46× | 5.50 | 32.06 | 5.8× |
+| ctx1 | omnetpp | 0.95 | 0.38 | 0.40× | 11.46 | 29.10 | 2.5× |
+| ctx2 | llvm | 1.09 | 0.42 | 0.39× | 12.62 | 40.48 | 3.2× |
+| ctx3 | vpr | 1.63 | 0.73 | 0.45× | 3.46 | 21.06 | 6.1× |
+
+**隔离方向判据 FAIL（前端口径），上报**：4 条异 trace 单跑 mpki 全部异常漂移
+（2.5×–6.1×）、IPC 全部跌到单跑 0.39×–0.46×。但这不是 asid/地址空间串扰（7.2 已确认
+asid 隔离完整），而是**共享分支预测器**的前端串扰：
+
+- `hashed_perceptron` 声明 `capability=shared`（单实例，`branch/hashed_perceptron/
+  hashed_perceptron.h:54`）；权重表索引折入 `asid_word`（权重按 asid 隔离），但
+  **全局历史 `ghist_words` 是单一 shared folded-shift-register**（`:33`），所有
+  context 的分支结果都 push 进同一条移位寄存器（`.cc:71-73`）——4 条异 trace 的历史
+  互相污染，预测率暴跌。
+- 次生（未深验）：`last_result` 是单一成员（`.h:47`），多 context 交错下
+  predict→update 配对可能被别的 context 覆盖、权重更新用错索引。
+
+这是**前端口径固有串扰（建模变量）**，不是 V0 锁定的 asid/va_to_pa 地址空间串扰。
+`hashed_perceptron` 自述「share it safely」仅指权重不撞，不覆盖全局历史共享的串扰。
+归入「意外/偏差」上报（§8），V1 不修（方向性判据，领导者审）。
+
+### 7.5 PRF 足迹核对：两组 4 线程合计 ≤ 256
+
+- fotonik3d×4：4×~47 ≈ 188 < 256（7.3 运行无 crash、无 `register_file_size too
+  small`）。
+- 异 trace×4：prf 足迹（prf40/prf48 边界，-i 200M 扫描值作量级代理）sqlite ≤40、
+  omnetpp 41–48、llvm ≤40、vpr 41–48，合计 ≤176 < 256（7.4 运行无 crash）。256 足够，
+  未自动放大。
+
+---
+
+## 8. V1.2 意外项（上报，不修）
+
+1. **前端串扰（隔离方向 FAIL）**：共享 `hashed_perceptron` 全局历史让 4 条异 trace
+   互污预测（mpki 2.5×–6.1×、IPC 0.39×–0.46×），同 trace ×4 更甚（mpki ×13）。这是
+   前端口径建模变量，与 asid 隔离无关，V1 方向性判据成立（有争用）但量级需领导者审，
+   关系 V2 是否要给 predictor 按 context 复制历史 / 权重。
+2. **终止语义的 V3 影响**：无 per-context 停 fetch + 全体达标才结束 → 先达标者超调
+   与「SMT-IPC 相对速度」成正比（异 trace 组 vpr 超调 2.9M、近 2×）。V3 的 trace-EOF
+   下折、以及未来「谁达标谁停 fetch」若要落地，都在 §7.1 这条规则上改。
