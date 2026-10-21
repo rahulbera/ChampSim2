@@ -285,6 +285,24 @@ std::vector<std::string> champsim::toml_printer::format(CACHE::stats_type stats,
     emit_table(lines, fmt::format("{}.cpu{}", path, cpu), counters);
   }
 
+  // B1.4: the read-only per-context load-access census, present only when the
+  // cache collected it (cache.<name>.per_context_counters). Buckets are keyed by
+  // asid[0] == the virtual-thread identity (ctx_index in B1, virtual_id in B2).
+  // Only non-zero buckets are emitted, so a default-off run's document omits the
+  // table entirely and stays byte-identical.
+  {
+    std::vector<entry> per_ctx{};
+    for (std::size_t asid = 0; asid < stats.per_context_load_hits.size(); ++asid) {
+      if (stats.per_context_load_hits[asid] != 0 || stats.per_context_load_misses[asid] != 0) {
+        per_ctx.emplace_back(fmt::format("load_hit_ctx{}", asid), fmt::format("{}", stats.per_context_load_hits[asid]));
+        per_ctx.emplace_back(fmt::format("load_miss_ctx{}", asid), fmt::format("{}", stats.per_context_load_misses[asid]));
+      }
+    }
+    if (!per_ctx.empty()) {
+      emit_table(lines, fmt::format("{}.per_context", path), per_ctx);
+    }
+  }
+
   return lines;
 }
 

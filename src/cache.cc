@@ -41,7 +41,7 @@ CACHE::CACHE(CACHE&& other)
       cpu(other.cpu), NAME(std::move(other.NAME)), NUM_SET(other.NUM_SET), NUM_WAY(other.NUM_WAY), MSHR_SIZE(other.MSHR_SIZE), PQ_SIZE(other.PQ_SIZE),
       HIT_LATENCY(other.HIT_LATENCY), FILL_LATENCY(other.FILL_LATENCY), OFFSET_BITS(other.OFFSET_BITS), block(std::move(other.block)), MAX_TAG(other.MAX_TAG),
       MAX_FILL(other.MAX_FILL), prefetch_as_load(other.prefetch_as_load), match_offset_bits(other.match_offset_bits), virtual_prefetch(other.virtual_prefetch),
-      perfect(other.perfect), vmem(other.vmem), pref_activate_mask(std::move(other.pref_activate_mask)),
+      perfect(other.perfect), per_context_counters(other.per_context_counters), vmem(other.vmem), pref_activate_mask(std::move(other.pref_activate_mask)),
 
       sim_stats(std::move(other.sim_stats)), roi_stats(std::move(other.roi_stats)),
 
@@ -80,6 +80,7 @@ auto CACHE::operator=(CACHE&& other) -> CACHE&
   this->match_offset_bits = other.match_offset_bits;
   this->virtual_prefetch = other.virtual_prefetch;
   this->perfect = other.perfect;
+  this->per_context_counters = other.per_context_counters;
   this->vmem = other.vmem;
   this->pref_activate_mask = std::move(other.pref_activate_mask);
 
@@ -306,6 +307,9 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
   // model perfect translation as well, set perfect on the TLBs.
   if (perfect) {
     sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
+    if (per_context_counters && handle_pkt.type == access_type::LOAD) {
+      ++sim_stats.per_context_load_hits[handle_pkt.asid[0]];
+    }
 
     auto data = handle_pkt.data;
     if (vmem != nullptr) {
@@ -348,6 +352,9 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 
   if (hit) {
     sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
+    if (per_context_counters && handle_pkt.type == access_type::LOAD) {
+      ++sim_stats.per_context_load_hits[handle_pkt.asid[0]];
+    }
 
     response_type response{handle_pkt.address, handle_pkt.v_address, way->data, metadata_thru, handle_pkt.cpu, handle_pkt.asid[0], handle_pkt.asid[1],
                            handle_pkt.instr_depend_on_me, handle_pkt.load_waiters};
@@ -447,6 +454,9 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
   }
 
   sim_stats.misses.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
+  if (per_context_counters && handle_pkt.type == access_type::LOAD) {
+    ++sim_stats.per_context_load_misses[handle_pkt.asid[0]];
+  }
 
   return true;
 }
@@ -1009,6 +1019,9 @@ void CACHE::end_phase(unsigned finished_cpu)
   roi_stats.misses = sim_stats.misses;
   roi_stats.miss_merge = sim_stats.miss_merge;
   roi_stats.fill = sim_stats.fill;
+
+  roi_stats.per_context_load_hits = sim_stats.per_context_load_hits;
+  roi_stats.per_context_load_misses = sim_stats.per_context_load_misses;
 
   roi_stats.pf_requested = sim_stats.pf_requested;
   roi_stats.pf_issued = sim_stats.pf_issued;

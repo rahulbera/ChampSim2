@@ -347,7 +347,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                           .clock_period(period(cfg, "cache.llc.frequency", 4000))
                           .prefetch_as_load(cfg.value<bool>("cache.llc.prefetch_as_load", false))
                           .virtual_prefetch(cfg.value<bool>("cache.llc.virtual_prefetch", false))
-                          .perfect(cfg.value<bool>("cache.llc.perfect", false)));
+                          .perfect(cfg.value<bool>("cache.llc.perfect", false))
+                          .per_context_counters(cfg.value<bool>("cache.llc.per_context_counters", false)));
 
   for (std::size_t cpu = 0; cpu < defs::num_cpus; ++cpu) {
     const auto dtlb = cache_key(cpu, "DTLB");
@@ -425,7 +426,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .clock_period(period(cfg, l1d + ".frequency", 4000))
                             .prefetch_as_load(cfg.value<bool>(l1d + ".prefetch_as_load", false))
                             .virtual_prefetch(cfg.value<bool>(l1d + ".virtual_prefetch", false))
-                            .perfect(cfg.value<bool>(l1d + ".perfect", false)));
+                            .perfect(cfg.value<bool>(l1d + ".perfect", false))
+                            .per_context_counters(cfg.value<bool>(l1d + ".per_context_counters", false)));
 
     caches.emplace_back(champsim::cache_builder{champsim::defaults::default_l1i}
                             .name(cache_name(cpu, "L1I"))
@@ -463,7 +465,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .clock_period(period(cfg, l2c + ".frequency", 4000))
                             .prefetch_as_load(cfg.value<bool>(l2c + ".prefetch_as_load", false))
                             .virtual_prefetch(cfg.value<bool>(l2c + ".virtual_prefetch", false))
-                            .perfect(cfg.value<bool>(l2c + ".perfect", false)));
+                            .perfect(cfg.value<bool>(l2c + ".perfect", false))
+                            .per_context_counters(cfg.value<bool>(l2c + ".per_context_counters", false)));
 
     caches.emplace_back(champsim::cache_builder{champsim::defaults::default_stlb}
                             .name(cache_name(cpu, "STLB"))
