@@ -50,17 +50,18 @@ long do_cycle(std::vector<std::reference_wrapper<operable>>& operables, const st
     progress += op.operate_on(global_clock);
   }
 
-  // Read from trace: one trace per (core, context) pair. trace_index is keyed
-  // [core][context] and names the positional (command-line) index of the trace
-  // feeding that slot; the tracereader already stamped that trace's instructions
+  // Read from trace: one trace per (core, virtual thread) pair. trace_index is
+  // keyed [core][virtual_id] and names the positional (command-line) index of the
+  // trace feeding that virtual thread; slot_map names which virtual_id is bound to
+  // each physical slot. The tracereader already stamped that trace's instructions
   // with asid {position, position} (D-A: the global trace slot), so this slot's
-  // asid is {trace_index[cpu.cpu][c], trace_index[cpu.cpu][c]} by construction.
-  // do_cycle assigns nothing -- the asid lives in the trace. num_contexts == 1
-  // collapses this to the old single-context read.
+  // asid is {trace_index[cpu.cpu][v], trace_index[cpu.cpu][v]} by construction.
+  // do_cycle assigns nothing -- the asid lives in the trace. C_virt == C_phys
+  // collapses this to the old single-context read (slot_map[c] == c).
   for (O3_CPU& cpu : cpus) {
     for (std::size_t c = 0; c < std::size(cpu.contexts); ++c) {
       auto& ctx = cpu.contexts[c];
-      auto& trace = traces.at(trace_index.at(cpu.cpu).at(c));
+      auto& trace = traces.at(trace_index.at(cpu.cpu).at(cpu.slot_map.at(c)));
       // V2.5: arm register reclamation once this context's trace is exhausted.
       // Under the default repeat=true the tracereader never reports EOF, so this
       // stays false and reclamation is dead code; with sim.trace_repeat=false it
@@ -183,7 +184,7 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
       for (std::size_t c = 0; c < std::size(cpu.contexts); ++c) {
         cpu.record_roi_completion(c, length);
         const bool retired = cpu.sim_instr(c) >= length;
-        const bool eof = traces.at(trace_index.at(cpu.cpu).at(c)).eof();
+        const bool eof = traces.at(trace_index.at(cpu.cpu).at(cpu.slot_map.at(c))).eof();
         core_complete = core_complete && (retired || eof);
       }
       next_phase_complete[cpu.cpu] = next_phase_complete[cpu.cpu] || core_complete;

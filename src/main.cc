@@ -288,18 +288,19 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   }
   configured_environment& gen_environment = *built_environment;
 
-  // The trace count must equal the machine's total hardware-context count: one
-  // trace per (core, context) pair, i.e. num_cpus x num_contexts. num_contexts is
-  // a runtime knob read during construction, so the exact count is only known
-  // here -- which is why the CLI option now enforces only "at least one".
+  // The trace count must equal the machine's total virtual-thread count: one
+  // trace per (core, virtual thread) pair, i.e. num_cpus x C_virt. C_virt is a
+  // runtime knob read during construction (defaulting to num_contexts, the
+  // identity case), so the exact count is only known here -- which is why the
+  // CLI option now enforces only "at least one".
   if (!list_knobs) {
     std::size_t expected_traces = 0;
     for (const O3_CPU& cpu : gen_environment.cpu_view()) {
-      expected_traces += cpu.contexts.size();
+      expected_traces += cpu.virtual_threads.size();
     }
     if (std::size(trace_names) != expected_traces) {
-      fmt::print(stderr, "ERROR: expected {} trace(s), one per hardware context (num_cpus x num_contexts), got {}. Use -- before trace paths when omitting the "
-                         "--toml filename.\n",
+      fmt::print(stderr, "ERROR: expected {} trace(s), one per virtual thread (num_cpus x num_virtual_threads), got {}. Use -- before trace paths when "
+                         "omitting the --toml filename.\n",
                  expected_traces, std::size(trace_names));
       return 1;
     }
@@ -387,18 +388,19 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
                      return get_tracereader(name, i++, knob_cloudsuite, repeat, trace_version);
                    });
 
-    // One trace per (core, context) pair, keyed [core][context] in the same
-    // row-major order the positional arguments were read (core-major,
-    // context-minor): trace 0 -> (core0, ctx0), trace 1 -> (core0, ctx1), ...
+    // One trace per (core, virtual thread) pair, keyed [core][virtual_id] in the
+    // same row-major order the positional arguments were read (core-major,
+    // virtual-minor): trace 0 -> (core0, vt0), trace 1 -> (core0, vt1), ...
     // The tracereader stamped each trace's instructions with asid {position,
-    // position}, so this table is the whole of the asid landing point.
+    // position}, so this table is the whole of the asid landing point, and the
+    // asid therefore follows the virtual thread's trace (bmt-design.md §1.2).
     std::vector<std::vector<std::size_t>> trace_index;
     trace_index.reserve(std::size(gen_environment.cpu_view()));
     std::size_t next_trace = 0;
     for (const O3_CPU& cpu : gen_environment.cpu_view()) {
       std::vector<std::size_t> core_row;
-      core_row.reserve(std::size(cpu.contexts));
-      for (std::size_t c = 0; c < std::size(cpu.contexts); ++c) {
+      core_row.reserve(std::size(cpu.virtual_threads));
+      for (std::size_t v = 0; v < std::size(cpu.virtual_threads); ++v) {
         core_row.push_back(next_trace++);
       }
       trace_index.push_back(std::move(core_row));

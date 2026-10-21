@@ -188,6 +188,21 @@ std::size_t configured_num_contexts(const champsim::runtime_config& cfg, const s
   return value;
 }
 
+// The number of BMT virtual threads (virtual contexts) per core, C_virt. The
+// default is the physical context count (num_contexts), which is the identity
+// case: one virtual thread per slot, no swap, byte-identical to pre-BMT. C_virt
+// is a separate pool (bmt-design.md §1), so it is NOT bounded by max_contexts --
+// only by how many traces the run supplies -- but it must cover every physical
+// slot, so C_virt < num_contexts is refused.
+std::size_t configured_num_virtual_threads(const champsim::runtime_config& cfg, const std::string& key, std::size_t num_contexts)
+{
+  const auto value = cfg.positive_value<std::size_t>(key, num_contexts);
+  if (value < num_contexts) {
+    throw std::runtime_error{"runtime config: " + key + " must be >= num_contexts (" + std::to_string(num_contexts) + ")"};
+  }
+  return value;
+}
+
 // The ROB partition policy is a parameter with two values. `equal` is the rigid
 // Stage 5.2b split (rob_size / num_contexts); `active` is the V2 elastic split
 // (rob_size / max(1, active)) that reclaims an idle context's quota. Anything
@@ -474,6 +489,7 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
     const auto key = core_key(cpu);
     auto& l1i = caches.at(1 + (cpu * 6) + 3);
     auto& l1d = caches.at(1 + (cpu * 6) + 2);
+    const auto num_contexts = configured_num_contexts(cfg, key + ".num_contexts");
     cores.emplace_back(champsim::core_builder{champsim::defaults::default_core}
                            .index(static_cast<uint32_t>(cpu))
                            .l1i(&l1i)
@@ -485,7 +501,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                            .decode_buffer_size(cfg.value<std::size_t>(key + ".decode_buffer_size", 32))
                            .dispatch_buffer_size(cfg.value<std::size_t>(key + ".dispatch_buffer_size", 32))
                            .register_file_size(configured_register_file_size(cfg, key + ".register_file_size"))
-                           .num_contexts(configured_num_contexts(cfg, key + ".num_contexts"))
+                           .num_contexts(num_contexts)
+                           .num_virtual_threads(configured_num_virtual_threads(cfg, key + ".num_virtual_threads", num_contexts))
                            .rob_size(cfg.value<std::size_t>(key + ".rob_size", 352))
                            .rob_partition(configured_rob_partition(cfg, key + ".rob_partition"))
                            .lq_size(cfg.value<std::size_t>(key + ".lq_size", 128))

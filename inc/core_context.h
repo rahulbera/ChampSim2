@@ -182,6 +182,26 @@ struct core_context {
   }
 };
 
+// BMT (Balanced Multithreading) virtual thread: the *persistent* state of one
+// virtual context. A physical slot (core_context) is the pipeline lens that is
+// reused by whichever virtual thread is bound to it; this record survives a
+// swap-out and is rebound on swap-in. B1 builds only the identity fields and the
+// state machine -- the RAT snapshot / PC / predictor state / input_queue archive
+// of bmt-design.md §1 are B2 fields and are deliberately not declared yet, so a
+// B1 virtual thread holds no resource and no swap behavior exists.
+struct virtual_thread {
+  // Identity. virtual_id indexes the virtual_thread pool (0..C_virt-1);
+  // trace_slot is the trace_index key naming which positional trace feeds it.
+  std::size_t virtual_id{};
+  std::size_t trace_slot{};
+
+  // State machine. B1 never leaves `running`: nothing triggers a swap, so a
+  // suspended thread is unreachable and `finished` is latched only by trace EOF
+  // (the B1.2 semantics -- finished = empty slot, never re-bound).
+  enum class state : uint8_t { running, suspended, finished };
+  state st{state::running};
+};
+
 } // namespace champsim
 
 #endif

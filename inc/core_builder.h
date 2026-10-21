@@ -64,6 +64,11 @@ struct core_builder_base {
   // default stays 1 so single-context results are bit-identical.
   std::size_t m_num_contexts{1};
 
+  // BMT virtual threads per core (C_virt). 0 means "unset", and the O3_CPU
+  // constructor then falls back to num_contexts -- the identity case where the
+  // virtual layer is inert and results are byte-identical.
+  std::size_t m_num_virtual_threads{0};
+
   std::size_t m_dib_hit_buffer_size{1};
 
   std::size_t m_register_file_size{1};
@@ -154,6 +159,12 @@ public:
    * Specify the number of hardware contexts (SMT threads) on this core.
    */
   self_type& num_contexts(std::size_t num_contexts_);
+
+  /**
+   * Specify the number of BMT virtual threads (virtual contexts) on this core.
+   * Must be >= num_contexts; 0 lets the core fall back to num_contexts.
+   */
+  self_type& num_virtual_threads(std::size_t num_virtual_threads_);
 
   /**
    * Specify the maximum size of the DIB hit buffer.
@@ -362,6 +373,13 @@ template <typename B, typename T>
 auto champsim::core_builder<B, T>::num_contexts(std::size_t num_contexts_) -> self_type&
 {
   m_num_contexts = num_contexts_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::num_virtual_threads(std::size_t num_virtual_threads_) -> self_type&
+{
+  m_num_virtual_threads = num_virtual_threads_;
   return *this;
 }
 

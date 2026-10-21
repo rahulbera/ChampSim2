@@ -86,6 +86,16 @@ public:
   // vector growth cannot leave a stale reference behind.
   std::vector<champsim::core_context> contexts;
 
+  // BMT virtual-context layer (bmt-design.md §1). `virtual_threads` is the C_virt
+  // pool of persistent virtual-thread records; `slot_map` is the C_phys-entry
+  // table naming which virtual_id is bound to each physical slot. B1 builds the
+  // identity binding (slot i -> virtual i) and performs no swap: C_virt == C_phys
+  // is byte-identical, C_virt > C_phys leaves the tail virtual threads idle (their
+  // traces are never read, so nobody triggers a swap-in). The pipeline still
+  // iterates `contexts` (the physical slots) only; these two are consult-only.
+  std::vector<champsim::virtual_thread> virtual_threads;
+  std::vector<std::size_t> slot_map;
+
   // V1.5 buried SMT-shape telemetry. `mode` is the static context count this core
   // was built with (= num_contexts); `active` is the per-cycle count of contexts
   // whose ROB is non-empty. BURIED: no resource-allocation formula reads either
@@ -343,6 +353,8 @@ public:
         cpu(b.m_cpu),
         shared_prf(std::make_unique<RegisterAllocator>(b.m_register_file_size)),
         contexts(b.m_num_contexts, champsim::core_context{shared_prf.get(), b.m_lq_size, b.m_dib_set, b.m_dib_way, b.m_dib_window}),
+        virtual_threads(b.m_num_virtual_threads == 0 ? b.m_num_contexts : b.m_num_virtual_threads),
+        slot_map(b.m_num_contexts, 0),
         mode(b.m_num_contexts),
         IFETCH_BUFFER_SIZE(b.m_ifetch_buffer_size), DISPATCH_BUFFER_SIZE(b.m_dispatch_buffer_size), DECODE_BUFFER_SIZE(b.m_decode_buffer_size),
         REGISTER_FILE_SIZE(b.m_register_file_size), ROB_SIZE(b.m_rob_size), SQ_SIZE(b.m_sq_size), DIB_HIT_BUFFER_SIZE(b.m_dib_hit_buffer_size),
@@ -360,6 +372,18 @@ public:
     // the producer-identity assertions on thread identity rather than asid.
     for (std::size_t i = 0; i < contexts.size(); ++i) {
       contexts[i].ctx_index = champsim::context_index{static_cast<uint8_t>(i)};
+    }
+
+    // B1 identity binding: physical slot i is bound to virtual thread i, and
+    // virtual thread v reads trace slot v. This is the no-swap skeleton -- every
+    // slot has a live virtual thread and no record is ever suspended/finished, so
+    // C_virt == C_phys is exactly the pre-BMT behavior.
+    for (std::size_t i = 0; i < slot_map.size(); ++i) {
+      slot_map[i] = i;
+    }
+    for (std::size_t v = 0; v < virtual_threads.size(); ++v) {
+      virtual_threads[v].virtual_id = v;
+      virtual_threads[v].trace_slot = v;
     }
   }
 };
