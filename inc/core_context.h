@@ -134,6 +134,25 @@ struct core_context {
   // nothing.
   void reclaim_registers();
 
+  // B2.2 scoped flush: discard every in-flight (uncommitted) instruction of this
+  // context and release the physical registers they hold, leaving only the
+  // committed architectural state in backend_RAT. Clears the front-end buffers,
+  // the ROB and both queues; reset_frontend_RAT() rolls the rename alias table
+  // back to the committed mapping; then every busy register this context owns
+  // that is not a backend_RAT value is freed. Memory requests already issued
+  // keep flying in the channel (value-less model: they only warm the cache). The
+  // caller must rsave the committed RAT (rsave_registers) before the slot is
+  // reused, and free the slot (slot_map = -1).
+  void flush_pipeline();
+
+  // B2.2 rsave: snapshot this context's committed architectural register mapping
+  // (backend_RAT) into `saved_rat` -- the value-less IRB entry of bmt-design.md
+  // section 4.3 (which physical register each architectural register maps to,
+  // not register data) -- then release those registers to the shared free pool
+  // and clear both RATs. Pairs with flush_pipeline(): in-flight registers are
+  // already freed, so backend_RAT is exactly the committed state.
+  void rsave_registers(std::array<PHYSICAL_REGISTER_ID, std::numeric_limits<uint8_t>::max() + 1>& saved_rat);
+
   // The RAT half of the deadlock printer; RegisterAllocator::print_deadlock()
   // prints the physical-file half. Called back-to-back in that order by
   // O3_CPU::print_deadlock() so the combined output matches the original.
@@ -202,9 +221,26 @@ struct virtual_thread {
   std::size_t virtual_id{};
   std::size_t trace_slot{};
 
-  // State machine. B1 never leaves `running`: nothing triggers a swap, so a
-  // suspended thread is unreachable and `finished` is latched only by trace EOF
-  // (the B1.2 semantics -- finished = empty slot, never re-bound).
+  // B2.2 swap-out archive: the unfetched trace residual this virtual thread had
+  // not yet fetched when it was swapped out. The tracereader keeps its own
+  // position (it pauses naturally when the slot stops reading it), so archiving
+  // the input_queue is the whole of "save PC" in a trace-driven core; swap-in
+  // moves it back into the physical slot's input_queue.
+  std::deque<ooo_model_instr> input_queue{};
+
+  // B2.2 rsave: the committed architectural register mapping snapshot (the
+  // value-less IRB entry, bmt-design.md section 4.3). -1 means "not mapped"; the
+  // O3_CPU constructor fills it so a never-swapped thread reads a clean RAT.
+  std::array<PHYSICAL_REGISTER_ID, std::numeric_limits<uint8_t>::max() + 1> saved_rat{};
+
+  // B2.2 livelock guard: instructions retired since this virtual thread was last
+  // swapped in. Swap-out asserts this is >= 1, so a swap-in -> immediate-swap-out
+  // cycle that never retires cannot livelock the core.
+  long long retired_since_swapin = 0;
+
+  // State machine. `running` = bound to a physical slot; `suspended` = swapped
+  // out (recoverable, rebindable); `finished` = trace EOF, never re-bound. B1
+  // never leaves `running`; B2.2 moves it to `suspended` on swap-out.
   enum class state : uint8_t { running, suspended, finished };
   state st{state::running};
 };

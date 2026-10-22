@@ -20,6 +20,7 @@ cpu_stats operator-(cpu_stats lhs, cpu_stats rhs)
   lhs.bmt_detection_rob_occupancy -= rhs.bmt_detection_rob_occupancy;
   lhs.bmt_detection_lq_occupancy -= rhs.bmt_detection_lq_occupancy;
   lhs.bmt_detections_with_parallel_miss -= rhs.bmt_detections_with_parallel_miss;
+  lhs.bmt_swap_outs -= rhs.bmt_swap_outs;
 
   return lhs;
 }

@@ -75,6 +75,9 @@ struct core_builder_base {
   // so a default run is byte-identical to B1/V2.5.
   bool m_bmt_enabled{false};
   std::size_t m_bmt_miss_threshold{56};
+  // B2.2 swap-out switch. Refines bmt_enabled: detection marks the loads, the
+  // swap-out acts on those marks. Off == byte-identical to B2.1 (detect-only).
+  bool m_bmt_swap_enabled{false};
 
   std::size_t m_dib_hit_buffer_size{1};
 
@@ -182,6 +185,11 @@ public:
    * Long-latency-load detection threshold, in core cycles.
    */
   self_type& bmt_miss_threshold(std::size_t bmt_miss_threshold_);
+
+  /**
+   * B2.2 swap-out switch (refines bmt_enabled). Default off.
+   */
+  self_type& bmt_swap_enabled(bool bmt_swap_enabled_);
 
   /**
    * Specify the maximum size of the DIB hit buffer.
@@ -411,6 +419,13 @@ template <typename B, typename T>
 auto champsim::core_builder<B, T>::bmt_miss_threshold(std::size_t bmt_miss_threshold_) -> self_type&
 {
   m_bmt_miss_threshold = bmt_miss_threshold_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::bmt_swap_enabled(bool bmt_swap_enabled_) -> self_type&
+{
+  m_bmt_swap_enabled = bmt_swap_enabled_;
   return *this;
 }
 

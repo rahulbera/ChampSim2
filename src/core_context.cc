@@ -97,6 +97,54 @@ void champsim::core_context::reclaim_registers()
   backend_RAT.fill(-1);
 }
 
+void champsim::core_context::flush_pipeline()
+{
+  // Discard every in-flight (uncommitted) instruction. Memory requests already
+  // issued keep flying in the channel -- this clears the tracking, not the
+  // request (value-less model, bmt-design.md section 2 step 1).
+  IFETCH_BUFFER.clear();
+  DECODE_BUFFER.clear();
+  DISPATCH_BUFFER.clear();
+  ROB.clear();
+  DIB_HIT_BUFFER.clear();
+  for (auto& entry : LQ)
+    entry.reset();
+  SQ.clear();
+
+  // Roll the rename alias table back to the committed mapping. This is the RAT
+  // half of the scoped flush; the physical-register half is the loop below.
+  reset_frontend_RAT();
+
+  // Release every in-flight physical register this thread holds. After the
+  // buffers are cleared and frontend_RAT rolled back, the only registers this
+  // context should still own are the committed backend_RAT values: a register is
+  // either the committed mapping for its architectural register (in backend_RAT)
+  // or the not-yet-committed destination of a younger write (busy but absent from
+  // backend_RAT). Free the latter.
+  for (std::size_t phys = 0; phys < reg_allocator->physical_register_file.size(); ++phys) {
+    const auto& pr = reg_allocator->physical_register_file[phys];
+    const bool committed = std::find(std::begin(backend_RAT), std::end(backend_RAT), static_cast<PHYSICAL_REGISTER_ID>(phys)) != std::end(backend_RAT);
+    if (pr.busy && pr.context.value == this->ctx_index.value && !committed)
+      reg_allocator->free_register(static_cast<PHYSICAL_REGISTER_ID>(phys));
+  }
+}
+
+void champsim::core_context::rsave_registers(std::array<PHYSICAL_REGISTER_ID, std::numeric_limits<uint8_t>::max() + 1>& saved_rat)
+{
+  // Snapshot the committed mapping first (the value-less IRB entry), then release
+  // exactly the registers that mapping holds -- the release loop is copied
+  // line-for-line from reclaim_registers (bmt-design.md section 2 step 3).
+  saved_rat = backend_RAT;
+  for (auto phys : backend_RAT) {
+    if (phys != -1) {
+      CHAMPSIM_ASSERT(reg_allocator->physical_register_file.at(phys).context.value == this->ctx_index.value);
+      reg_allocator->free_register(phys);
+    }
+  }
+  frontend_RAT.fill(-1);
+  backend_RAT.fill(-1);
+}
+
 // The RAT half of the deadlock printer, printed back-to-back with
 // RegisterAllocator::print_deadlock() (the physical-file half) so the combined
 // output matches the original single-function version.

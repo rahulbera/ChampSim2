@@ -108,6 +108,11 @@ long O3_CPU::operate()
   // nothing to `progress` and changes no pipeline state.
   detect_long_latency_loads();
 
+  // B2.2: swap-out, after detection so this cycle's freshly-marked loads trigger
+  // the archive immediately. Gated on bmt_swap_enabled && !warmup; contributes
+  // nothing to `progress` (the pipeline state it clears is the point).
+  swap_out_detected_loads();
+
   return progress;
 }
 
@@ -141,6 +146,74 @@ void O3_CPU::detect_long_latency_loads()
         c.sim_stats.bmt_detections_with_parallel_miss += 1;
     }
   }
+}
+
+void O3_CPU::swap_out_detected_loads()
+{
+  // Swap-out refines detection: detection (bmt_enabled) marks the loads, swap-out
+  // (bmt_swap_enabled) acts on those marks. Off or during warmup this does
+  // nothing, so a default run is byte-identical to B2.1 detect-only.
+  if (!bmt_swap_enabled || !bmt_enabled || warmup)
+    return;
+
+  for (std::size_t slot = 0; slot < contexts.size(); ++slot) {
+    if (slot_map[slot] < 0)
+      continue; // empty slot: nothing bound to swap out
+
+    auto& c = contexts[slot];
+    const bool triggered = std::any_of(std::begin(c.LQ), std::end(c.LQ),
+                                       [](const auto& e) { return e.has_value() && e->fetch_issued && e->bmt_detected; });
+    if (triggered)
+      swap_out_context(slot);
+  }
+}
+
+void O3_CPU::swap_out_context(std::size_t slot)
+{
+  const long v = slot_map[slot];
+  CHAMPSIM_ASSERT(v >= 0);
+  auto& vt = virtual_threads[static_cast<std::size_t>(v)];
+  auto& c = contexts[slot];
+
+  // Livelock guard (bmt-design.md §2 step e): a virtual thread must have retired
+  // at least one instruction since it was last bound, or a swap-in -> immediate
+  // swap-out that never retires could livelock. The counter only accumulates here
+  // (B2.2 has no swap-in, so nothing resets it); the standard warmup guarantees it
+  // is >= 1 before the first detection can fire. B2.3 resets it to 0 on swap-in,
+  // which is what makes this assertion load-bearing.
+  CHAMPSIM_ASSERT(vt.retired_since_swapin >= 1);
+
+  // Segments (a)+(b) cancel load + scoped flush: discard every in-flight
+  // instruction and free its physical registers, leaving only committed state.
+  // Already-issued memory requests are NOT cancelled -- they keep flying in the
+  // channel and, on return, find no LQ entry to complete (value-less model,
+  // bmt-design.md §2 step 1). Clearing the LQ is the whole of "cancel".
+  c.flush_pipeline();
+
+  // Segment (c) rsave: snapshot the committed architectural mapping into the
+  // virtual thread's IRB entry, then release those registers and clear both RATs.
+  c.rsave_registers(vt.saved_rat);
+
+  // Segment (d) archive: move the unfetched trace residual into the virtual
+  // thread's record. The tracereader's own position is untouched -- it pauses
+  // naturally while the slot is empty. This is the whole of "save PC" in a
+  // trace-driven core (bmt-design.md §4).
+  vt.input_queue = std::move(c.input_queue);
+
+  // Segment (e) free the slot + mark suspended.
+  vt.st = champsim::virtual_thread::state::suspended;
+  slot_map[slot] = -1;
+
+  c.sim_stats.bmt_swap_outs += 1;
+
+  // Zero-residue assertion: the slot leaves no trace. Every buffer and queue is
+  // empty, both RATs are cleared, and no register is held (flush freed the
+  // in-flight ones, rsave freed the committed ones).
+  CHAMPSIM_ASSERT(c.IFETCH_BUFFER.empty() && c.DECODE_BUFFER.empty() && c.DISPATCH_BUFFER.empty() && c.ROB.empty() && c.DIB_HIT_BUFFER.empty());
+  CHAMPSIM_ASSERT(c.input_queue.empty() && c.SQ.empty());
+  CHAMPSIM_ASSERT(std::all_of(std::begin(c.LQ), std::end(c.LQ), [](const auto& e) { return !e.has_value(); }));
+  CHAMPSIM_ASSERT(std::all_of(std::begin(c.frontend_RAT), std::end(c.frontend_RAT), [](PHYSICAL_REGISTER_ID p) { return p == -1; }));
+  CHAMPSIM_ASSERT(std::all_of(std::begin(c.backend_RAT), std::end(c.backend_RAT), [](PHYSICAL_REGISTER_ID p) { return p == -1; }));
 }
 
 void O3_CPU::initialize()
@@ -1431,6 +1504,16 @@ long O3_CPU::retire_rob_impl(champsim::core_context& c, champsim::bandwidth& ret
 
   auto retire_count = std::distance(retire_begin, retire_end);
   c.num_retired += retire_count;
+
+  // B2.2 livelock-guard bookkeeping: accumulate retired instructions on the
+  // virtual thread bound to this physical slot. Consult-only when BMT is off;
+  // the value feeds swap_out_context's assertion, which is gated on
+  // bmt_swap_enabled. An empty slot (slot_map == -1) cannot retire, so the guard
+  // just skips it.
+  const long bound = slot_map.at(static_cast<std::size_t>(c.ctx_index.value));
+  if (bound >= 0)
+    virtual_threads.at(static_cast<std::size_t>(bound)).retired_since_swapin += retire_count;
+
   retire_bw.consume(retire_count);
   c.ROB.erase(retire_begin, retire_end);
 

@@ -60,8 +60,14 @@ long do_cycle(std::vector<std::reference_wrapper<operable>>& operables, const st
   // collapses this to the old single-context read (slot_map[c] == c).
   for (O3_CPU& cpu : cpus) {
     for (std::size_t c = 0; c < std::size(cpu.contexts); ++c) {
+      // B2.2: an empty slot (slot_map == -1) holds a suspended virtual thread and
+      // reads no trace until swap-in rebinds it (B2.3). Under the identity binding
+      // (default) slot_map[c] == c, so this collapses to the old read.
+      const long bound = cpu.slot_map.at(c);
+      if (bound < 0)
+        continue;
       auto& ctx = cpu.contexts[c];
-      auto& trace = traces.at(trace_index.at(cpu.cpu).at(cpu.slot_map.at(c)));
+      auto& trace = traces.at(trace_index.at(cpu.cpu).at(static_cast<std::size_t>(bound)));
       // V2.5: arm register reclamation once this context's trace is exhausted.
       // Under the default repeat=true the tracereader never reports EOF, so this
       // stays false and reclamation is dead code; with sim.trace_repeat=false it
@@ -184,7 +190,11 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
       for (std::size_t c = 0; c < std::size(cpu.contexts); ++c) {
         cpu.record_roi_completion(c, length);
         const bool retired = cpu.sim_instr(c) >= length;
-        const bool eof = traces.at(trace_index.at(cpu.cpu).at(cpu.slot_map.at(c))).eof();
+        // B2.2: a suspended (empty) slot is not finished -- its trace has not
+        // EOF'd, it is waiting for swap-in (B2.3). Treat its eof as false so it
+        // neither crashes the lookup nor prematurely completes the phase.
+        const long bound = cpu.slot_map.at(c);
+        const bool eof = bound >= 0 && traces.at(trace_index.at(cpu.cpu).at(static_cast<std::size_t>(bound))).eof();
         core_complete = core_complete && (retired || eof);
       }
       next_phase_complete[cpu.cpu] = next_phase_complete[cpu.cpu] || core_complete;

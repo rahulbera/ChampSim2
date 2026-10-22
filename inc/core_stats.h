@@ -61,10 +61,12 @@ struct cpu_stats {
   //     at each detection (divide by the count for the average).
   //   bmt_detections_with_parallel_miss -- detections at which another load of
   //     the same context was also in flight (the paper's parallel second miss).
+  //   bmt_swap_outs                    -- swap-out sequences performed (B2.2).
   uint64_t bmt_long_latency_detections = 0;
   uint64_t bmt_detection_rob_occupancy = 0;
   uint64_t bmt_detection_lq_occupancy = 0;
   uint64_t bmt_detections_with_parallel_miss = 0;
+  uint64_t bmt_swap_outs = 0;
 
   [[nodiscard]] auto instrs() const { return end_instrs - begin_instrs; }
   [[nodiscard]] auto cycles() const { return end_cycles - begin_cycles; }

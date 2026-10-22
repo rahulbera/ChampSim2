@@ -88,20 +88,24 @@ public:
 
   // BMT virtual-context layer (bmt-design.md §1). `virtual_threads` is the C_virt
   // pool of persistent virtual-thread records; `slot_map` is the C_phys-entry
-  // table naming which virtual_id is bound to each physical slot. B1 builds the
-  // identity binding (slot i -> virtual i) and performs no swap: C_virt == C_phys
-  // is byte-identical, C_virt > C_phys leaves the tail virtual threads idle (their
-  // traces are never read, so nobody triggers a swap-in). The pipeline still
-  // iterates `contexts` (the physical slots) only; these two are consult-only.
+  // table naming which virtual_id is bound to each physical slot (-1 = empty,
+  // bmt-design.md §1.1). B1 builds the identity binding (slot i -> virtual i) and
+  // performs no swap: C_virt == C_phys is byte-identical, C_virt > C_phys leaves
+  // the tail virtual threads idle (their traces are never read, so nobody
+  // triggers a swap-in). The pipeline iterates `contexts` (the physical slots)
+  // only; B2.2 empties a slot by writing -1 and re-fills it on swap-in (B2.3).
   std::vector<champsim::virtual_thread> virtual_threads;
-  std::vector<std::size_t> slot_map;
+  std::vector<long> slot_map;
 
   // BMT (Balanced Multithreading) switches. `bmt_enabled` is the master gate for
   // every BMT mechanism (B2.1 detection onward); off == byte-identical to
   // B1/V2.5. `bmt_miss_threshold` is the long-latency-load detection threshold
   // in core cycles, held as a duration so detection compares clock ticks.
+  // `bmt_swap_enabled` (B2.2) refines `bmt_enabled`: detection marks the loads,
+  // swap-out acts on those marks. Off == byte-identical to B2.1 (detect-only).
   const bool bmt_enabled;
   const champsim::chrono::clock::duration bmt_miss_threshold;
+  const bool bmt_swap_enabled;
 
   // V1.5 buried SMT-shape telemetry. `mode` is the static context count this core
   // was built with (= num_contexts); `active` is the per-cycle count of contexts
@@ -172,6 +176,13 @@ public:
   // latency has reached bmt_miss_threshold, marks them and charges the
   // per-context census (cpu_stats::bmt_*). No-op when BMT is disabled or warmup.
   void detect_long_latency_loads();
+
+  // B2.2 swap-out: for each bound slot with a detected long-latency load, archive
+  // its virtual thread and free the slot. Gated on bmt_swap_enabled && !warmup.
+  // The per-slot body is swap_out_context(); see the implementation for the five
+  // segments (cancel load, scoped flush, rsave, archive, free slot + assertions).
+  void swap_out_detected_loads();
+  void swap_out_context(std::size_t slot);
 
   void initialize_instruction();
   long check_dib();
@@ -370,6 +381,7 @@ public:
         slot_map(b.m_num_contexts, 0),
         bmt_enabled(b.m_bmt_enabled),
         bmt_miss_threshold(b.m_bmt_miss_threshold * b.m_clock_period),
+        bmt_swap_enabled(b.m_bmt_swap_enabled),
         mode(b.m_num_contexts),
         IFETCH_BUFFER_SIZE(b.m_ifetch_buffer_size), DISPATCH_BUFFER_SIZE(b.m_dispatch_buffer_size), DECODE_BUFFER_SIZE(b.m_decode_buffer_size),
         REGISTER_FILE_SIZE(b.m_register_file_size), ROB_SIZE(b.m_rob_size), SQ_SIZE(b.m_sq_size), DIB_HIT_BUFFER_SIZE(b.m_dib_hit_buffer_size),
@@ -394,11 +406,14 @@ public:
     // slot has a live virtual thread and no record is ever suspended/finished, so
     // C_virt == C_phys is exactly the pre-BMT behavior.
     for (std::size_t i = 0; i < slot_map.size(); ++i) {
-      slot_map[i] = i;
+      slot_map[i] = static_cast<long>(i);
     }
     for (std::size_t v = 0; v < virtual_threads.size(); ++v) {
       virtual_threads[v].virtual_id = v;
       virtual_threads[v].trace_slot = v;
+      // A never-swapped thread reads a clean RAT snapshot: no architectural
+      // register is mapped until it is first renamed.
+      virtual_threads[v].saved_rat.fill(-1);
     }
   }
 };

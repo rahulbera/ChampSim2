@@ -21,7 +21,7 @@ TEST_CASE("B1 virtual-context layer defaults to the identity binding")
 
   // Mapping table is the identity: slot i -> virtual i.
   for (std::size_t i = 0; i < cpu.slot_map.size(); ++i) {
-    CHECK(cpu.slot_map[i] == i);
+    CHECK(cpu.slot_map[i] == static_cast<long>(i));
   }
 
   // Every virtual thread is bound to its own trace slot (identity) and starts
