@@ -24,6 +24,7 @@
 
 #include <array>
 #include <bitset>
+#include <cstdint>
 #include <deque>
 #include <limits>
 #include <memory>
@@ -113,6 +114,17 @@ public:
   const champsim::bmt_switch_mode bmt_switch_mode_;
   const champsim::chrono::clock::duration bmt_swap_out_cost;
   const champsim::chrono::clock::duration bmt_swap_in_cost;
+
+  // B3.0 per-event trace log (bmt.trace_events). Default off == byte-identical.
+  // The accumulators below feed the end-of-run aggregate summary; they stay
+  // empty (zero) while the switch is off, so a default run is inert.
+  const bool bmt_trace_events;
+  std::vector<std::intmax_t> bmt_swap_in_intervals;
+  std::vector<std::intmax_t> bmt_inflight_waits;
+  uint64_t bmt_trace_swap_outs = 0;
+  uint64_t bmt_trace_defers = 0;
+  uint64_t bmt_trace_defers_livelock = 0;
+  uint64_t bmt_trace_defers_resource = 0;
 
   // B2.4 per-slot fetch gate. `swap_resume_time[slot]` is the firmware-cost
   // deadline: while current_time is short of it the slot does not fetch (the
@@ -416,6 +428,7 @@ public:
                                                                                     : champsim::chrono::clock::duration{}),
         bmt_swap_in_cost(b.m_bmt_switch_mode == champsim::bmt_switch_mode::firmware ? 30 * b.m_clock_period
                                                                                     : champsim::chrono::clock::duration{}),
+        bmt_trace_events(b.m_bmt_trace_events),
         swap_resume_time(b.m_num_contexts),
         mode(b.m_num_contexts),
         IFETCH_BUFFER_SIZE(b.m_ifetch_buffer_size), DISPATCH_BUFFER_SIZE(b.m_dispatch_buffer_size), DECODE_BUFFER_SIZE(b.m_decode_buffer_size),

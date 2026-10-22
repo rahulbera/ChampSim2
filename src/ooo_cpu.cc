@@ -35,6 +35,40 @@
 #include "instruction.h"
 #include "util/span.h"
 
+namespace
+{
+// B3.0 per-event trace aggregate summary (bmt.trace_events). Prints one line of
+// totals and one line per cycle distribution to stderr. Inert unless the trace
+// switch is on, so a default run never reaches it.
+void print_bmt_trace_summary(uint64_t swap_outs, uint64_t defers, uint64_t defers_livelock, uint64_t defers_resource,
+                             const std::vector<std::intmax_t>& swap_in_intervals, const std::vector<std::intmax_t>& inflight_waits)
+{
+  fmt::print(stderr, "[BMT][SUMMARY] swap_outs={} defers={} (livelock={} resource={})\n", swap_outs, defers, defers_livelock, defers_resource);
+
+  const auto print_distribution = [](const char* name, std::vector<std::intmax_t> values) {
+    if (values.empty()) {
+      fmt::print(stderr, "[BMT][SUMMARY] {}: count=0\n", name);
+      return;
+    }
+    std::sort(std::begin(values), std::end(values));
+    // Nearest-rank percentile: rank (1-indexed) = ceil(p/100 * n), clamped to
+    // [1, n]. Cycle counts are non-negative, so min == front and max == back.
+    const auto percentile = [&](double p) {
+      auto rank = static_cast<std::size_t>(std::ceil(p / 100.0 * static_cast<double>(values.size())));
+      if (rank == 0)
+        rank = 1;
+      return values[rank - 1];
+    };
+    const double avg = static_cast<double>(std::accumulate(std::begin(values), std::end(values), std::intmax_t{0})) / static_cast<double>(values.size());
+    fmt::print(stderr, "[BMT][SUMMARY] {}: count={} min={} avg={:.2f} p50={} p90={} p99={} max={}\n", name, values.size(), values.front(), avg,
+               percentile(50.0), percentile(90.0), percentile(99.0), values.back());
+  };
+
+  print_distribution("swap_in_interval_cycles", swap_in_intervals);
+  print_distribution("inflight_wait_cycles", inflight_waits);
+}
+} // namespace
+
 long O3_CPU::operate()
 {
   long progress{0};
@@ -188,8 +222,16 @@ void O3_CPU::swap_out_context(std::size_t slot)
   // triggering load keeps flying in the channel, the thread stays bound and
   // retires it when it returns, and the next detection (now with >= 1
   // retirement) proceeds normally.
-  if (vt.retired_since_swapin < 1)
+  if (vt.retired_since_swapin < 1) {
+    // B3.0 per-event trace: record the livelock-gate defer (bmt-design.md
+    // section 3 step 1). Inert when the trace switch is off.
+    if (bmt_trace_events) {
+      ++bmt_trace_defers;
+      ++bmt_trace_defers_livelock;
+      fmt::print(stderr, "[BMT][DEFER] cycle={} slot={} vthread={} reason=livelock-gate\n", current_time.time_since_epoch() / clock_period, slot, v);
+    }
     return;
+  }
 
   // B2.4 switch-when-ready (bmt-design.md section 3 step 5): count this thread's
   // still-in-flight loads before the scoped flush clears the LQ. Those requests
@@ -198,6 +240,24 @@ void O3_CPU::swap_out_context(std::size_t slot)
   // instead of merging into the still-in-flight MSHR.
   vt.outstanding_loads = static_cast<long>(
       std::count_if(std::begin(c.LQ), std::end(c.LQ), [](const auto& e) { return e.has_value() && e->fetch_issued; }));
+
+  // B3.0 per-event trace: log the swap-out with the ROB/LQ occupancy at the
+  // moment of the flush and the latency of the triggering (detected) load, all
+  // measured before the scoped flush empties them. `criterion` is `latency`
+  // until B2.5 adds the miss-edge arm. Inert when the trace switch is off.
+  if (bmt_trace_events) {
+    ++bmt_trace_swap_outs;
+    std::intmax_t trigger_latency = 0;
+    for (const auto& e : c.LQ) {
+      if (e.has_value() && e->fetch_issued && e->bmt_detected)
+        trigger_latency = std::max(trigger_latency, (current_time - e->issue_time) / clock_period);
+    }
+    const auto lq_occupancy = std::count_if(std::begin(c.LQ), std::end(c.LQ), [](const auto& e) { return e.has_value(); });
+    fmt::print(stderr, "[BMT][SWAP_OUT] cycle={} slot={} vthread={} trigger_latency={} rob={} lq={} criterion=latency\n",
+               current_time.time_since_epoch() / clock_period, slot, v, trigger_latency, c.ROB.size(), lq_occupancy);
+    vt.swap_out_time = current_time;
+    vt.inflight_wait_pending = vt.outstanding_loads > 0;
+  }
 
   // Segments (a)+(b) cancel load + scoped flush: discard every in-flight
   // instruction and free its physical registers, leaving only committed state.
@@ -285,8 +345,17 @@ void O3_CPU::swap_in_suspended_threads()
     const auto& cand = virtual_threads[static_cast<std::size_t>(chosen)];
     const auto mapped = static_cast<unsigned long>(
         std::count_if(std::begin(cand.saved_rat), std::end(cand.saved_rat), [](PHYSICAL_REGISTER_ID p) { return p != -1; }));
-    if (mapped > shared_prf->count_free_registers())
+    if (mapped > shared_prf->count_free_registers()) {
+      // B3.0 per-event trace: record the resource-gate defer (bmt-design.md
+      // section 3 step 3). Inert when the trace switch is off.
+      if (bmt_trace_events) {
+        ++bmt_trace_defers;
+        ++bmt_trace_defers_resource;
+        fmt::print(stderr, "[BMT][DEFER] cycle={} slot={} vthread={} reason=resource-gate mapped={} free={}\n", current_time.time_since_epoch() / clock_period,
+                   slot, chosen, mapped, shared_prf->count_free_registers());
+      }
       continue;
+    }
 
     virtual_round_robin = (static_cast<std::size_t>(chosen) + 1) % n;
     swap_in_context(slot, chosen);
@@ -309,6 +378,23 @@ void O3_CPU::swap_in_context(std::size_t slot, long v)
   // section 9's "free+busy+IRB_occupied" collapses back to free+busy under 4.3).
   const auto mapped = static_cast<unsigned long>(
       std::count_if(std::begin(vt.saved_rat), std::end(vt.saved_rat), [](PHYSICAL_REGISTER_ID p) { return p != -1; }));
+
+  // B3.0 per-event trace: log the swap-in with the out-to-in suspension
+  // interval and the number of physical registers rrestore re-allocates. A
+  // tail virtual thread (C_virt > C_phys) bound for the first time was never
+  // swapped out, so it has no interval. Inert when the trace switch is off.
+  if (bmt_trace_events) {
+    if (vt.swap_out_time.has_value()) {
+      const auto out_in_interval = (current_time - *vt.swap_out_time) / clock_period;
+      bmt_swap_in_intervals.push_back(out_in_interval);
+      fmt::print(stderr, "[BMT][SWAP_IN] cycle={} slot={} vthread={} out_in_interval={} rrestore_mapped={}\n", current_time.time_since_epoch() / clock_period,
+                 slot, v, out_in_interval, mapped);
+    } else {
+      fmt::print(stderr, "[BMT][SWAP_IN] cycle={} slot={} vthread={} out_in_interval=first-bind rrestore_mapped={}\n",
+                 current_time.time_since_epoch() / clock_period, slot, v, mapped);
+    }
+  }
+
   const auto free_before = shared_prf->count_free_registers();
   c.rrestore_registers(vt.saved_rat);
   CHAMPSIM_ASSERT(shared_prf->count_free_registers() == free_before - mapped);
@@ -388,6 +474,13 @@ void O3_CPU::end_phase(unsigned finished_cpu)
       c.roi_stats = c.sim_stats;
     }
   }
+
+  // B3.0 per-event trace aggregate summary, once per core at the end of the
+  // simulation phase (the ROI). Gated on the switch and !warmup so a default
+  // run prints nothing and stays byte-identical.
+  if (bmt_trace_events && !warmup && finished_cpu == this->cpu)
+    print_bmt_trace_summary(bmt_trace_swap_outs, bmt_trace_defers, bmt_trace_defers_livelock, bmt_trace_defers_resource, bmt_swap_in_intervals,
+                            bmt_inflight_waits);
 }
 
 void O3_CPU::record_roi_completion(std::size_t c, long long length)
@@ -1612,6 +1705,13 @@ long O3_CPU::handle_memory_return()
           const long decrement = std::min(vt.outstanding_loads, orphan_returned);
           vt.outstanding_loads -= decrement;
           orphan_returned -= decrement;
+          // B3.0 per-event trace: when a thread's orphaned loads finish
+          // draining, record the switch-when-ready wait it spent in flight
+          // since its swap-out. Inert when the trace switch is off.
+          if (bmt_trace_events && vt.outstanding_loads == 0 && vt.inflight_wait_pending && vt.swap_out_time.has_value()) {
+            bmt_inflight_waits.push_back((current_time - *vt.swap_out_time) / clock_period);
+            vt.inflight_wait_pending = false;
+          }
         }
       }
     }

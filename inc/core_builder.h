@@ -90,6 +90,11 @@ struct core_builder_base {
   // byte-identical to B2.3.
   bmt_switch_mode m_bmt_switch_mode{bmt_switch_mode::instant};
 
+  // B3.0 per-event trace log switch (bmt.trace_events). Default off, so a
+  // default run is byte-identical; when on it emits one stderr line per
+  // swap-out/swap-in/defer plus an end-of-run aggregate summary.
+  bool m_bmt_trace_events{false};
+
   std::size_t m_dib_hit_buffer_size{1};
 
   std::size_t m_register_file_size{1};
@@ -206,6 +211,11 @@ public:
    * B2.4 swap-cost mode (instant vs firmware). Default instant.
    */
   self_type& bmt_switch(bmt_switch_mode bmt_switch_mode_);
+
+  /**
+   * B3.0 per-event trace log switch. Default off.
+   */
+  self_type& bmt_trace_events(bool bmt_trace_events_);
 
   /**
    * Specify the maximum size of the DIB hit buffer.
@@ -449,6 +459,13 @@ template <typename B, typename T>
 auto champsim::core_builder<B, T>::bmt_switch(bmt_switch_mode bmt_switch_mode_) -> self_type&
 {
   m_bmt_switch_mode = bmt_switch_mode_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::bmt_trace_events(bool bmt_trace_events_) -> self_type&
+{
+  m_bmt_trace_events = bmt_trace_events_;
   return *this;
 }
 

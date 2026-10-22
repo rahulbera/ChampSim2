@@ -257,6 +257,15 @@ struct virtual_thread {
   // Inert when BMT is off.
   long outstanding_loads = 0;
 
+  // B3.0 per-event trace timestamps (bmt.trace_events). swap_out_time is the
+  // moment this thread last swapped out -- both the swap-in interval and the
+  // switch-when-ready in-flight wait measure from it. inflight_wait_pending
+  // marks a swap-out that still had loads in flight whose drain-to-zero wait
+  // has not yet been recorded. Inert (empty / false) while the trace switch is
+  // off.
+  std::optional<champsim::chrono::clock::time_point> swap_out_time{};
+  bool inflight_wait_pending = false;
+
   // State machine. `running` = bound to a physical slot; `suspended` = swapped
   // out (recoverable, rebindable); `finished` = trace EOF, never re-bound. B1
   // never leaves `running`; B2.2 moves it to `suspended` on swap-out.
