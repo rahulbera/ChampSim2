@@ -55,6 +55,14 @@ enum class rob_partition { equal, active };
 // the slot stalls (no fetch).
 enum class bmt_switch_mode { instant, firmware };
 
+// B2.5 long-latency-load detection source (bmt-design.md §5.6). `latency` is
+// the B2.1 fixed in-flight-cycle threshold (the default, so a BMT-off run is
+// byte-identical); `miss` is the miss-edge trigger -- a load is flagged the
+// cycle its LLC miss is confirmed (the request's own arrival at the LLC, not a
+// fixed cutoff), reusing the LLC's per-context load-miss census as the edge
+// signal. The two arms coexist so the acceptance experiment can reconcile them.
+enum class bmt_trigger_mode { latency, miss };
+
 namespace detail
 {
 struct core_builder_base {
@@ -94,6 +102,17 @@ struct core_builder_base {
   // default run is byte-identical; when on it emits one stderr line per
   // swap-out/swap-in/defer plus an end-of-run aggregate summary.
   bool m_bmt_trace_events{false};
+
+  // B2.5 detection source (latency threshold vs miss edge) and the optional
+  // miss-arm dwell (cycles between the LLC miss edge and swap-out). Default
+  // latency / dwell 0 == the B2.4 behavior.
+  bmt_trigger_mode m_bmt_trigger_mode{bmt_trigger_mode::latency};
+  std::size_t m_bmt_miss_dwell{0};
+
+  // B2.5 miss-edge signal source: a pointer to the shared LLC, whose per-context
+  // load-miss counter (filled when the LLC is built with per_context_counters)
+  // is the edge the `miss` arm diffs. Wired by static_environment, like l1i.
+  CACHE* m_llc{};
 
   std::size_t m_dib_hit_buffer_size{1};
 
@@ -216,6 +235,22 @@ public:
    * B3.0 per-event trace log switch. Default off.
    */
   self_type& bmt_trace_events(bool bmt_trace_events_);
+
+  /**
+   * B2.5 detection source: latency threshold (default) or miss edge.
+   */
+  self_type& bmt_trigger(bmt_trigger_mode bmt_trigger_mode_);
+
+  /**
+   * B2.5 miss-arm dwell, in cycles between the LLC miss edge and swap-out.
+   */
+  self_type& bmt_miss_dwell(std::size_t bmt_miss_dwell_);
+
+  /**
+   * B2.5 miss-edge signal source: the shared LLC whose per-context load-miss
+   * counter the `miss` arm reads. Wired by static_environment.
+   */
+  self_type& llc(CACHE* llc_);
 
   /**
    * Specify the maximum size of the DIB hit buffer.
@@ -466,6 +501,27 @@ template <typename B, typename T>
 auto champsim::core_builder<B, T>::bmt_trace_events(bool bmt_trace_events_) -> self_type&
 {
   m_bmt_trace_events = bmt_trace_events_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::bmt_trigger(bmt_trigger_mode bmt_trigger_mode_) -> self_type&
+{
+  m_bmt_trigger_mode = bmt_trigger_mode_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::bmt_miss_dwell(std::size_t bmt_miss_dwell_) -> self_type&
+{
+  m_bmt_miss_dwell = bmt_miss_dwell_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::llc(CACHE* llc_) -> self_type&
+{
+  m_llc = llc_;
   return *this;
 }
 

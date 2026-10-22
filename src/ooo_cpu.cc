@@ -160,14 +160,36 @@ void O3_CPU::detect_long_latency_loads()
   if (!bmt_enabled || warmup)
     return;
 
+  // B2.5: two detection arms share the marking + census below. `latency` (the
+  // B2.1 default) flags a load once it has been in flight for the fixed
+  // threshold. `miss` flags it the cycle its LLC miss is confirmed -- the
+  // request's own arrival at the LLC, read as an increment of the LLC's
+  // per-context load-miss census over this core's last-seen snapshot. The
+  // snapshot is keyed by asid[0] == the virtual thread's trace slot, which is
+  // disjoint across cores, so a core only ever reads buckets its own loads
+  // wrote.
+  const bool miss_edge = (bmt_trigger_mode_ == champsim::bmt_trigger_mode::miss);
+
   for (auto& c : contexts) {
     for (auto& lq_entry : c.LQ) {
       if (!lq_entry.has_value() || !lq_entry->fetch_issued || lq_entry->bmt_detected)
         continue;
-      if (current_time - lq_entry->issue_time < bmt_miss_threshold)
+
+      if (miss_edge) {
+        // Consume one confirmed miss for this load's asid. The LLC bucket is
+        // zero when the LLC was not built with per_context_counters, so the arm
+        // is inert (never fires) rather than mis-detecting -- the environment
+        // refuses trigger=miss without that flag at construction time.
+        const auto asid = lq_entry->asid[0];
+        if (llc == nullptr || llc->sim_stats.per_context_load_misses[asid] <= bmt_last_seen_llc_misses[asid])
+          continue;
+        ++bmt_last_seen_llc_misses[asid];
+      } else if (current_time - lq_entry->issue_time < bmt_miss_threshold) {
         continue;
+      }
 
       lq_entry->bmt_detected = true;
+      lq_entry->bmt_detected_at = current_time;
 
       // Parallel-second-miss census: is another load of this context also in
       // flight right now? A load is "in flight" once issued (fetch_issued) and
@@ -185,6 +207,17 @@ void O3_CPU::detect_long_latency_loads()
         c.sim_stats.bmt_detections_with_parallel_miss += 1;
     }
   }
+
+  // B2.5 miss arm: drain any confirmed misses that no in-flight load absorbed --
+  // an orphan request (its thread swapped out) reaches the LLC after the flush,
+  // or a completed load's edge landed before detect ran. Advancing the snapshot
+  // past them keeps them from leaking into the next re-executed load's marking.
+  if (miss_edge && llc != nullptr) {
+    for (std::size_t asid = 0; asid < bmt_last_seen_llc_misses.size(); ++asid) {
+      if (llc->sim_stats.per_context_load_misses[asid] > bmt_last_seen_llc_misses[asid])
+        bmt_last_seen_llc_misses[asid] = llc->sim_stats.per_context_load_misses[asid];
+    }
+  }
 }
 
 void O3_CPU::swap_out_detected_loads()
@@ -195,13 +228,23 @@ void O3_CPU::swap_out_detected_loads()
   if (!bmt_swap_enabled || !bmt_enabled || warmup)
     return;
 
+  // B2.5 dwell: the miss-edge arm may wait a fixed number of cycles after the
+  // miss is confirmed before swap-out acts, so the DRAM request has time to
+  // seat itself before the flush. The latency arm swaps out the same cycle it
+  // detects -- it has no dwell, whatever miss_dwell is set to.
+  const auto dwell = (bmt_trigger_mode_ == champsim::bmt_trigger_mode::miss) ? bmt_miss_dwell : 0;
+
   for (std::size_t slot = 0; slot < contexts.size(); ++slot) {
     if (slot_map[slot] < 0)
       continue; // empty slot: nothing bound to swap out
 
     auto& c = contexts[slot];
-    const bool triggered = std::any_of(std::begin(c.LQ), std::end(c.LQ),
-                                       [](const auto& e) { return e.has_value() && e->fetch_issued && e->bmt_detected; });
+    const bool triggered = std::any_of(std::begin(c.LQ), std::end(c.LQ), [&](const auto& e) {
+      if (!e.has_value() || !e->fetch_issued || !e->bmt_detected)
+        return false;
+      const auto elapsed = (current_time - e->bmt_detected_at) / clock_period;
+      return elapsed >= static_cast<decltype(elapsed)>(dwell);
+    });
     if (triggered)
       swap_out_context(slot);
   }
@@ -243,8 +286,9 @@ void O3_CPU::swap_out_context(std::size_t slot)
 
   // B3.0 per-event trace: log the swap-out with the ROB/LQ occupancy at the
   // moment of the flush and the latency of the triggering (detected) load, all
-  // measured before the scoped flush empties them. `criterion` is `latency`
-  // until B2.5 adds the miss-edge arm. Inert when the trace switch is off.
+  // measured before the scoped flush empties them. `criterion` names the B2.5
+  // detection arm; `dwell` is printed for the miss arm so the B3.2 scan is
+  // self-describing. Inert when the trace switch is off.
   if (bmt_trace_events) {
     ++bmt_trace_swap_outs;
     std::intmax_t trigger_latency = 0;
@@ -253,8 +297,12 @@ void O3_CPU::swap_out_context(std::size_t slot)
         trigger_latency = std::max(trigger_latency, (current_time - e->issue_time) / clock_period);
     }
     const auto lq_occupancy = std::count_if(std::begin(c.LQ), std::end(c.LQ), [](const auto& e) { return e.has_value(); });
-    fmt::print(stderr, "[BMT][SWAP_OUT] cycle={} slot={} vthread={} trigger_latency={} rob={} lq={} criterion=latency\n",
-               current_time.time_since_epoch() / clock_period, slot, v, trigger_latency, c.ROB.size(), lq_occupancy);
+    if (bmt_trigger_mode_ == champsim::bmt_trigger_mode::miss)
+      fmt::print(stderr, "[BMT][SWAP_OUT] cycle={} slot={} vthread={} trigger_latency={} rob={} lq={} criterion=miss dwell={}\n",
+                 current_time.time_since_epoch() / clock_period, slot, v, trigger_latency, c.ROB.size(), lq_occupancy, bmt_miss_dwell);
+    else
+      fmt::print(stderr, "[BMT][SWAP_OUT] cycle={} slot={} vthread={} trigger_latency={} rob={} lq={} criterion=latency\n",
+                 current_time.time_since_epoch() / clock_period, slot, v, trigger_latency, c.ROB.size(), lq_occupancy);
     vt.swap_out_time = current_time;
     vt.inflight_wait_pending = vt.outstanding_loads > 0;
   }
@@ -458,6 +506,14 @@ void O3_CPU::begin_phase()
     stats.begin_cycles = c.begin_phase_time.time_since_epoch() / clock_period;
     c.sim_stats = stats;
   }
+
+  // B2.5 miss arm: the LLC's per-context load-miss census also resets here (the
+  // cache's begin_phase zeroes its sim_stats), so reset this core's snapshot to
+  // match -- otherwise warmup's consumed count would offset the ROI's. The LLC
+  // (cache) begins its phase before the cores in the operate order, so its
+  // counter is already zero by the time this runs. Inert (all zeros) for the
+  // latency arm, which never reads it.
+  bmt_last_seen_llc_misses.fill(0);
 }
 
 void O3_CPU::end_phase(unsigned finished_cpu)

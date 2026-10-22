@@ -233,6 +233,18 @@ champsim::bmt_switch_mode configured_bmt_switch(const champsim::runtime_config& 
   throw std::runtime_error{"runtime config: " + key + " must be 'instant' or 'firmware'"};
 }
 
+champsim::bmt_trigger_mode configured_bmt_trigger(const champsim::runtime_config& cfg, const std::string& key)
+{
+  const auto value = cfg.value<std::string>(key, "latency");
+  if (value == "latency") {
+    return champsim::bmt_trigger_mode::latency;
+  }
+  if (value == "miss") {
+    return champsim::bmt_trigger_mode::miss;
+  }
+  throw std::runtime_error{"runtime config: " + key + " must be 'latency' or 'miss'"};
+}
+
 // The simulation's time quantum: do_phase() ticks the shared clock by the
 // SMALLEST clock_period among the operables, so a duration expressed in cycles
 // has to be scaled by this and not by any one component's period.
@@ -523,6 +535,9 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                            .bmt_swap_enabled(cfg.value<bool>(key + ".bmt.swap_enabled", false))
                            .bmt_switch(configured_bmt_switch(cfg, key + ".bmt.switch"))
                            .bmt_trace_events(cfg.value<bool>(key + ".bmt.trace_events", false))
+                           .bmt_trigger(configured_bmt_trigger(cfg, key + ".bmt.trigger"))
+                           .bmt_miss_dwell(cfg.value<std::size_t>(key + ".bmt.miss_dwell", 0))
+                           .llc(&caches.at(0))
                            .rob_size(cfg.value<std::size_t>(key + ".rob_size", 352))
                            .rob_partition(configured_rob_partition(cfg, key + ".rob_partition"))
                            .lq_size(cfg.value<std::size_t>(key + ".lq_size", 128))
@@ -557,6 +572,17 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                            .dib_hit_latency(cfg.value<unsigned>(key + ".dib.hit_latency", 1))
                            .dib_inorder_width(champsim::bandwidth::maximum_type{cfg.positive_value<long>(key + ".dib.inorder_width", 5)})
                            .dib_hit_buffer_size(cfg.positive_value<std::size_t>(key + ".dib.hit_buffer_size", 32)));
+  }
+
+  // B2.5: the miss-edge trigger reads the LLC's per-context load-miss census,
+  // which only fills when the LLC is built with per_context_counters. Without it
+  // the counter stays zero and trigger=miss silently never fires -- a trap, so
+  // refuse the combination up front instead of letting it run inert.
+  for (const auto& core : cores) {
+    if (core.bmt_trigger_mode_ == champsim::bmt_trigger_mode::miss && !caches.at(0).per_context_counters) {
+      throw std::runtime_error{"runtime config: ooo_cpu.cpu" + std::to_string(core.cpu) +
+                               ".bmt.trigger=miss requires cache.llc.per_context_counters=true"};
+    }
   }
 
   select_modules(cfg);

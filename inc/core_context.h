@@ -51,6 +51,13 @@ struct LSQ_ENTRY : champsim::program_ordered<LSQ_ENTRY> {
   champsim::chrono::clock::time_point issue_time{};
   bool bmt_detected = false;
 
+  // B2.5: the moment detection fired (bmt_detected became true). Only the
+  // miss-edge trigger reads it, to model the optional dwell -- the N cycles the
+  // switch waits after the LLC miss is confirmed before swap-out acts. The
+  // latency arm swaps out in the same cycle it detects, so it leaves this at
+  // the epoch. Inert (epoch) while BMT is off.
+  champsim::chrono::clock::time_point bmt_detected_at{};
+
   LSQ_ENTRY(champsim::address addr, champsim::program_ordered<LSQ_ENTRY>::id_type id, champsim::address ip, std::array<uint8_t, 2> asid);
   void finish(ooo_model_instr& rob_entry) const;
   void finish(std::deque<ooo_model_instr>::iterator begin, std::deque<ooo_model_instr>::iterator end) const;

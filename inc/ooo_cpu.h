@@ -126,6 +126,22 @@ public:
   uint64_t bmt_trace_defers_livelock = 0;
   uint64_t bmt_trace_defers_resource = 0;
 
+  // B2.5 miss-edge detection source and its optional dwell (cycles between the
+  // LLC miss edge and swap-out). Default latency / dwell 0 == B2.4 behavior.
+  const champsim::bmt_trigger_mode bmt_trigger_mode_;
+  const std::size_t bmt_miss_dwell;
+  // B2.5 miss-edge signal source: the shared LLC (never null in a built machine;
+  // null only when a unit test constructs a core without wiring one, and then the
+  // miss arm is simply inert). Its sim_stats.per_context_load_misses, filled only
+  // when the LLC is built with per_context_counters, is the edge the `miss` arm
+  // diffs against the snapshot below.
+  CACHE* llc;
+  // B2.5 the last LLC per-context load-miss count this core has already consumed
+  // into detections. Reset each phase so it lines up with the LLC counter, which
+  // begin_phase also zeroes. Indexed by asid[0] == the virtual thread's trace
+  // slot, so each core only ever touches the buckets its own loads carry.
+  std::array<uint64_t, std::numeric_limits<uint8_t>::max() + 1> bmt_last_seen_llc_misses{};
+
   // B2.4 per-slot fetch gate. `swap_resume_time[slot]` is the firmware-cost
   // deadline: while current_time is short of it the slot does not fetch (the
   // rsave/rrestore event occupies it). The switch-when-ready count lives on the
@@ -429,6 +445,9 @@ public:
         bmt_swap_in_cost(b.m_bmt_switch_mode == champsim::bmt_switch_mode::firmware ? 30 * b.m_clock_period
                                                                                     : champsim::chrono::clock::duration{}),
         bmt_trace_events(b.m_bmt_trace_events),
+        bmt_trigger_mode_(b.m_bmt_trigger_mode),
+        bmt_miss_dwell(b.m_bmt_miss_dwell),
+        llc(b.m_llc),
         swap_resume_time(b.m_num_contexts),
         mode(b.m_num_contexts),
         IFETCH_BUFFER_SIZE(b.m_ifetch_buffer_size), DISPATCH_BUFFER_SIZE(b.m_dispatch_buffer_size), DECODE_BUFFER_SIZE(b.m_decode_buffer_size),
