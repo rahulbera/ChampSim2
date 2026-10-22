@@ -254,6 +254,14 @@ struct virtual_thread {
   // immediate-swap-out cycle that never retires cannot livelock the core.
   long long retired_since_swapin = 0;
 
+  // B3.1 per-thread cumulative retirement (the weighted-speedup per-thread
+  // decomposition denominator). Accumulates every retire while bound and, unlike
+  // retired_since_swapin, is NOT cleared on swap-in -- it is this thread's
+  // lifetime instruction count for the phase. begin_phase resets it so the
+  // end-of-ROI SUMMARY reports exactly the ROI retirement per trace. Inert
+  // (0) when BMT is off.
+  long long num_retired = 0;
+
   // B2.4 switch-when-ready gate (bmt-design.md section 3 step 5): the number of
   // this virtual thread's loads that were still in flight when it was last
   // swapped out, and have not yet returned. Swap-out counts them before the
@@ -272,6 +280,16 @@ struct virtual_thread {
   // off.
   std::optional<champsim::chrono::clock::time_point> swap_out_time{};
   bool inflight_wait_pending = false;
+
+  // B3.1 per-thread swap census riders on the B3.0 aggregate summary.
+  // swap_out_count is the number of times this thread was swapped out; cold_cycles
+  // is the summed swap-out -> swap-in interval (the thread's total IRB
+  // "cold-storage" residency). A first-bind has no prior swap-out and contributes
+  // nothing. Both only accumulate while a swap actually happens (never during
+  // warmup, where swap-out/in are gated off), so begin_phase need not reset them.
+  // Emitted by the SUMMARY only when bmt.trace_events is on.
+  uint64_t swap_out_count = 0;
+  long long cold_cycles = 0;
 
   // State machine. `running` = bound to a physical slot; `suspended` = swapped
   // out (recoverable, rebindable); `finished` = trace EOF, never re-bound. B1

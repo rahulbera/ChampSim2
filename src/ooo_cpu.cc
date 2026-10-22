@@ -41,9 +41,20 @@ namespace
 // totals and one line per cycle distribution to stderr. Inert unless the trace
 // switch is on, so a default run never reaches it.
 void print_bmt_trace_summary(uint64_t swap_outs, uint64_t defers, uint64_t defers_livelock, uint64_t defers_resource,
-                             const std::vector<std::intmax_t>& swap_in_intervals, const std::vector<std::intmax_t>& inflight_waits)
+                             const std::vector<std::intmax_t>& swap_in_intervals, const std::vector<std::intmax_t>& inflight_waits,
+                             const std::vector<champsim::virtual_thread>& virtual_threads)
 {
   fmt::print(stderr, "[BMT][SUMMARY] swap_outs={} defers={} (livelock={} resource={})\n", swap_outs, defers, defers_livelock, defers_resource);
+
+  // B3.1 per-thread decomposition: retired / swap_outs / cold_cycles per virtual
+  // thread, with trace_slot naming the positional trace that feeds it. vthread is
+  // the C_virt pool index; trace_slot is the command-line trace order, so a
+  // downstream script maps each line to a trace file directly.
+  for (std::size_t v = 0; v < virtual_threads.size(); ++v) {
+    const auto& vt = virtual_threads[v];
+    fmt::print(stderr, "[BMT][SUMMARY] vthread={} trace_slot={} retired={} swap_outs={} cold_cycles={}\n", v, vt.trace_slot, vt.num_retired, vt.swap_out_count,
+               vt.cold_cycles);
+  }
 
   const auto print_distribution = [](const char* name, std::vector<std::intmax_t> values) {
     if (values.empty()) {
@@ -291,6 +302,7 @@ void O3_CPU::swap_out_context(std::size_t slot)
   // self-describing. Inert when the trace switch is off.
   if (bmt_trace_events) {
     ++bmt_trace_swap_outs;
+    ++vt.swap_out_count;
     std::intmax_t trigger_latency = 0;
     for (const auto& e : c.LQ) {
       if (e.has_value() && e->fetch_issued && e->bmt_detected)
@@ -435,6 +447,7 @@ void O3_CPU::swap_in_context(std::size_t slot, long v)
     if (vt.swap_out_time.has_value()) {
       const auto out_in_interval = (current_time - *vt.swap_out_time) / clock_period;
       bmt_swap_in_intervals.push_back(out_in_interval);
+      vt.cold_cycles += out_in_interval;
       fmt::print(stderr, "[BMT][SWAP_IN] cycle={} slot={} vthread={} out_in_interval={} rrestore_mapped={}\n", current_time.time_since_epoch() / clock_period,
                  slot, v, out_in_interval, mapped);
     } else {
@@ -514,6 +527,15 @@ void O3_CPU::begin_phase()
   // counter is already zero by the time this runs. Inert (all zeros) for the
   // latency arm, which never reads it.
   bmt_last_seen_llc_misses.fill(0);
+
+  // B3.1: reset the per-thread cumulative retirement at the start of each phase
+  // so the end-of-ROI SUMMARY reports the ROI retirement only. The retire path
+  // runs during warmup too (unlike the swap paths, which are gated on !warmup),
+  // so without this reset num_retired would include warmup. The swap census
+  // riders (swap_out_count / cold_cycles) only accumulate in those gated paths,
+  // so they need no reset here. Inert (zero) when BMT is off.
+  for (auto& vt : virtual_threads)
+    vt.num_retired = 0;
 }
 
 void O3_CPU::end_phase(unsigned finished_cpu)
@@ -536,7 +558,7 @@ void O3_CPU::end_phase(unsigned finished_cpu)
   // run prints nothing and stays byte-identical.
   if (bmt_trace_events && !warmup && finished_cpu == this->cpu)
     print_bmt_trace_summary(bmt_trace_swap_outs, bmt_trace_defers, bmt_trace_defers_livelock, bmt_trace_defers_resource, bmt_swap_in_intervals,
-                            bmt_inflight_waits);
+                            bmt_inflight_waits, virtual_threads);
 }
 
 void O3_CPU::record_roi_completion(std::size_t c, long long length)
@@ -1826,9 +1848,13 @@ long O3_CPU::retire_rob_impl(champsim::core_context& c, champsim::bandwidth& ret
   // virtual thread bound to this physical slot. Consult-only when BMT is off;
   // the value feeds swap_out_context's guard, which is gated on bmt_swap_enabled.
   // An empty slot (slot_map == -1) cannot retire, so the guard just skips it.
+  // B3.1 also keeps the cumulative (swap-in-preserved) count here for the
+  // per-thread weighted-speedup decomposition.
   const long bound = slot_map.at(static_cast<std::size_t>(c.ctx_index.value));
-  if (bound >= 0)
+  if (bound >= 0) {
     virtual_threads.at(static_cast<std::size_t>(bound)).retired_since_swapin += retire_count;
+    virtual_threads.at(static_cast<std::size_t>(bound)).num_retired += retire_count;
+  }
 
   retire_bw.consume(retire_count);
   c.ROB.erase(retire_begin, retire_end);
