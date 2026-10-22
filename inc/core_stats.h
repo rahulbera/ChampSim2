@@ -49,6 +49,23 @@ struct cpu_stats {
   uint64_t dib_hits = 0;
   uint64_t dib_misses = 0;
 
+  // B2.1 long-latency-load detection census, per hardware context. All four are
+  // charged only while BMT is enabled and the context is not in warmup; a
+  // default-off run leaves them zero, so the statistics document is unchanged.
+  //
+  //   bmt_long_latency_detections       -- loads whose issue-to-completion
+  //     latency reached bmt.miss_threshold (the "detected main-memory access").
+  //   bmt_detection_rob_occupancy       -- sum of ROB occupancy sampled at each
+  //     detection (divide by the count for the average).
+  //   bmt_detection_lq_occupancy        -- sum of allocated LQ entries sampled
+  //     at each detection (divide by the count for the average).
+  //   bmt_detections_with_parallel_miss -- detections at which another load of
+  //     the same context was also in flight (the paper's parallel second miss).
+  uint64_t bmt_long_latency_detections = 0;
+  uint64_t bmt_detection_rob_occupancy = 0;
+  uint64_t bmt_detection_lq_occupancy = 0;
+  uint64_t bmt_detections_with_parallel_miss = 0;
+
   [[nodiscard]] auto instrs() const { return end_instrs - begin_instrs; }
   [[nodiscard]] auto cycles() const { return end_cycles - begin_cycles; }
   [[nodiscard]] auto dib_lookups() const { return dib_hits + dib_misses; }

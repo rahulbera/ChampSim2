@@ -103,7 +103,44 @@ long O3_CPU::operate()
   // contributes nothing to the right-hand term.
   CHAMPSIM_ASSERT(shared_prf->count_free_registers() + shared_prf->count_busy_registers() == REGISTER_FILE_SIZE);
 
+  // B2.1: long-latency-load detection, last so loads completed by this cycle's
+  // handle_memory_return are already gone. Pure observation -- it contributes
+  // nothing to `progress` and changes no pipeline state.
+  detect_long_latency_loads();
+
   return progress;
+}
+
+void O3_CPU::detect_long_latency_loads()
+{
+  if (!bmt_enabled || warmup)
+    return;
+
+  for (auto& c : contexts) {
+    for (auto& lq_entry : c.LQ) {
+      if (!lq_entry.has_value() || !lq_entry->fetch_issued || lq_entry->bmt_detected)
+        continue;
+      if (current_time - lq_entry->issue_time < bmt_miss_threshold)
+        continue;
+
+      lq_entry->bmt_detected = true;
+
+      // Parallel-second-miss census: is another load of this context also in
+      // flight right now? A load is "in flight" once issued (fetch_issued) and
+      // still allocated. load_waiter_id names each LQ entry uniquely, so the
+      // comparison identifies "another" load, not this one.
+      const bool parallel_miss = std::any_of(std::begin(c.LQ), std::end(c.LQ), [&](const auto& other) {
+        return other.has_value() && other->fetch_issued && other->load_waiter_id != lq_entry->load_waiter_id;
+      });
+
+      c.sim_stats.bmt_long_latency_detections += 1;
+      c.sim_stats.bmt_detection_rob_occupancy += static_cast<uint64_t>(c.ROB.size());
+      c.sim_stats.bmt_detection_lq_occupancy += static_cast<uint64_t>(std::count_if(std::begin(c.LQ), std::end(c.LQ),
+                                                                                    [](const auto& entry) { return entry.has_value(); }));
+      if (parallel_miss)
+        c.sim_stats.bmt_detections_with_parallel_miss += 1;
+    }
+  }
 }
 
 void O3_CPU::initialize()
@@ -1078,6 +1115,7 @@ long O3_CPU::operate_lsq_impl(champsim::core_context& c, champsim::bandwidth& st
       if (success) {
         load_bw.consume();
         lq_entry->fetch_issued = true;
+        lq_entry->issue_time = current_time; // B2.1: start the long-latency counter
       }
     }
   }

@@ -240,6 +240,17 @@ std::vector<std::string> champsim::toml_printer::format(O3_CPU::stats_type stats
   emit_table(lines, fmt::format("{}.mispredict", path), mispredicts);
   emit_table(lines, fmt::format("{}.executed", path), executed);
 
+  // B2.1: the long-latency-load detection census, present only when BMT was
+  // enabled and at least one load crossed the threshold. A default-off run
+  // leaves the count zero and omits the table, so its document is byte-identical.
+  if (stats.bmt_long_latency_detections != 0) {
+    emit_table(lines, fmt::format("{}.bmt", path),
+               {{"long_latency_detections", fmt::format("{}", stats.bmt_long_latency_detections)},
+                {"detections_with_parallel_miss", fmt::format("{}", stats.bmt_detections_with_parallel_miss)},
+                {"avg_rob_occupancy_at_detection", toml_ratio(stats.bmt_detection_rob_occupancy, stats.bmt_long_latency_detections)},
+                {"avg_lq_occupancy_at_detection", toml_ratio(stats.bmt_detection_lq_occupancy, stats.bmt_long_latency_detections)}});
+  }
+
   return lines;
 }
 

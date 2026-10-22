@@ -96,6 +96,13 @@ public:
   std::vector<champsim::virtual_thread> virtual_threads;
   std::vector<std::size_t> slot_map;
 
+  // BMT (Balanced Multithreading) switches. `bmt_enabled` is the master gate for
+  // every BMT mechanism (B2.1 detection onward); off == byte-identical to
+  // B1/V2.5. `bmt_miss_threshold` is the long-latency-load detection threshold
+  // in core cycles, held as a duration so detection compares clock ticks.
+  const bool bmt_enabled;
+  const champsim::chrono::clock::duration bmt_miss_threshold;
+
   // V1.5 buried SMT-shape telemetry. `mode` is the static context count this core
   // was built with (= num_contexts); `active` is the per-cycle count of contexts
   // whose ROB is non-empty. BURIED: no resource-allocation formula reads either
@@ -159,6 +166,12 @@ public:
   // do_phase's completion check. Single-context it is the phase-completion
   // cycle, equal to sim_cycle(), so N=1 output is byte-identical.
   void record_roi_completion(std::size_t c, long long length);
+
+  // B2.1: long-latency-load detection, pure observation (no behavior change).
+  // Scans each context's in-flight loads and, for those whose issue-to-now
+  // latency has reached bmt_miss_threshold, marks them and charges the
+  // per-context census (cpu_stats::bmt_*). No-op when BMT is disabled or warmup.
+  void detect_long_latency_loads();
 
   void initialize_instruction();
   long check_dib();
@@ -355,6 +368,8 @@ public:
         contexts(b.m_num_contexts, champsim::core_context{shared_prf.get(), b.m_lq_size, b.m_dib_set, b.m_dib_way, b.m_dib_window}),
         virtual_threads(b.m_num_virtual_threads == 0 ? b.m_num_contexts : b.m_num_virtual_threads),
         slot_map(b.m_num_contexts, 0),
+        bmt_enabled(b.m_bmt_enabled),
+        bmt_miss_threshold(b.m_bmt_miss_threshold * b.m_clock_period),
         mode(b.m_num_contexts),
         IFETCH_BUFFER_SIZE(b.m_ifetch_buffer_size), DISPATCH_BUFFER_SIZE(b.m_dispatch_buffer_size), DECODE_BUFFER_SIZE(b.m_decode_buffer_size),
         REGISTER_FILE_SIZE(b.m_register_file_size), ROB_SIZE(b.m_rob_size), SQ_SIZE(b.m_sq_size), DIB_HIT_BUFFER_SIZE(b.m_dib_hit_buffer_size),

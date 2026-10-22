@@ -69,6 +69,13 @@ struct core_builder_base {
   // virtual layer is inert and results are byte-identical.
   std::size_t m_num_virtual_threads{0};
 
+  // BMT master switch and long-latency-load detection threshold (B2.1). The
+  // threshold is in core cycles; the O3_CPU constructor scales it by the clock
+  // period into a duration. Both default to "off" (false / the conservative 56c)
+  // so a default run is byte-identical to B1/V2.5.
+  bool m_bmt_enabled{false};
+  std::size_t m_bmt_miss_threshold{56};
+
   std::size_t m_dib_hit_buffer_size{1};
 
   std::size_t m_register_file_size{1};
@@ -165,6 +172,16 @@ public:
    * Must be >= num_contexts; 0 lets the core fall back to num_contexts.
    */
   self_type& num_virtual_threads(std::size_t num_virtual_threads_);
+
+  /**
+   * Master switch for every BMT mechanism. Default off == byte-identical to B1/V2.5.
+   */
+  self_type& bmt_enabled(bool bmt_enabled_);
+
+  /**
+   * Long-latency-load detection threshold, in core cycles.
+   */
+  self_type& bmt_miss_threshold(std::size_t bmt_miss_threshold_);
 
   /**
    * Specify the maximum size of the DIB hit buffer.
@@ -380,6 +397,20 @@ template <typename B, typename T>
 auto champsim::core_builder<B, T>::num_virtual_threads(std::size_t num_virtual_threads_) -> self_type&
 {
   m_num_virtual_threads = num_virtual_threads_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::bmt_enabled(bool bmt_enabled_) -> self_type&
+{
+  m_bmt_enabled = bmt_enabled_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::bmt_miss_threshold(std::size_t bmt_miss_threshold_) -> self_type&
+{
+  m_bmt_miss_threshold = bmt_miss_threshold_;
   return *this;
 }
 

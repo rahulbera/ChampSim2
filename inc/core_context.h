@@ -44,6 +44,13 @@ struct LSQ_ENTRY : champsim::program_ordered<LSQ_ENTRY> {
   // channel::request/response.load_waiters.
   uint64_t load_waiter_id = std::numeric_limits<uint64_t>::max();
 
+  // B2.1: the cycle the load was issued to the memory system (fetch_issued
+  // becomes true), and whether the long-latency detection has already fired for
+  // it. Both are inert unless BMT is enabled -- they feed no pipeline decision
+  // and are written regardless, so a default-off run is byte-identical.
+  champsim::chrono::clock::time_point issue_time{};
+  bool bmt_detected = false;
+
   LSQ_ENTRY(champsim::address addr, champsim::program_ordered<LSQ_ENTRY>::id_type id, champsim::address ip, std::array<uint8_t, 2> asid);
   void finish(ooo_model_instr& rob_entry) const;
   void finish(std::deque<ooo_model_instr>::iterator begin, std::deque<ooo_model_instr>::iterator end) const;
