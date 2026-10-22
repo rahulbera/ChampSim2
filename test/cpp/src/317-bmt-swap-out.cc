@@ -12,6 +12,9 @@
 // These tests pin the gate (off by default, and a refinement of bmt_enabled),
 // the trigger, and the post-conditions of a swap-out (slot freed, thread
 // suspended, committed RAT snapshotted, every physical register released).
+// B2.3 turns the livelock guard from an assertion into a deferral, clears the
+// mispredict fetch freeze in the scoped flush, and deprioritizes the swapped-out
+// thread in the LRR rotation -- those three are pinned at the end.
 
 namespace
 {
@@ -103,4 +106,55 @@ TEST_CASE("B2.2 swap_out_context snapshots the committed RAT and releases its re
 
   // The committed register went back to the shared free pool exactly once.
   CHECK(cpu.shared_prf->count_free_registers() == free_before + 1);
+}
+
+TEST_CASE("B2.3 swap-out defers when the livelock guard is not met")
+{
+  O3_CPU cpu{champsim::core_builder{}.index(0).num_contexts(1).lq_size(4).bmt_enabled(true).bmt_swap_enabled(true)};
+  cpu.warmup = false;
+
+  // A freshly swapped-in thread has retired nothing since binding. The guard
+  // defers the swap-out rather than churning swap-in -> swap-out -> swap-in: the
+  // slot stays bound, the thread stays running, and no swap is charged.
+  CHECK(cpu.virtual_threads[0].retired_since_swapin == 0);
+  emplace_detected_load(cpu);
+  cpu.swap_out_context(0);
+
+  CHECK(cpu.slot_map[0] == 0);
+  CHECK(cpu.virtual_threads[0].st == champsim::virtual_thread::state::running);
+  CHECK(cpu.ctx().sim_stats.bmt_swap_outs == 0);
+}
+
+TEST_CASE("B2.3 swap-out deprioritizes the swapped-out thread in the LRR rotation")
+{
+  O3_CPU cpu{champsim::core_builder{}.index(0).num_contexts(2).num_virtual_threads(4).lq_size(4).bmt_enabled(true).bmt_swap_enabled(true)};
+  cpu.warmup = false;
+  cpu.virtual_threads[0].retired_since_swapin = 1;
+
+  cpu.swap_out_context(0); // swap thread 0 out of slot 0
+
+  CHECK(cpu.slot_map[0] == -1);
+  // The just-swapped-out thread moves to the back of the line: the rotation
+  // pointer advances past it so the same-cycle swap-in cannot re-select it.
+  CHECK(cpu.virtual_round_robin == 1);
+}
+
+TEST_CASE("B2.3 swap-out clears the mispredict fetch freeze in the scoped flush")
+{
+  O3_CPU cpu{champsim::core_builder{}.index(0).num_contexts(1).lq_size(4).bmt_enabled(true).bmt_swap_enabled(true)};
+  cpu.warmup = false;
+  cpu.virtual_threads[0].retired_since_swapin = 1;
+
+  auto& c = cpu.ctx();
+  // A mispredicted branch freezes fetch until it reaches decode/execute and calls
+  // resume_fetch_after_mispredict. The scoped flush discards that branch, so it
+  // must release the freeze too -- otherwise the swapped-in thread would resume
+  // with fetch frozen forever (the branch that would have released it is gone).
+  c.fetch_resume_time = champsim::chrono::clock::time_point::max();
+  c.fetch_stalled_on_mispredict = true;
+
+  cpu.swap_out_context(0);
+
+  CHECK(c.fetch_resume_time == champsim::chrono::clock::time_point{});
+  CHECK_FALSE(c.fetch_stalled_on_mispredict);
 }

@@ -189,11 +189,15 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
       bool core_complete = true;
       for (std::size_t c = 0; c < std::size(cpu.contexts); ++c) {
         cpu.record_roi_completion(c, length);
-        const bool retired = cpu.sim_instr(c) >= length;
-        // B2.2: a suspended (empty) slot is not finished -- its trace has not
-        // EOF'd, it is waiting for swap-in (B2.3). Treat its eof as false so it
-        // neither crashes the lookup nor prematurely completes the phase.
+        // B2.2/B2.3: a suspended (empty) slot is not finished -- its virtual
+        // thread is recoverable and will be re-bound. Gate both the retirement
+        // and the EOF terms on the slot being bound, so an empty slot never
+        // completes the phase from a stale retirement count (the V3.3
+        // "suspended == finished" conflation, which BMT must not inherit). Under
+        // the default binding (slot_map[c] == c) bound >= 0 always holds, so this
+        // is byte-identical to the old union (retire length || trace EOF).
         const long bound = cpu.slot_map.at(c);
+        const bool retired = bound >= 0 && cpu.sim_instr(c) >= length;
         const bool eof = bound >= 0 && traces.at(trace_index.at(cpu.cpu).at(static_cast<std::size_t>(bound))).eof();
         core_complete = core_complete && (retired || eof);
       }

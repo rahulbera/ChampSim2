@@ -8,7 +8,10 @@
 // virtual i) and zero swap behavior. These tests pin the structural invariants
 // that make C_virt == C_phys byte-identical and C_virt > C_phys "extra virtual
 // threads idle". There is no swap in B1, so the state machine is exercised only
-// through its construction defaults and the distinctness of its states.
+// through its construction defaults and the distinctness of its states. The
+// tail-thread state is the one B2.3 correction: B1 stamped the unbound tail
+// threads `running`; B2.3 makes them `suspended` (swap-in candidates), and this
+// file's second case pins that corrected default.
 
 TEST_CASE("B1 virtual-context layer defaults to the identity binding")
 {
@@ -46,11 +49,18 @@ TEST_CASE("B1 C_virt > C_phys leaves the tail virtual threads idle and unbound")
   CHECK(cpu.slot_map[1] == 1);
 
   // Virtual threads 2 and 3 exist (their traces and records are preserved and
-  // rebindable later) but no slot maps to them -- they are idle, not finished.
-  for (std::size_t v = 0; v < cpu.virtual_threads.size(); ++v) {
+  // rebindable later) but no slot maps to them. B2.3 corrects the B1 placeholder:
+  // an unbound, never-finished virtual thread starts `suspended` (a swap-in
+  // candidate), not `running`.
+  for (std::size_t v = 0; v < cpu.slot_map.size(); ++v) {
     CHECK(cpu.virtual_threads[v].virtual_id == v);
     CHECK(cpu.virtual_threads[v].trace_slot == v);
     CHECK(cpu.virtual_threads[v].st == champsim::virtual_thread::state::running);
+  }
+  for (std::size_t v = cpu.slot_map.size(); v < cpu.virtual_threads.size(); ++v) {
+    CHECK(cpu.virtual_threads[v].virtual_id == v);
+    CHECK(cpu.virtual_threads[v].trace_slot == v);
+    CHECK(cpu.virtual_threads[v].st == champsim::virtual_thread::state::suspended);
   }
 }
 

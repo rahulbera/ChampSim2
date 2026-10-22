@@ -153,6 +153,15 @@ struct core_context {
   // already freed, so backend_RAT is exactly the committed state.
   void rsave_registers(std::array<PHYSICAL_REGISTER_ID, std::numeric_limits<uint8_t>::max() + 1>& saved_rat);
 
+  // B2.3 rrestore: rebuild this context's committed architectural register
+  // mapping from the value-less IRB entry `saved_rat`. For each architectural
+  // register the snapshot says was mapped, allocate a FRESH physical register
+  // from the shared free pool (the snapshot's stored IDs are stale -- they were
+  // released at rsave and may already name a sibling's register), stamp its
+  // metadata, and write both RATs so frontend == backend (the committed state).
+  // Reads `saved_rat` only; the caller owns clearing it afterward.
+  void rrestore_registers(const std::array<PHYSICAL_REGISTER_ID, std::numeric_limits<uint8_t>::max() + 1>& saved_rat);
+
   // The RAT half of the deadlock printer; RegisterAllocator::print_deadlock()
   // prints the physical-file half. Called back-to-back in that order by
   // O3_CPU::print_deadlock() so the combined output matches the original.
@@ -234,8 +243,8 @@ struct virtual_thread {
   std::array<PHYSICAL_REGISTER_ID, std::numeric_limits<uint8_t>::max() + 1> saved_rat{};
 
   // B2.2 livelock guard: instructions retired since this virtual thread was last
-  // swapped in. Swap-out asserts this is >= 1, so a swap-in -> immediate-swap-out
-  // cycle that never retires cannot livelock the core.
+  // swapped in. Swap-out defers (skips) while this is < 1, so a swap-in ->
+  // immediate-swap-out cycle that never retires cannot livelock the core.
   long long retired_since_swapin = 0;
 
   // State machine. `running` = bound to a physical slot; `suspended` = swapped

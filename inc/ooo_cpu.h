@@ -107,6 +107,12 @@ public:
   const champsim::chrono::clock::duration bmt_miss_threshold;
   const bool bmt_swap_enabled;
 
+  // B2.3 LRR (least-recently-run) rotation pointer over the C_virt pool. Swap-in
+  // scans the pool from here for the next suspended virtual thread, then advances
+  // past the one it selects, approximating the paper's LRU-variant selection with
+  // a round-robin (bmt-design.md section 3 step 1). Inert unless BMT is enabled.
+  std::size_t virtual_round_robin = 0;
+
   // V1.5 buried SMT-shape telemetry. `mode` is the static context count this core
   // was built with (= num_contexts); `active` is the per-cycle count of contexts
   // whose ROB is non-empty. BURIED: no resource-allocation formula reads either
@@ -183,6 +189,14 @@ public:
   // segments (cancel load, scoped flush, rsave, archive, free slot + assertions).
   void swap_out_detected_loads();
   void swap_out_context(std::size_t slot);
+
+  // B2.3 swap-in: for each empty slot, LRR-select the next suspended virtual
+  // thread and re-bind it. Gated on bmt_swap_enabled && !warmup (so a default run
+  // is byte-identical to B2.2 swap-out-only). The per-slot body is
+  // swap_in_context(); see the implementation for the segments (LRR select,
+  // rrestore, restore fetch, bind + reset livelock guard + IRB conservation).
+  void swap_in_suspended_threads();
+  void swap_in_context(std::size_t slot, long v);
 
   void initialize_instruction();
   long check_dib();
@@ -414,6 +428,12 @@ public:
       // A never-swapped thread reads a clean RAT snapshot: no architectural
       // register is mapped until it is first renamed.
       virtual_threads[v].saved_rat.fill(-1);
+      // The first C_phys threads are bound by the identity mapping above and run;
+      // any tail virtual threads (C_virt > C_phys) are unbound and start suspended,
+      // ready to be swapped in when a slot frees (B2.3). This corrects B1, which
+      // stamped the tail threads `running` despite no slot binding them.
+      if (v >= slot_map.size())
+        virtual_threads[v].st = champsim::virtual_thread::state::suspended;
     }
   }
 };

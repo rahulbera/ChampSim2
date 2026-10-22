@@ -111,6 +111,14 @@ void champsim::core_context::flush_pipeline()
     entry.reset();
   SQ.clear();
 
+  // A mispredicted branch freezes fetch (fetch_resume_time = max()) until it
+  // reaches decode/execute and calls resume_fetch_after_mispredict. That branch
+  // is an in-flight instruction, so this flush discards it too -- reset the
+  // freeze bookkeeping, or a swapped-in thread would resume with fetch frozen
+  // forever (the branch that would have released it is gone).
+  fetch_resume_time = {};
+  fetch_stalled_on_mispredict = false;
+
   // Roll the rename alias table back to the committed mapping. This is the RAT
   // half of the scoped flush; the physical-register half is the loop below.
   reset_frontend_RAT();
@@ -143,6 +151,28 @@ void champsim::core_context::rsave_registers(std::array<PHYSICAL_REGISTER_ID, st
   }
   frontend_RAT.fill(-1);
   backend_RAT.fill(-1);
+}
+
+void champsim::core_context::rrestore_registers(const std::array<PHYSICAL_REGISTER_ID, std::numeric_limits<uint8_t>::max() + 1>& saved_rat)
+{
+  // Rebuild the committed mapping from the value-less IRB snapshot (bmt-design.md
+  // section 4.3). Both RATs are empty (rsave cleared them) and every register the
+  // snapshot named is back in the shared free pool, so allocate a FRESH physical
+  // register per mapped architectural register. The snapshot's stored ID is only
+  // a "mapped" flag -- it was released at rsave and may already name a sibling's
+  // register, so the value is never read, only the non-negative signal.
+  for (std::size_t arch = 0; arch < saved_rat.size(); ++arch) {
+    if (saved_rat[arch] == -1)
+      continue;
+    CHAMPSIM_ASSERT(!reg_allocator->free_registers.empty());
+    PHYSICAL_REGISTER_ID phys = reg_allocator->free_registers.front();
+    reg_allocator->free_registers.pop();
+    frontend_RAT[arch] = phys;
+    backend_RAT[arch] = phys;
+    // Committed mapping: the last write has retired (valid) and the register is
+    // live in the pipeline (busy) -- the same shape rename_src_register stamps.
+    reg_allocator->physical_register_file.at(phys) = {static_cast<uint16_t>(arch), 0, true, true, this->ctx_index};
+  }
 }
 
 // The RAT half of the deadlock printer, printed back-to-back with

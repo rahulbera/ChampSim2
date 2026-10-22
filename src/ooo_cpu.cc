@@ -113,6 +113,11 @@ long O3_CPU::operate()
   // nothing to `progress` (the pipeline state it clears is the point).
   swap_out_detected_loads();
 
+  // B2.3: swap-in, after swap-out so a slot freed this cycle is re-filled with
+  // the next suspended virtual thread in the same cycle. Gated on
+  // bmt_swap_enabled && !warmup; contributes nothing to `progress`.
+  swap_in_suspended_threads();
+
   return progress;
 }
 
@@ -175,13 +180,16 @@ void O3_CPU::swap_out_context(std::size_t slot)
   auto& vt = virtual_threads[static_cast<std::size_t>(v)];
   auto& c = contexts[slot];
 
-  // Livelock guard (bmt-design.md §2 step e): a virtual thread must have retired
-  // at least one instruction since it was last bound, or a swap-in -> immediate
-  // swap-out that never retires could livelock. The counter only accumulates here
-  // (B2.2 has no swap-in, so nothing resets it); the standard warmup guarantees it
-  // is >= 1 before the first detection can fire. B2.3 resets it to 0 on swap-in,
-  // which is what makes this assertion load-bearing.
-  CHAMPSIM_ASSERT(vt.retired_since_swapin >= 1);
+  // Livelock guard (bmt-design.md section 3 step 1): a virtual thread must have
+  // retired at least one instruction since it was last bound before it may swap
+  // out again. A freshly swapped-in thread (retired_since_swapin == 0) whose
+  // first re-executed load is still in flight would otherwise churn swap-in ->
+  // swap-out -> swap-in with no progress. Defer the swap-out instead: the
+  // triggering load keeps flying in the channel, the thread stays bound and
+  // retires it when it returns, and the next detection (now with >= 1
+  // retirement) proceeds normally.
+  if (vt.retired_since_swapin < 1)
+    return;
 
   // Segments (a)+(b) cancel load + scoped flush: discard every in-flight
   // instruction and free its physical registers, leaving only committed state.
@@ -204,6 +212,14 @@ void O3_CPU::swap_out_context(std::size_t slot)
   vt.st = champsim::virtual_thread::state::suspended;
   slot_map[slot] = -1;
 
+  // Deprioritize the swapped-out thread in the LRR rotation: it just ran, so it
+  // is now the most-recently-run and must go to the back of the line. Without
+  // this the same-cycle swap-in (operate() runs swap_out then swap_in) would
+  // immediately re-select it -- it is suspended and, if the rotation pointer
+  // sits at it, first in line -- churning swap-out -> swap-in -> swap-out and
+  // tripping the livelock guard (bmt-design.md section 3 step 1).
+  virtual_round_robin = (static_cast<std::size_t>(v) + 1) % virtual_threads.size();
+
   c.sim_stats.bmt_swap_outs += 1;
 
   // Zero-residue assertion: the slot leaves no trace. Every buffer and queue is
@@ -214,6 +230,90 @@ void O3_CPU::swap_out_context(std::size_t slot)
   CHAMPSIM_ASSERT(std::all_of(std::begin(c.LQ), std::end(c.LQ), [](const auto& e) { return !e.has_value(); }));
   CHAMPSIM_ASSERT(std::all_of(std::begin(c.frontend_RAT), std::end(c.frontend_RAT), [](PHYSICAL_REGISTER_ID p) { return p == -1; }));
   CHAMPSIM_ASSERT(std::all_of(std::begin(c.backend_RAT), std::end(c.backend_RAT), [](PHYSICAL_REGISTER_ID p) { return p == -1; }));
+}
+
+void O3_CPU::swap_in_suspended_threads()
+{
+  // Swap-in refines swap-out: bmt_swap_enabled (with bmt_enabled) gates the whole
+  // BMT mechanism. Off or during warmup this does nothing, so a default run is
+  // byte-identical to B2.2 (swap-out only, no re-bind).
+  if (!bmt_swap_enabled || !bmt_enabled || warmup)
+    return;
+
+  for (std::size_t slot = 0; slot < contexts.size(); ++slot) {
+    if (slot_map[slot] >= 0)
+      continue; // bound slot: nothing to fill
+
+    // LRR selection (bmt-design.md section 3 step 1): scan the C_virt pool from
+    // the rotation pointer for the next suspended (recoverable) virtual thread.
+    // `suspended` is exactly "swapped out and rebindable"; a `finished` thread is
+    // skipped, and a `running` thread is already bound elsewhere.
+    const std::size_t n = virtual_threads.size();
+    long chosen = -1;
+    for (std::size_t i = 0; i < n; ++i) {
+      const std::size_t v = (virtual_round_robin + i) % n;
+      if (virtual_threads[v].st == champsim::virtual_thread::state::suspended) {
+        chosen = static_cast<long>(v);
+        break;
+      }
+    }
+    if (chosen < 0)
+      return; // nothing suspended: leave the slot empty until one appears
+
+    // Resource gate (bmt-design.md section 3 step 3): rrestore must allocate one
+    // fresh physical register per mapped architectural register. The pool is
+    // shared, so a sibling may currently hold it (deep pipeline). Defer -- leave
+    // the slot empty and the pointer unmoved -- rather than restore under-backed,
+    // exactly as rename stalls when the free pool is empty.
+    const auto& cand = virtual_threads[static_cast<std::size_t>(chosen)];
+    const auto mapped = static_cast<unsigned long>(
+        std::count_if(std::begin(cand.saved_rat), std::end(cand.saved_rat), [](PHYSICAL_REGISTER_ID p) { return p != -1; }));
+    if (mapped > shared_prf->count_free_registers())
+      continue;
+
+    virtual_round_robin = (static_cast<std::size_t>(chosen) + 1) % n;
+    swap_in_context(slot, chosen);
+  }
+}
+
+void O3_CPU::swap_in_context(std::size_t slot, long v)
+{
+  auto& vt = virtual_threads[static_cast<std::size_t>(v)];
+  auto& c = contexts[slot];
+  CHAMPSIM_ASSERT(slot_map[slot] == -1);
+  CHAMPSIM_ASSERT(vt.st == champsim::virtual_thread::state::suspended);
+
+  // Segment (3) rrestore: rebuild the committed RAT from the IRB snapshot,
+  // allocating a fresh physical register per mapped architectural register.
+  // IRB conservation: rrestore must re-allocate exactly the registers rsave
+  // released -- count the snapshot's mapped entries against the free pool, then
+  // re-check the V2.5 free+busy==SIZE invariant (the value-less IRB holds
+  // mappings, not registers, so the conserved term is unchanged; bmt-design.md
+  // section 9's "free+busy+IRB_occupied" collapses back to free+busy under 4.3).
+  const auto mapped = static_cast<unsigned long>(
+      std::count_if(std::begin(vt.saved_rat), std::end(vt.saved_rat), [](PHYSICAL_REGISTER_ID p) { return p != -1; }));
+  const auto free_before = shared_prf->count_free_registers();
+  c.rrestore_registers(vt.saved_rat);
+  CHAMPSIM_ASSERT(shared_prf->count_free_registers() == free_before - mapped);
+  CHAMPSIM_ASSERT(shared_prf->count_free_registers() + shared_prf->count_busy_registers() == REGISTER_FILE_SIZE);
+
+  // Segment (4) restore fetch: move the archived trace residual back into the
+  // slot's input queue. The tracereader's own position is untouched -- it paused
+  // while the slot was empty and resumes from where it left off.
+  c.input_queue = std::move(vt.input_queue);
+
+  // Segment (2) bind the slot + mark running, and reset the livelock guard so the
+  // next swap-out must retire >= 1 instruction first (bmt-design.md section 3
+  // step 1). Nothing reads the binding until the next cycle's operate(), so the
+  // order relative to rrestore/restore-fetch is immaterial.
+  slot_map[slot] = v;
+  vt.st = champsim::virtual_thread::state::running;
+  vt.retired_since_swapin = 0;
+
+  // Consume the IRB entry: the snapshot is spent. Leaving the stale physical IDs
+  // around would dangle once the freed registers are re-issued to a sibling, and
+  // clearing here makes a second swap-in of the same suspension impossible.
+  vt.saved_rat.fill(-1);
 }
 
 void O3_CPU::initialize()
@@ -1507,9 +1607,8 @@ long O3_CPU::retire_rob_impl(champsim::core_context& c, champsim::bandwidth& ret
 
   // B2.2 livelock-guard bookkeeping: accumulate retired instructions on the
   // virtual thread bound to this physical slot. Consult-only when BMT is off;
-  // the value feeds swap_out_context's assertion, which is gated on
-  // bmt_swap_enabled. An empty slot (slot_map == -1) cannot retire, so the guard
-  // just skips it.
+  // the value feeds swap_out_context's guard, which is gated on bmt_swap_enabled.
+  // An empty slot (slot_map == -1) cannot retire, so the guard just skips it.
   const long bound = slot_map.at(static_cast<std::size_t>(c.ctx_index.value));
   if (bound >= 0)
     virtual_threads.at(static_cast<std::size_t>(bound)).retired_since_swapin += retire_count;
