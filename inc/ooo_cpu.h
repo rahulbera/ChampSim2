@@ -106,6 +106,21 @@ public:
   const bool bmt_enabled;
   const champsim::chrono::clock::duration bmt_miss_threshold;
   const bool bmt_swap_enabled;
+  // B2.4 swap-cost mode. `instant` (default) models the swap atomically;
+  // `firmware` models the paper's ~60-cycle switch latency, split rsave+overhead
+  // (swap-out) and rrestore+overhead (swap-in), held below as pre-scaled
+  // durations so the fetch gate compares clock ticks.
+  const champsim::bmt_switch_mode bmt_switch_mode_;
+  const champsim::chrono::clock::duration bmt_swap_out_cost;
+  const champsim::chrono::clock::duration bmt_swap_in_cost;
+
+  // B2.4 per-slot fetch gate. `swap_resume_time[slot]` is the firmware-cost
+  // deadline: while current_time is short of it the slot does not fetch (the
+  // rsave/rrestore event occupies it). The switch-when-ready count lives on the
+  // bound virtual thread (virtual_thread::outstanding_loads), not the slot -- a
+  // thread's orphaned loads travel with it when it re-binds. Indexed by the
+  // physical-slot index; inert when BMT is off.
+  std::vector<champsim::chrono::clock::time_point> swap_resume_time;
 
   // B2.3 LRR (least-recently-run) rotation pointer over the C_virt pool. Swap-in
   // scans the pool from here for the next suspended virtual thread, then advances
@@ -396,6 +411,12 @@ public:
         bmt_enabled(b.m_bmt_enabled),
         bmt_miss_threshold(b.m_bmt_miss_threshold * b.m_clock_period),
         bmt_swap_enabled(b.m_bmt_swap_enabled),
+        bmt_switch_mode_(b.m_bmt_switch_mode),
+        bmt_swap_out_cost(b.m_bmt_switch_mode == champsim::bmt_switch_mode::firmware ? 30 * b.m_clock_period
+                                                                                    : champsim::chrono::clock::duration{}),
+        bmt_swap_in_cost(b.m_bmt_switch_mode == champsim::bmt_switch_mode::firmware ? 30 * b.m_clock_period
+                                                                                    : champsim::chrono::clock::duration{}),
+        swap_resume_time(b.m_num_contexts),
         mode(b.m_num_contexts),
         IFETCH_BUFFER_SIZE(b.m_ifetch_buffer_size), DISPATCH_BUFFER_SIZE(b.m_dispatch_buffer_size), DECODE_BUFFER_SIZE(b.m_decode_buffer_size),
         REGISTER_FILE_SIZE(b.m_register_file_size), ROB_SIZE(b.m_rob_size), SQ_SIZE(b.m_sq_size), DIB_HIT_BUFFER_SIZE(b.m_dib_hit_buffer_size),

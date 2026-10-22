@@ -191,6 +191,14 @@ void O3_CPU::swap_out_context(std::size_t slot)
   if (vt.retired_since_swapin < 1)
     return;
 
+  // B2.4 switch-when-ready (bmt-design.md section 3 step 5): count this thread's
+  // still-in-flight loads before the scoped flush clears the LQ. Those requests
+  // keep flying in the channel and will return as orphans; the re-bound thread
+  // defers fetch until they return, so its re-executed load hits the warm cache
+  // instead of merging into the still-in-flight MSHR.
+  vt.outstanding_loads = static_cast<long>(
+      std::count_if(std::begin(c.LQ), std::end(c.LQ), [](const auto& e) { return e.has_value() && e->fetch_issued; }));
+
   // Segments (a)+(b) cancel load + scoped flush: discard every in-flight
   // instruction and free its physical registers, leaving only committed state.
   // Already-issued memory requests are NOT cancelled -- they keep flying in the
@@ -219,6 +227,15 @@ void O3_CPU::swap_out_context(std::size_t slot)
   // sits at it, first in line -- churning swap-out -> swap-in -> swap-out and
   // tripping the livelock guard (bmt-design.md section 3 step 1).
   virtual_round_robin = (static_cast<std::size_t>(v) + 1) % virtual_threads.size();
+
+  // B2.4 firmware switch cost (bmt-design.md section 6): the rsave event occupies
+  // the slot for its share of the ~60-cycle switch latency before it may fetch
+  // again. For a slot that just emptied this is moot -- nothing is bound to
+  // fetch -- but a same-cycle swap-in accumulates its own share on top of this
+  // deadline (swap_in_context takes the max), so a full switch costs the whole
+  // rsave+rrestore total. Instant mode adds nothing (atomic swap).
+  if (bmt_switch_mode_ == champsim::bmt_switch_mode::firmware)
+    swap_resume_time[slot] = std::max(current_time, swap_resume_time[slot]) + bmt_swap_out_cost;
 
   c.sim_stats.bmt_swap_outs += 1;
 
@@ -310,6 +327,19 @@ void O3_CPU::swap_in_context(std::size_t slot, long v)
   vt.st = champsim::virtual_thread::state::running;
   vt.retired_since_swapin = 0;
 
+  // B2.4 firmware switch cost: the rrestore event adds its share of the ~60-cycle
+  // latency on top of whatever the swap-out already charged (max accumulates a
+  // same-cycle out-then-in into the full total). Instant mode adds nothing.
+  if (bmt_switch_mode_ == champsim::bmt_switch_mode::firmware)
+    swap_resume_time[slot] = std::max(current_time, swap_resume_time[slot]) + bmt_swap_in_cost;
+
+  // B2.4 switch-when-ready (bmt-design.md section 3 step 5): the outstanding-load
+  // count stays on the virtual thread (it is not moved onto the slot) and keeps
+  // draining as this thread's orphaned requests return. The bound slot defers
+  // fetch (initialize_instruction_impl) until the count reaches zero, so the
+  // re-executed load hits the cache the original request warmed rather than
+  // being re-issued into the same still-in-flight fill.
+
   // Consume the IRB entry: the snapshot is spent. Leaving the stale physical IDs
   // around would dangle once the freed registers are re-issued to a sibling, and
   // clearing here makes a second swap-in of the same suspension impossible.
@@ -384,6 +414,18 @@ void O3_CPU::initialize_instruction()
 
 void O3_CPU::initialize_instruction_impl(champsim::core_context& c, champsim::context_index idx, champsim::bandwidth& fetch_bw)
 {
+  // B2.4 fetch gate: the slot does not fetch while a firmware switch event is
+  // still occupying it (swap_resume_time), nor while the bound thread's orphaned
+  // loads are still in flight (switch-when-ready, section 3 step 5; the count
+  // lives on the virtual thread and travels with it across re-binds). Both are
+  // inert (empty / zero) when BMT is off or in instant mode, so a default run is
+  // byte-identical. idx.value is the physical-slot index.
+  const std::size_t slot = static_cast<std::size_t>(idx.value);
+  if (current_time < swap_resume_time[slot])
+    return;
+  if (slot_map[slot] >= 0 && virtual_threads[static_cast<std::size_t>(slot_map[slot])].outstanding_loads > 0)
+    return;
+
   champsim::bandwidth instrs_to_read_this_cycle{
       std::min(champsim::bandwidth::maximum_type{fetch_bw.amount_remaining()},
                champsim::bandwidth::maximum_type{static_cast<long>(IFETCH_BUFFER_SIZE - std::size(c.IFETCH_BUFFER))})};
@@ -1543,6 +1585,7 @@ long O3_CPU::handle_memory_return()
     // A returned L1D line completes every issued load that shares its block and
     // address space, whichever context owns that load (block+asid completion, as
     // before Stage 3). Each load and its ROB entry live in the same context.
+    long matched_count = 0;
     for (auto& c : contexts) {
       for (auto& lq_entry : c.LQ) {
         if (lq_entry.has_value() && lq_entry->fetch_issued
@@ -1551,6 +1594,24 @@ long O3_CPU::handle_memory_return()
           lq_entry->finish(std::begin(c.ROB), std::end(c.ROB));
           lq_entry.reset();
           ++progress;
+          ++matched_count;
+        }
+      }
+    }
+    // B2.4 switch-when-ready: a returned block completes every load that waited
+    // on it (its load_waiters). Those no live LQ entry absorbed (matched_count)
+    // were orphaned by a swap-out clearing their LQ; decrement the owning
+    // threads' outstanding counts so their fetch gates open. Gated on swap so a
+    // default run is byte-identical.
+    if (bmt_swap_enabled) {
+      long orphan_returned = static_cast<long>(l1d_it->load_waiters.size()) - matched_count;
+      for (auto& vt : virtual_threads) {
+        if (orphan_returned <= 0)
+          break;
+        if (vt.outstanding_loads > 0) {
+          const long decrement = std::min(vt.outstanding_loads, orphan_returned);
+          vt.outstanding_loads -= decrement;
+          orphan_returned -= decrement;
         }
       }
     }

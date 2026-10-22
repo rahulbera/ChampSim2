@@ -48,6 +48,13 @@ class core_builder_module_type_holder
 //             rob_size/1 = equal, so single-context output is unchanged.
 enum class rob_partition { equal, active };
 
+// B2.4 swap-cost mode (bmt-design.md section 6). `instant` models the swap as an
+// atomic 1-cycle event (the default, so a BMT-off run is byte-identical);
+// `firmware` models the paper's step-by-step switch latency (~60 cycles total:
+// rsave 16 + rrestore 16 + detect/flush/select/gate overhead ~28), during which
+// the slot stalls (no fetch).
+enum class bmt_switch_mode { instant, firmware };
+
 namespace detail
 {
 struct core_builder_base {
@@ -78,6 +85,10 @@ struct core_builder_base {
   // B2.2 swap-out switch. Refines bmt_enabled: detection marks the loads, the
   // swap-out acts on those marks. Off == byte-identical to B2.1 (detect-only).
   bool m_bmt_swap_enabled{false};
+
+  // B2.4 swap-cost mode (instant vs firmware). Default instant == atomic swap,
+  // byte-identical to B2.3.
+  bmt_switch_mode m_bmt_switch_mode{bmt_switch_mode::instant};
 
   std::size_t m_dib_hit_buffer_size{1};
 
@@ -190,6 +201,11 @@ public:
    * B2.2 swap-out switch (refines bmt_enabled). Default off.
    */
   self_type& bmt_swap_enabled(bool bmt_swap_enabled_);
+
+  /**
+   * B2.4 swap-cost mode (instant vs firmware). Default instant.
+   */
+  self_type& bmt_switch(bmt_switch_mode bmt_switch_mode_);
 
   /**
    * Specify the maximum size of the DIB hit buffer.
@@ -426,6 +442,13 @@ template <typename B, typename T>
 auto champsim::core_builder<B, T>::bmt_swap_enabled(bool bmt_swap_enabled_) -> self_type&
 {
   m_bmt_swap_enabled = bmt_swap_enabled_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::bmt_switch(bmt_switch_mode bmt_switch_mode_) -> self_type&
+{
+  m_bmt_switch_mode = bmt_switch_mode_;
   return *this;
 }
 

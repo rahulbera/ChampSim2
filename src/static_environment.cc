@@ -221,6 +221,18 @@ champsim::rob_partition configured_rob_partition(const champsim::runtime_config&
   throw std::runtime_error{"runtime config: " + key + " must be 'equal' or 'active'"};
 }
 
+champsim::bmt_switch_mode configured_bmt_switch(const champsim::runtime_config& cfg, const std::string& key)
+{
+  const auto value = cfg.value<std::string>(key, "instant");
+  if (value == "instant") {
+    return champsim::bmt_switch_mode::instant;
+  }
+  if (value == "firmware") {
+    return champsim::bmt_switch_mode::firmware;
+  }
+  throw std::runtime_error{"runtime config: " + key + " must be 'instant' or 'firmware'"};
+}
+
 // The simulation's time quantum: do_phase() ticks the shared clock by the
 // SMALLEST clock_period among the operables, so a duration expressed in cycles
 // has to be scaled by this and not by any one component's period.
@@ -509,6 +521,7 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                            .bmt_enabled(cfg.value<bool>(key + ".bmt.enabled", false))
                            .bmt_miss_threshold(cfg.value<std::size_t>(key + ".bmt.miss_threshold", 56))
                            .bmt_swap_enabled(cfg.value<bool>(key + ".bmt.swap_enabled", false))
+                           .bmt_switch(configured_bmt_switch(cfg, key + ".bmt.switch"))
                            .rob_size(cfg.value<std::size_t>(key + ".rob_size", 352))
                            .rob_partition(configured_rob_partition(cfg, key + ".rob_partition"))
                            .lq_size(cfg.value<std::size_t>(key + ".lq_size", 128))

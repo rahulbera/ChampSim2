@@ -247,6 +247,16 @@ struct virtual_thread {
   // immediate-swap-out cycle that never retires cannot livelock the core.
   long long retired_since_swapin = 0;
 
+  // B2.4 switch-when-ready gate (bmt-design.md section 3 step 5): the number of
+  // this virtual thread's loads that were still in flight when it was last
+  // swapped out, and have not yet returned. Swap-out counts them before the
+  // scoped flush clears the LQ; every orphaned return (a load the cleared LQ no
+  // longer absorbs) decrements it. It travels with the thread across re-binds --
+  // the bound slot defers fetch (initialize_instruction_impl) until it reaches
+  // zero, so the re-executed load hits the cache the original request warmed.
+  // Inert when BMT is off.
+  long outstanding_loads = 0;
+
   // State machine. `running` = bound to a physical slot; `suspended` = swapped
   // out (recoverable, rebindable); `finished` = trace EOF, never re-bound. B1
   // never leaves `running`; B2.2 moves it to `suspended` on swap-out.
