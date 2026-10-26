@@ -291,6 +291,13 @@ struct virtual_thread {
   uint64_t swap_out_count = 0;
   long long cold_cycles = 0;
 
+  // B3.4 per-virtual small predictor state snapshot: the combined GHR (branch
+  // predictor) + RAS (BTB) fingerprint of this virtual thread's asid[0] slot,
+  // captured at swap-out and compared at swap-in to assert that the per-asid
+  // keying kept the small state untouched while the thread was suspended. Only
+  // written/read while bmt.per_virtual_small_state is on; 0 otherwise.
+  uint64_t predictor_snapshot = 0;
+
   // State machine. `running` = bound to a physical slot; `suspended` = swapped
   // out (recoverable, rebindable); `finished` = trace EOF, never re-bound. B1
   // never leaves `running`; B2.2 moves it to `suspended` on swap-out.

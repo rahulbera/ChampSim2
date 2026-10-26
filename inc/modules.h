@@ -125,6 +125,17 @@ struct branch_predictor : public bound_to<O3_CPU> {
 
   template <typename T, typename... Args>
   constexpr static bool has_predict_branch = decltype(predict_branch_member_impl<T, Args...>(0))::value;
+
+  // B3.4 per-virtual small state: an optional fingerprint of a module's per-asid
+  // GHR state, read by the core's swap-out/swap-in snapshot assertion. Modules
+  // without it fold to a zero fingerprint (the assertion then compares 0==0).
+  template <typename T, typename... Args>
+  static auto small_state_fingerprint_member_impl(int) -> decltype(std::declval<T>().small_state_fingerprint(std::declval<Args>()...), std::true_type{});
+  template <typename, typename...>
+  static auto small_state_fingerprint_member_impl(long) -> std::false_type;
+
+  template <typename T, typename... Args>
+  constexpr static bool has_small_state_fingerprint = decltype(small_state_fingerprint_member_impl<T, Args...>(0))::value;
 };
 
 struct btb : public bound_to<O3_CPU> {
@@ -153,6 +164,17 @@ struct btb : public bound_to<O3_CPU> {
 
   template <typename T, typename... Args>
   constexpr static bool has_btb_prediction = decltype(predict_branch_member_impl<T, Args...>(0))::value;
+
+  // B3.4 per-virtual small state: an optional fingerprint of a module's per-asid
+  // RAS state, read by the core's swap-out/swap-in snapshot assertion. Modules
+  // without it fold to a zero fingerprint (the assertion then compares 0==0).
+  template <typename T, typename... Args>
+  static auto small_state_fingerprint_member_impl(int) -> decltype(std::declval<T>().small_state_fingerprint(std::declval<Args>()...), std::true_type{});
+  template <typename, typename...>
+  static auto small_state_fingerprint_member_impl(long) -> std::false_type;
+
+  template <typename T, typename... Args>
+  constexpr static bool has_small_state_fingerprint = decltype(small_state_fingerprint_member_impl<T, Args...>(0))::value;
 };
 
 struct prefetcher : public bound_to<CACHE> {

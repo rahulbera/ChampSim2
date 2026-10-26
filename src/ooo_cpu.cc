@@ -373,6 +373,15 @@ void O3_CPU::swap_out_context(std::size_t slot)
   // trace-driven core (bmt-design.md §4).
   vt.input_queue = std::move(c.input_queue);
 
+  // B3.4 per-virtual small-state snapshot: capture this thread's GHR (branch
+  // predictor) + RAS (BTB) fingerprint so swap-in can assert the per-asid keying
+  // kept them untouched while suspended. The shared-GHR default has no such
+  // invariant, so no snapshot is taken while per_virtual_small_state is off.
+  if (per_virtual_small_state) {
+    const champsim::address_space_id tid{static_cast<uint8_t>(vt.trace_slot), static_cast<uint8_t>(vt.trace_slot)};
+    vt.predictor_snapshot = branch_module_pimpl->impl_small_state_fingerprint(tid) ^ btb_module_pimpl->impl_small_state_fingerprint(tid);
+  }
+
   // Segment (e) free the slot + mark suspended.
   vt.st = champsim::virtual_thread::state::suspended;
   slot_map[slot] = -1;
@@ -502,6 +511,17 @@ void O3_CPU::swap_in_context(std::size_t slot, long v)
   // slot's input queue. The tracereader's own position is untouched -- it paused
   // while the slot was empty and resumes from where it left off.
   c.input_queue = std::move(vt.input_queue);
+
+  // B3.4 per-virtual small-state assertion: a real swap-in (not a first-bind)
+  // must find this thread's GHR/RAS exactly as it was at swap-out -- the per-asid
+  // keying means no other virtual thread wrote its slot while it was suspended.
+  // Gated on per_virtual_small_state (off == shared GHR/RAS, where a suspension
+  // does NOT preserve a thread's own history, so no invariant is asserted).
+  if (per_virtual_small_state && vt.swap_out_time.has_value()) {
+    const champsim::address_space_id tid{static_cast<uint8_t>(vt.trace_slot), static_cast<uint8_t>(vt.trace_slot)};
+    const auto now = branch_module_pimpl->impl_small_state_fingerprint(tid) ^ btb_module_pimpl->impl_small_state_fingerprint(tid);
+    CHAMPSIM_ASSERT(now == vt.predictor_snapshot);
+  }
 
   // Segment (2) bind the slot + mark running, and reset the livelock guard so the
   // next swap-out must retire >= 1 instruction first (bmt-design.md section 3

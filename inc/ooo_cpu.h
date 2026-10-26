@@ -141,6 +141,14 @@ public:
   // do_phase each cycle with the phase's `length`. >0 guards the first cycle
   // before do_phase has stamped it (and the warmup->sim boundary).
   long long quota_length = 0;
+  // B3.4 per-virtual small predictor state (ooo_cpu.cpu0.bmt.per_virtual_small_state).
+  // When on, the branch predictor's GHR (ghist) and the BTB's RAS are keyed by
+  // asid[0] == the virtual thread's trace slot, so each virtual context keeps its
+  // own small state across a swap-out/swap-in (paper gap table row 11). Off
+  // (default) they stay shared, byte-identical to prior stages. Only the default
+  // hashed_perceptron and basic_btb modules read it; other modules keep their own
+  // SMT policy unchanged.
+  const bool per_virtual_small_state;
   // B2.5 miss-edge signal source: the shared LLC (never null in a built machine;
   // null only when a unit test constructs a core without wiring one, and then the
   // miss arm is simply inert). Its sim_stats.per_context_load_misses, filled only
@@ -366,6 +374,11 @@ public:
     virtual void impl_branch_decode_notify(uint64_t instr_id, uint8_t arch_dst_reg) = 0;
     virtual void impl_branch_execute_notify(uint64_t instr_id, bool has_value, uint64_t value) = 0;
 
+    // B3.4 per-virtual small state fingerprint: a stable hash of this predictor's
+    // per-asid GHR, used by the swap-out/swap-in snapshot assertion. Zero when the
+    // module has no small state to fingerprint.
+    virtual uint64_t impl_small_state_fingerprint(champsim::address_space_id asid) const = 0;
+
     virtual champsim::modules::smt_capability capability() const = 0;
   };
 
@@ -379,6 +392,11 @@ public:
                                  champsim::address_space_id asid) = 0;
     virtual std::pair<champsim::address, bool> impl_btb_prediction(champsim::address ip, uint8_t branch_type, champsim::context_index context,
                                                                    champsim::address_space_id asid) = 0;
+
+    // B3.4 per-virtual small state fingerprint: a stable hash of this BTB's
+    // per-asid RAS, used by the swap-out/swap-in snapshot assertion. Zero when the
+    // module has no small state to fingerprint.
+    virtual uint64_t impl_small_state_fingerprint(champsim::address_space_id asid) const = 0;
 
     virtual champsim::modules::smt_capability capability() const = 0;
   };
@@ -400,6 +418,8 @@ public:
     void impl_branch_decode_notify(uint64_t instr_id, uint8_t arch_dst_reg) final;
     void impl_branch_execute_notify(uint64_t instr_id, bool has_value, uint64_t value) final;
 
+    uint64_t impl_small_state_fingerprint(champsim::address_space_id asid) const final;
+
     champsim::modules::smt_capability capability() const final;
   };
 
@@ -415,6 +435,8 @@ public:
                          champsim::address_space_id asid) final;
     [[nodiscard]] std::pair<champsim::address, bool> impl_btb_prediction(champsim::address ip, uint8_t branch_type, champsim::context_index context,
                                                                         champsim::address_space_id asid) final;
+
+    uint64_t impl_small_state_fingerprint(champsim::address_space_id asid) const final;
 
     champsim::modules::smt_capability capability() const final;
   };
@@ -467,6 +489,7 @@ public:
         bmt_trigger_mode_(b.m_bmt_trigger_mode),
         bmt_miss_dwell(b.m_bmt_miss_dwell),
         quota_finish(b.m_quota_finish),
+        per_virtual_small_state(b.m_per_virtual_small_state),
         llc(b.m_llc),
         swap_resume_time(b.m_num_contexts),
         mode(b.m_num_contexts),
@@ -743,6 +766,36 @@ champsim::modules::smt_capability O3_CPU::btb_module_model<Ts...>::capability() 
     ((result = min_smt_capability(result, smt_capability_of<Ts>::value)), ...);
   }
   return result;
+}
+
+template <typename... Bs>
+uint64_t O3_CPU::branch_module_model<Bs...>::impl_small_state_fingerprint(champsim::address_space_id asid) const
+{
+  using namespace champsim::modules;
+  uint64_t h = 0;
+  if constexpr (sizeof...(Bs) > 0) {
+    auto process_one = [&](const auto& b) {
+      if constexpr (branch_predictor::has_small_state_fingerprint<decltype(b), champsim::address_space_id>)
+        h ^= b.small_state_fingerprint(asid);
+    };
+    std::apply([&](const auto&... b) { (..., process_one(b)); }, intern_);
+  }
+  return h;
+}
+
+template <typename... Ts>
+uint64_t O3_CPU::btb_module_model<Ts...>::impl_small_state_fingerprint(champsim::address_space_id asid) const
+{
+  using namespace champsim::modules;
+  uint64_t h = 0;
+  if constexpr (sizeof...(Ts) > 0) {
+    auto process_one = [&](const auto& b) {
+      if constexpr (btb::has_small_state_fingerprint<decltype(b), champsim::address_space_id>)
+        h ^= b.small_state_fingerprint(asid);
+    };
+    std::apply([&](const auto&... b) { (..., process_one(b)); }, intern_);
+  }
+  return h;
 }
 
 #ifdef SET_ASIDE_CHAMPSIM_MODULE

@@ -55,8 +55,9 @@ bool hashed_perceptron::predict_branch(champsim::address pc, champsim::address /
   auto get_index = [pc_slice = pc.slice_lower<TABLE_INDEX_BITS>().to<uint64_t>() ^ static_cast<uint64_t>(champsim::asid_word(asid))](const auto& hist) {
     return hist.value() ^ pc_slice; // seed in the PC to spread accesses around (like gshare) XOR in the last word
   };
+  const auto& ghist = ghist_words[ghist_key(asid)];
   perceptron_result result;
-  std::transform(std::cbegin(ghist_words), std::cend(ghist_words), std::begin(result.indices), get_index);
+  std::transform(std::cbegin(ghist), std::cend(ghist), std::begin(result.indices), get_index);
 
   // add the selected weights to the perceptron sum
   result.yout = std::inner_product(std::begin(tables), std::end(tables), std::begin(result.indices), 0, std::plus<>{},
@@ -68,7 +69,8 @@ bool hashed_perceptron::predict_branch(champsim::address pc, champsim::address /
 void hashed_perceptron::last_branch_result(champsim::address pc, champsim::address /*branch_target*/, bool taken, uint8_t /*branch_type*/,
                                            champsim::address_space_id asid)
 {
-  for (auto& hist : ghist_words) {
+  auto& ghist = ghist_words[ghist_key(asid)];
+  for (auto& hist : ghist) {
     hist.push_back(taken);
   }
 
@@ -102,4 +104,35 @@ void hashed_perceptron::adjust_threshold(bool correct)
       tc = 0;
     }
   }
+}
+
+std::size_t hashed_perceptron::ghist_key(champsim::address_space_id asid) const
+{
+  // B3.4: key the GHR by the virtual thread only when the per-virtual small state
+  // switch (read from the core's bmt table in configure()) is on. Off stays at
+  // index 0 == the single shared GHR, byte-identical to the prior layout.
+  return per_virtual_ ? asid[0] : 0;
+}
+
+void hashed_perceptron::configure(const champsim::runtime_config& cfg, std::string_view prefix)
+{
+  // B3.4: the knob lives under the core's [ooo_cpu.cpu0.bmt] table, which is the
+  // module prefix minus its trailing ".hashed_perceptron" component. The module
+  // consults it (default off) so a default run keeps the shared GHR.
+  const auto dot = prefix.rfind('.');
+  const auto core_prefix = (dot == std::string_view::npos) ? std::string_view{} : prefix.substr(0, dot);
+  per_virtual_ = cfg.value<bool>(std::string{core_prefix} + ".bmt.per_virtual_small_state", false);
+}
+
+uint64_t hashed_perceptron::small_state_fingerprint(champsim::address_space_id asid) const
+{
+  // FNV-1a over the folded-history values. The absolute value is irrelevant; the
+  // swap assertion only compares snapshot-then vs snapshot-now for equality.
+  const auto& ghist = ghist_words[ghist_key(asid)];
+  uint64_t h = 1469598103934665603ull;
+  for (const auto& hist : ghist) {
+    h ^= static_cast<uint64_t>(hist.value());
+    h *= 1099511628211ull;
+  }
+  return h;
 }

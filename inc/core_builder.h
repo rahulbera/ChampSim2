@@ -113,6 +113,13 @@ struct core_builder_base {
   // byte-identical to the pre-seal simulator.
   bool m_quota_finish{false};
 
+  // B3.4 per-virtual small predictor state (GHR/RAS) keying. Default off == the
+  // shared single-instance GHR/RAS, byte-identical to prior stages. When on, the
+  // branch predictor's GHR (ghist) and the BTB's RAS are keyed by asid[0] (the
+  // virtual thread's trace slot) instead of shared across contexts; the big
+  // tables (PHT / BTB body) stay shared.
+  bool m_per_virtual_small_state{false};
+
   // B2.5 miss-edge signal source: a pointer to the shared LLC, whose per-context
   // load-miss counter (filled when the LLC is built with per_context_counters)
   // is the edge the `miss` arm diffs. Wired by static_environment, like l1i.
@@ -254,6 +261,11 @@ public:
    * B3.1.5 quota-finish seal switch. Default off.
    */
   self_type& quota_finish(bool quota_finish_);
+
+  /**
+   * B3.4 per-virtual small predictor state (GHR/RAS) keying. Default off.
+   */
+  self_type& per_virtual_small_state(bool per_virtual_small_state_);
 
   /**
    * B2.5 miss-edge signal source: the shared LLC whose per-context load-miss
@@ -531,6 +543,13 @@ template <typename B, typename T>
 auto champsim::core_builder<B, T>::quota_finish(bool quota_finish_) -> self_type&
 {
   m_quota_finish = quota_finish_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::per_virtual_small_state(bool per_virtual_small_state_) -> self_type&
+{
+  m_per_virtual_small_state = per_virtual_small_state_;
   return *this;
 }
 
