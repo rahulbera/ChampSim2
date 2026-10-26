@@ -305,6 +305,27 @@ void O3_CPU::swap_out_context(std::size_t slot)
   if (no_beneficiary)
     return;
 
+  // B3.2 Scenario-B self-swap suppression (measurement-only A/B): the no-
+  // beneficiary clamp above only fires when every OTHER thread has finished
+  // (Scenario-A tail). In the dual-live tail (Scenario-B) the co-resident is
+  // still `running` and no tail thread is suspended, so a swap-out would leave
+  // only this thread suspended and LRR would re-select it -- a flush+restore
+  // self-swap with no latency hiding. Suppress it when the flag is on: the
+  // thread stays seated and waits out its miss. Inert while off (default).
+  if (suppress_self_swap) {
+    const bool no_suspended_beneficiary = [&] {
+      for (std::size_t i = 0; i < virtual_threads.size(); ++i) {
+        if (i == static_cast<std::size_t>(v))
+          continue;
+        if (virtual_threads[i].st == champsim::virtual_thread::state::suspended)
+          return false;
+      }
+      return true;
+    }();
+    if (no_suspended_beneficiary)
+      return;
+  }
+
   // Livelock guard (bmt-design.md section 3 step 1): a virtual thread must have
   // retired at least one instruction since it was last bound before it may swap
   // out again. A freshly swapped-in thread (retired_since_swapin == 0) whose

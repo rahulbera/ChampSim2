@@ -149,6 +149,12 @@ public:
   // hashed_perceptron and basic_btb modules read it; other modules keep their own
   // SMT policy unchanged.
   const bool per_virtual_small_state;
+  // B3.2 Scenario-B self-swap suppression (bmt.suppress_self_swap). On, a
+  // swap-out is skipped when no OTHER suspended virtual thread exists to swap in
+  // -- the dual-live (Scenario-B) tail's flush+restore self-swap with no latency
+  // hiding. Off (default) is byte-identical to current behavior. Measurement-only
+  // A/B knob.
+  const bool suppress_self_swap;
   // B2.5 miss-edge signal source: the shared LLC (never null in a built machine;
   // null only when a unit test constructs a core without wiring one, and then the
   // miss arm is simply inert). Its sim_stats.per_context_load_misses, filled only
@@ -490,6 +496,7 @@ public:
         bmt_miss_dwell(b.m_bmt_miss_dwell),
         quota_finish(b.m_quota_finish),
         per_virtual_small_state(b.m_per_virtual_small_state),
+        suppress_self_swap(b.m_bmt_suppress_self_swap),
         llc(b.m_llc),
         swap_resume_time(b.m_num_contexts),
         mode(b.m_num_contexts),

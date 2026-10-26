@@ -120,6 +120,14 @@ struct core_builder_base {
   // tables (PHT / BTB body) stay shared.
   bool m_per_virtual_small_state{false};
 
+  // B3.2 Scenario-B self-swap suppression (bmt.suppress_self_swap). Default off
+  // == current behavior (a miss in the dual-live tail swaps the thread out and
+  // back into itself, a pure flush+restore with no latency hiding). On, a swap-out
+  // is skipped when no OTHER suspended virtual thread exists to swap in -- i.e.
+  // exactly the Scenario-B self-swap. Measurement-only A/B knob (bmt-design.md
+  // §5.6 tail), not a fix to adopt.
+  bool m_bmt_suppress_self_swap{false};
+
   // B2.5 miss-edge signal source: a pointer to the shared LLC, whose per-context
   // load-miss counter (filled when the LLC is built with per_context_counters)
   // is the edge the `miss` arm diffs. Wired by static_environment, like l1i.
@@ -266,6 +274,11 @@ public:
    * B3.4 per-virtual small predictor state (GHR/RAS) keying. Default off.
    */
   self_type& per_virtual_small_state(bool per_virtual_small_state_);
+
+  /**
+   * B3.2 Scenario-B self-swap suppression. Default off == current behavior.
+   */
+  self_type& bmt_suppress_self_swap(bool bmt_suppress_self_swap_);
 
   /**
    * B2.5 miss-edge signal source: the shared LLC whose per-context load-miss
@@ -550,6 +563,13 @@ template <typename B, typename T>
 auto champsim::core_builder<B, T>::per_virtual_small_state(bool per_virtual_small_state_) -> self_type&
 {
   m_per_virtual_small_state = per_virtual_small_state_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::bmt_suppress_self_swap(bool bmt_suppress_self_swap_) -> self_type&
+{
+  m_bmt_suppress_self_swap = bmt_suppress_self_swap_;
   return *this;
 }
 
