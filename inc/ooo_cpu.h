@@ -130,6 +130,17 @@ public:
   // LLC miss edge and swap-out). Default latency / dwell 0 == B2.4 behavior.
   const champsim::bmt_trigger_mode bmt_trigger_mode_;
   const std::size_t bmt_miss_dwell;
+
+  // B3.1.5 quota-finish seal (ooo_cpu.cpu0.quota_finish). When on, a virtual
+  // thread that has retired its phase instruction budget is marked `finished`,
+  // which stops its trace read (do_cycle), blocks swap-out, and lets it drain and
+  // release its slot -- the paper's "fixed total instruction budget" window
+  // convention. Off (default) the member is inert and every run is byte-identical.
+  const bool quota_finish;
+  // The per-phase instruction budget the seal compares against, stamped by
+  // do_phase each cycle with the phase's `length`. >0 guards the first cycle
+  // before do_phase has stamped it (and the warmup->sim boundary).
+  long long quota_length = 0;
   // B2.5 miss-edge signal source: the shared LLC (never null in a built machine;
   // null only when a unit test constructs a core without wiring one, and then the
   // miss arm is simply inert). Its sim_stats.per_context_load_misses, filled only
@@ -240,6 +251,14 @@ public:
   // rrestore, restore fetch, bind + reset livelock guard + IRB conservation).
   void swap_in_suspended_threads();
   void swap_in_context(std::size_t slot, long v);
+
+  // B3.1.5 quota-finish seal helpers. mark_quota_finished() marks each bound
+  // virtual thread whose per-thread retirement has reached quota_length as
+  // `finished`; reclaim_finished_threads() frees a finished thread's slot once
+  // its pipeline has fully drained (the same drained predicate as the V2.5 EOF
+  // reclamation). Both gate on quota_finish && !warmup, so a default run is inert.
+  void mark_quota_finished();
+  void reclaim_finished_threads();
 
   void initialize_instruction();
   long check_dib();
@@ -447,6 +466,7 @@ public:
         bmt_trace_events(b.m_bmt_trace_events),
         bmt_trigger_mode_(b.m_bmt_trigger_mode),
         bmt_miss_dwell(b.m_bmt_miss_dwell),
+        quota_finish(b.m_quota_finish),
         llc(b.m_llc),
         swap_resume_time(b.m_num_contexts),
         mode(b.m_num_contexts),

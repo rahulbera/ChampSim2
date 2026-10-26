@@ -109,6 +109,10 @@ struct core_builder_base {
   bmt_trigger_mode m_bmt_trigger_mode{bmt_trigger_mode::latency};
   std::size_t m_bmt_miss_dwell{0};
 
+  // B3.1.5 quota-finish seal switch. Default off, so a default run is inert and
+  // byte-identical to the pre-seal simulator.
+  bool m_quota_finish{false};
+
   // B2.5 miss-edge signal source: a pointer to the shared LLC, whose per-context
   // load-miss counter (filled when the LLC is built with per_context_counters)
   // is the edge the `miss` arm diffs. Wired by static_environment, like l1i.
@@ -245,6 +249,11 @@ public:
    * B2.5 miss-arm dwell, in cycles between the LLC miss edge and swap-out.
    */
   self_type& bmt_miss_dwell(std::size_t bmt_miss_dwell_);
+
+  /**
+   * B3.1.5 quota-finish seal switch. Default off.
+   */
+  self_type& quota_finish(bool quota_finish_);
 
   /**
    * B2.5 miss-edge signal source: the shared LLC whose per-context load-miss
@@ -515,6 +524,13 @@ template <typename B, typename T>
 auto champsim::core_builder<B, T>::bmt_miss_dwell(std::size_t bmt_miss_dwell_) -> self_type&
 {
   m_bmt_miss_dwell = bmt_miss_dwell_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::quota_finish(bool quota_finish_) -> self_type&
+{
+  m_quota_finish = quota_finish_;
   return *this;
 }
 

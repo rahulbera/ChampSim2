@@ -84,6 +84,11 @@ long O3_CPU::operate()
 {
   long progress{0};
   progress += retire_rob();                    // retire
+  // B3.1.5 quota-finish seal: mark a virtual thread `finished` the cycle it
+  // retires its phase budget. Must follow retire (num_retired is current) and
+  // precede swap-out (so the skip below sees the marker). Self-gates on
+  // quota_finish && !warmup, so a default run is byte-identical.
+  mark_quota_finished();
   progress += complete_inflight_instruction(); // finalize execution
   progress += execute_instruction();           // execute instructions
   progress += schedule_instruction();          // schedule instructions
@@ -129,6 +134,12 @@ long O3_CPU::operate()
       c.finished = true;
     }
   }
+
+  // B3.1.5 quota-finish seal: free a finished virtual thread's registers and
+  // release its slot once its pipeline has drained (self-gates on
+  // quota_finish && !warmup). Adjacent to the V2.5 EOF reclamation above -- the
+  // two share the same drained predicate and are otherwise orthogonal.
+  reclaim_finished_threads();
 
   // V2.2 total-capacity conservation invariant: the single ROB_SIZE budget is
   // never exceeded. `equal` conserves it by fixed per-context quota, so the
@@ -248,6 +259,13 @@ void O3_CPU::swap_out_detected_loads()
   for (std::size_t slot = 0; slot < contexts.size(); ++slot) {
     if (slot_map[slot] < 0)
       continue; // empty slot: nothing bound to swap out
+
+    // B3.1.5: a quota-finished virtual thread drains to completion; do not
+    // re-archive it. The marker is set by mark_quota_finished() earlier this
+    // same cycle, so this sees the current state. Inert while quota_finish is
+    // off (no thread is ever marked `finished`).
+    if (virtual_threads[static_cast<std::size_t>(slot_map[slot])].st == champsim::virtual_thread::state::finished)
+      continue;
 
     auto& c = contexts[slot];
     const bool triggered = std::any_of(std::begin(c.LQ), std::end(c.LQ), [&](const auto& e) {
@@ -491,6 +509,60 @@ void O3_CPU::swap_in_context(std::size_t slot, long v)
   // around would dangle once the freed registers are re-issued to a sibling, and
   // clearing here makes a second swap-in of the same suspension impossible.
   vt.saved_rat.fill(-1);
+}
+
+void O3_CPU::mark_quota_finished()
+{
+  // Gate exactly as the other BMT mechanisms do: off or during warmup this is a
+  // no-op, so a default run (and the whole warmup phase) stays byte-identical.
+  // The quota_length guard covers the first cycle of the run before do_phase has
+  // stamped it with the phase length.
+  if (!quota_finish || warmup || quota_length <= 0)
+    return;
+
+  // A virtual thread is `finished` the cycle it retires its phase instruction
+  // budget. The marker seals it: do_cycle stops feeding its trace, swap-out skips
+  // it, and reclaim_finished_threads() frees its slot once its pipeline drains.
+  // It runs after retire_rob() (num_retired is current) and before
+  // swap_out_detected_loads() (so the skip sees the marker).
+  for (std::size_t slot = 0; slot < contexts.size(); ++slot) {
+    const long bound = slot_map[slot];
+    if (bound < 0)
+      continue;
+    auto& vt = virtual_threads[static_cast<std::size_t>(bound)];
+    if (vt.st == champsim::virtual_thread::state::running && vt.num_retired >= quota_length)
+      vt.st = champsim::virtual_thread::state::finished;
+  }
+}
+
+void O3_CPU::reclaim_finished_threads()
+{
+  if (!quota_finish || warmup)
+    return;
+
+  // Free a quota-finished thread's physical registers and release its slot once
+  // its pipeline has fully drained. "Fully drained" is the same stricter-than-
+  // ROB-empty predicate the V2.5 EOF path uses: every front-end buffer, the ROB
+  // and both queues are empty, so frontend_RAT == backend_RAT (the committed
+  // state) and nothing of this thread can ever be renamed again. The freed slot
+  // is re-filled by swap_in_suspended_threads() later this same cycle (BMT), so
+  // a finished virtual thread stops occupying hardware. For a slot arm the slot
+  // stays empty (nothing is suspended), which is harmless.
+  for (std::size_t slot = 0; slot < contexts.size(); ++slot) {
+    const long bound = slot_map[slot];
+    if (bound < 0)
+      continue;
+    auto& vt = virtual_threads[static_cast<std::size_t>(bound)];
+    if (vt.st != champsim::virtual_thread::state::finished)
+      continue;
+    auto& c = contexts[slot];
+    if (c.ROB.empty() && c.DISPATCH_BUFFER.empty() && c.DECODE_BUFFER.empty() && c.DIB_HIT_BUFFER.empty() && c.IFETCH_BUFFER.empty()
+        && c.input_queue.empty()
+        && std::all_of(std::begin(c.LQ), std::end(c.LQ), [](const auto& entry) { return !entry.has_value(); }) && c.SQ.empty()) {
+      c.reclaim_registers();
+      slot_map[slot] = -1;
+    }
+  }
 }
 
 void O3_CPU::initialize()

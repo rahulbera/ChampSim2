@@ -75,7 +75,12 @@ long do_cycle(std::vector<std::reference_wrapper<operable>>& operables, const st
       if (trace.eof()) {
         ctx.trace_eof = true;
       }
-      for (auto pkt_count = cpu.IN_QUEUE_SIZE - static_cast<long>(std::size(ctx.input_queue)); !trace.eof() && pkt_count > 0; --pkt_count) {
+      // B3.1.5: a quota-finished virtual thread reads no more trace -- its
+      // pipeline drains and its slot is reclaimed (see reclaim_finished_threads).
+      // The marker is only ever set while quota_finish is on, so this is inert
+      // (and byte-identical) by default.
+      const bool quota_finished = cpu.virtual_threads.at(static_cast<std::size_t>(bound)).st == champsim::virtual_thread::state::finished;
+      for (auto pkt_count = cpu.IN_QUEUE_SIZE - static_cast<long>(std::size(ctx.input_queue)); !trace.eof() && !quota_finished && pkt_count > 0; --pkt_count) {
         ctx.input_queue.push_back(trace());
       }
     }
@@ -186,20 +191,46 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
     // mid-phase. contexts.size() == 1 collapses it to the old single-context
     // union (retire length || trace EOF), byte-identical.
     for (O3_CPU& cpu : cpus) {
-      bool core_complete = true;
-      for (std::size_t c = 0; c < std::size(cpu.contexts); ++c) {
+      // B3.1.5: stamp the seal threshold so mark_quota_finished() (operate) can
+      // compare against this phase's length. Constant across the phase, so the
+      // first stamp of the phase is enough; a stale value from the previous phase
+      // is harmless because begin_phase resets num_retired to zero.
+      cpu.quota_length = length;
+
+      // record_roi_completion is meaningful per-context under both conventions:
+      // under the default (off) it latches each context's own ROI-completion
+      // cycle; under quota_finish a BMT slot's value is the first time that slot
+      // retired `length` across whatever virtual threads ran on it (approximate),
+      // while a slot arm's value is exactly the thread's. Latched idempotently.
+      for (std::size_t c = 0; c < std::size(cpu.contexts); ++c)
         cpu.record_roi_completion(c, length);
-        // B2.2/B2.3: a suspended (empty) slot is not finished -- its virtual
-        // thread is recoverable and will be re-bound. Gate both the retirement
-        // and the EOF terms on the slot being bound, so an empty slot never
-        // completes the phase from a stale retirement count (the V3.3
-        // "suspended == finished" conflation, which BMT must not inherit). Under
-        // the default binding (slot_map[c] == c) bound >= 0 always holds, so this
-        // is byte-identical to the old union (retire length || trace EOF).
-        const long bound = cpu.slot_map.at(c);
-        const bool retired = bound >= 0 && cpu.sim_instr(c) >= length;
-        const bool eof = bound >= 0 && traces.at(trace_index.at(cpu.cpu).at(static_cast<std::size_t>(bound))).eof();
-        core_complete = core_complete && (retired || eof);
+
+      bool core_complete = true;
+      if (cpu.quota_finish && !is_warmup) {
+        // B3.1.5 per-virtual-thread budget: a core is complete when every virtual
+        // thread has retired its own share of the phase (or its trace EOF'd). For
+        // a slot arm (C_virt == C_phys) virtual_threads[v].num_retired equals
+        // sim_instr(v), so this is the old per-context union exactly; for a BMT
+        // arm it is the paper's "fixed total instruction budget" -- the fast
+        // thread's tail idle no longer closes the window.
+        for (std::size_t v = 0; v < std::size(cpu.virtual_threads); ++v) {
+          const bool done = cpu.virtual_threads[v].num_retired >= length || traces.at(trace_index.at(cpu.cpu).at(v)).eof();
+          core_complete = core_complete && done;
+        }
+      } else {
+        for (std::size_t c = 0; c < std::size(cpu.contexts); ++c) {
+          // B2.2/B2.3: a suspended (empty) slot is not finished -- its virtual
+          // thread is recoverable and will be re-bound. Gate both the retirement
+          // and the EOF terms on the slot being bound, so an empty slot never
+          // completes the phase from a stale retirement count (the V3.3
+          // "suspended == finished" conflation, which BMT must not inherit). Under
+          // the default binding (slot_map[c] == c) bound >= 0 always holds, so this
+          // is byte-identical to the old union (retire length || trace EOF).
+          const long bound = cpu.slot_map.at(c);
+          const bool retired = bound >= 0 && cpu.sim_instr(c) >= length;
+          const bool eof = bound >= 0 && traces.at(trace_index.at(cpu.cpu).at(static_cast<std::size_t>(bound))).eof();
+          core_complete = core_complete && (retired || eof);
+        }
       }
       next_phase_complete[cpu.cpu] = next_phase_complete[cpu.cpu] || core_complete;
     }
