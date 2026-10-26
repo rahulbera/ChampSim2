@@ -58,15 +58,32 @@ TEST_CASE("B3.1.5 mark_quota_finished seals a thread at its budget when on")
   CHECK(cpu.virtual_threads[0].st == champsim::virtual_thread::state::finished);
 }
 
-TEST_CASE("B3.1.5 reclaim_finished_threads frees a drained finished thread's slot when on")
+TEST_CASE("B3.1.5 reclaim_finished_threads does not free a finished thread's slot in a slot arm")
 {
-  O3_CPU cpu{champsim::core_builder{}.index(0).num_contexts(1).lq_size(4).quota_finish(true)};
+  O3_CPU cpu{champsim::core_builder{}.index(0).num_contexts(2).num_virtual_threads(2).lq_size(4).quota_finish(true)};
   cpu.warmup = false;
   cpu.virtual_threads[0].st = champsim::virtual_thread::state::finished;
 
-  // A freshly-constructed context is fully drained (empty buffers, empty LSQ), so
-  // the drained predicate fires and the slot is released for swap-in.
+  // C_virt == C_phys: there is no cold (suspended) thread to inherit the slot, so
+  // reclaim must NOT free it -- doing so would leave a spare empty slot that a
+  // sibling could migrate into and scramble the per-context accounting.
+  cpu.reclaim_finished_threads();
+
+  CHECK(cpu.slot_map[0] == 0);
+  CHECK(cpu.slot_map[1] == 1);
+}
+
+TEST_CASE("B3.1.5 reclaim_finished_threads frees a drained finished thread's slot in a BMT arm")
+{
+  O3_CPU cpu{champsim::core_builder{}.index(0).num_contexts(2).num_virtual_threads(4).lq_size(4).quota_finish(true)};
+  cpu.warmup = false;
+  cpu.virtual_threads[0].st = champsim::virtual_thread::state::finished;
+
+  // C_virt > C_phys: a freshly-constructed context is fully drained (empty
+  // buffers, empty LSQ), so the drained predicate fires and the slot is released
+  // for a suspended thread to swap into.
   cpu.reclaim_finished_threads();
 
   CHECK(cpu.slot_map[0] == -1);
+  CHECK(cpu.slot_map[1] == 1);
 }

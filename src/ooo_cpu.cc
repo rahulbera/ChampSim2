@@ -540,14 +540,22 @@ void O3_CPU::reclaim_finished_threads()
   if (!quota_finish || warmup)
     return;
 
+  // B3.1.5 slot-arm guard: only a genuine BMT arm (C_virt > C_phys) has a cold
+  // (suspended) thread waiting to inherit a finished thread's slot. In a slot arm
+  // (C_virt == C_phys) every thread has its own constant slot; freeing it would
+  // only leave a spare empty slot that a sibling could later migrate into,
+  // scrambling the per-context (slot) accounting. A slot-arm finished thread
+  // therefore just idles on its slot instead of being reclaimed.
+  if (virtual_threads.size() <= contexts.size())
+    return;
+
   // Free a quota-finished thread's physical registers and release its slot once
   // its pipeline has fully drained. "Fully drained" is the same stricter-than-
   // ROB-empty predicate the V2.5 EOF path uses: every front-end buffer, the ROB
   // and both queues are empty, so frontend_RAT == backend_RAT (the committed
   // state) and nothing of this thread can ever be renamed again. The freed slot
   // is re-filled by swap_in_suspended_threads() later this same cycle (BMT), so
-  // a finished virtual thread stops occupying hardware. For a slot arm the slot
-  // stays empty (nothing is suspended), which is harmless.
+  // a finished virtual thread stops occupying hardware.
   for (std::size_t slot = 0; slot < contexts.size(); ++slot) {
     const long bound = slot_map[slot];
     if (bound < 0)
