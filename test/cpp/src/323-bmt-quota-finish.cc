@@ -87,3 +87,51 @@ TEST_CASE("B3.1.5 reclaim_finished_threads frees a drained finished thread's slo
   CHECK(cpu.slot_map[0] == -1);
   CHECK(cpu.slot_map[1] == 1);
 }
+
+// B3.1.6 no-beneficiary clamp: a swap-out whose vacated slot no OTHER virtual
+// thread could occupy is pure self-thrash. The clamp skips it at the top of
+// swap_out_context() -- before the livelock guard -- when every other vthread is
+// `finished`. Inert while quota_finish is off (no thread is ever finished).
+TEST_CASE("B3.1.6 no-beneficiary clamp skips swap-out when every other vthread is finished")
+{
+  O3_CPU cpu{champsim::core_builder{}.index(0).num_contexts(2).num_virtual_threads(2).lq_size(4).quota_finish(true)};
+  cpu.warmup = false;
+  // ③ tail: vthread 0 is the last survivor; every other vthread has finished.
+  cpu.virtual_threads[1].st = champsim::virtual_thread::state::finished;
+  cpu.virtual_threads[0].retired_since_swapin = 1;  // clear the livelock guard, so
+                                                    // only the clamp can block.
+
+  cpu.swap_out_context(0);
+
+  // No swap-out: the thread stays seated and waits out its miss.
+  CHECK(cpu.virtual_threads[0].st == champsim::virtual_thread::state::running);
+  CHECK(cpu.slot_map[0] == 0);
+}
+
+TEST_CASE("B3.1.6 no-beneficiary clamp lets swap-out proceed when another vthread is unfinished")
+{
+  O3_CPU cpu{champsim::core_builder{}.index(0).num_contexts(2).num_virtual_threads(2).lq_size(4).quota_finish(true)};
+  cpu.warmup = false;
+  // ① partner-in-seat: vthread 1 is still running (not finished), so a swap-out
+  // still has a beneficiary. The pair behavior is unchanged.
+  cpu.virtual_threads[0].retired_since_swapin = 1;
+
+  cpu.swap_out_context(0);
+
+  CHECK(cpu.virtual_threads[0].st == champsim::virtual_thread::state::suspended);
+  CHECK(cpu.slot_map[0] == -1);
+}
+
+TEST_CASE("B3.1.6 no-beneficiary clamp is default-inert (no finished thread while quota_finish is off)")
+{
+  O3_CPU cpu{champsim::core_builder{}.index(0).num_contexts(2).num_virtual_threads(4).lq_size(4)};
+  cpu.warmup = false;
+  // Normal BMT arm with quota_finish OFF: no thread is ever marked `finished`, so
+  // the predicate never fires and the swap-out proceeds exactly as before.
+  cpu.virtual_threads[0].retired_since_swapin = 1;
+
+  cpu.swap_out_context(0);
+
+  CHECK(cpu.virtual_threads[0].st == champsim::virtual_thread::state::suspended);
+  CHECK(cpu.slot_map[0] == -1);
+}

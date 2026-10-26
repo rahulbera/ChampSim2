@@ -286,6 +286,25 @@ void O3_CPU::swap_out_context(std::size_t slot)
   auto& vt = virtual_threads[static_cast<std::size_t>(v)];
   auto& c = contexts[slot];
 
+  // B3.1.6 no-beneficiary clamp: a swap-out only buys multiplexing when some
+  // OTHER virtual thread could be swapped into the vacated slot. In the tail,
+  // once every other virtual thread has finished (trace EOF / quota seal), the
+  // only thread LRR swap-in could re-select is this one, so the swap-out is a
+  // pure flush+restore self-thrash with no beneficiary. Skip it: the thread
+  // stays seated and waits out its miss. Inert while quota_finish is off -- no
+  // thread is ever marked `finished`, so the predicate never fires.
+  const bool no_beneficiary = [&] {
+    for (std::size_t i = 0; i < virtual_threads.size(); ++i) {
+      if (i == static_cast<std::size_t>(v))
+        continue;
+      if (virtual_threads[i].st != champsim::virtual_thread::state::finished)
+        return false;
+    }
+    return true;
+  }();
+  if (no_beneficiary)
+    return;
+
   // Livelock guard (bmt-design.md section 3 step 1): a virtual thread must have
   // retired at least one instruction since it was last bound before it may swap
   // out again. A freshly swapped-in thread (retired_since_swapin == 0) whose
