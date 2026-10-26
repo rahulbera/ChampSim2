@@ -549,8 +549,16 @@ void O3_CPU::mark_quota_finished()
     if (bound < 0)
       continue;
     auto& vt = virtual_threads[static_cast<std::size_t>(bound)];
-    if (vt.st == champsim::virtual_thread::state::running && vt.num_retired >= quota_length)
+    if (vt.st == champsim::virtual_thread::state::running && vt.num_retired >= quota_length) {
       vt.st = champsim::virtual_thread::state::finished;
+      // B3.5-lite tail decomposition: record the exact seal cycle of each finished
+      // thread so the analysis can split W into the Scenario-B (dual-live) and
+      // Scenario-A (single-live) tail windows. Trace-only, gated like every other
+      // [BMT] event; a default run never reaches it.
+      if (bmt_trace_events)
+        fmt::print(stderr, "[BMT][FINISH] cycle={} vthread={} trace_slot={} retired={}\n",
+                   current_time.time_since_epoch() / clock_period, bound, vt.trace_slot, vt.num_retired);
+    }
   }
 }
 
