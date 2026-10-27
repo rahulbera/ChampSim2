@@ -27,6 +27,7 @@
 #include "access_type.h"
 #include "address.h"
 #include "champsim.h"
+#include "chrono.h"
 
 namespace champsim
 {
@@ -63,6 +64,14 @@ class channel
 
     std::vector<uint64_t> instr_depend_on_me{};
     std::vector<uint64_t> load_waiters{};
+
+    // B4.0 sparse slow load. `slow` marks a demand load the core sampled for an
+    // ultra-long return-path wait; the data caches force a miss on it so it
+    // always descends to DRAM, and the LLC adds `slow_extra_latency` (already
+    // scaled to a duration by the core) to its fill. Off == slow=false /
+    // slow_extra_latency zero == byte-identical.
+    bool slow = false;
+    champsim::chrono::clock::duration slow_extra_latency{};
   };
 
   struct response {

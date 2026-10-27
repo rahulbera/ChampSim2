@@ -82,6 +82,11 @@ class CACHE : public champsim::operable
     std::vector<uint64_t> load_waiters{};
     std::vector<std::deque<response_type>*> to_return{};
 
+    // B4.0 sparse slow load: carried through from channel::request so the data
+    // caches can force a miss and the LLC can add the return-path latency.
+    bool slow = false;
+    champsim::chrono::clock::duration slow_extra_latency{};
+
     explicit tag_lookup_type(request_type req) : tag_lookup_type(req, false, false) {}
     tag_lookup_type(const request_type& req, bool local_pref, bool skip);
   };
@@ -110,6 +115,11 @@ public:
     std::vector<uint64_t> instr_depend_on_me{};
     std::vector<uint64_t> load_waiters{};
     std::vector<std::deque<response_type>*> to_return{};
+
+    // B4.0 sparse slow load: the MSHR entry keeps the mark so finish_packet at
+    // the LLC can add slow_extra_latency to the fill's ready time.
+    bool slow = false;
+    champsim::chrono::clock::duration slow_extra_latency{};
 
     fill_type(const tag_lookup_type& req, champsim::chrono::clock::time_point _time_enqueued);
     static fill_type merge(fill_type predecessor, fill_type successor);
@@ -177,6 +187,11 @@ public:
   // cache_builder::per_context_counters(bool). Off means zero-overhead and no
   // emitted change; on means sim_stats.per_context_load_{hits,misses} fill in.
   bool per_context_counters;
+  // B4.0: true only for the last-level cache (the LLC), whose fill is where a
+  // sparse slow load's extra return-path latency is added. The per-level data
+  // caches forward the mark down but must NOT add the latency, or it would be
+  // charged once per level. Set by static_environment for the LLC only.
+  bool is_last_level;
   // The translations a TLB holds; null for every other cache. See
   // cache_builder::virtual_memory.
   VirtualMemory* vmem;
@@ -358,7 +373,7 @@ public:
         NUM_WAY(b.get_num_ways()), MSHR_SIZE(b.get_num_mshrs()), PQ_SIZE(b.m_pq_size), HIT_LATENCY(b.get_hit_latency() * b.m_clock_period),
         FILL_LATENCY(b.get_fill_latency() * b.m_clock_period), OFFSET_BITS(b.m_offset_bits), MAX_TAG(b.get_tag_bandwidth()), MAX_FILL(b.get_fill_bandwidth()),
         prefetch_as_load(b.m_pref_load), match_offset_bits(b.m_wq_full_addr), virtual_prefetch(b.m_va_pref), perfect(b.m_perfect),
-        per_context_counters(b.m_per_context_counters), vmem(b.m_vmem), pref_activate_mask(b.m_pref_act_mask),
+        per_context_counters(b.m_per_context_counters), is_last_level(b.m_is_last_level), vmem(b.m_vmem), pref_activate_mask(b.m_pref_act_mask),
         pref_module_pimpl(std::make_unique<prefetcher_module_model<Ps...>>(this)),
         repl_module_pimpl(std::make_unique<replacement_module_model<Rs...>>(this))
   {

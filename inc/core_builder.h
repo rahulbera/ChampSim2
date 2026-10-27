@@ -128,6 +128,14 @@ struct core_builder_base {
   // §5.6 tail), not a fix to adopt.
   bool m_bmt_suppress_self_swap{false};
 
+  // B4.0 sparse slow load (ooo_cpu.cpu0.bmt.sparse_slow_load.*). Default off.
+  // `enabled` samples `ratio` of demand loads by a deterministic (asid, ip)
+  // hash; `extra_latency` is the return-path wait in core cycles, added at the
+  // LLC. Off == no mark == byte-identical.
+  bool m_bmt_sparse_slow_load_enabled{false};
+  double m_bmt_sparse_slow_load_ratio{0.0};
+  std::size_t m_bmt_sparse_slow_load_extra_latency{0};
+
   // B2.5 miss-edge signal source: a pointer to the shared LLC, whose per-context
   // load-miss counter (filled when the LLC is built with per_context_counters)
   // is the edge the `miss` arm diffs. Wired by static_environment, like l1i.
@@ -279,6 +287,22 @@ public:
    * B3.2 Scenario-B self-swap suppression. Default off == current behavior.
    */
   self_type& bmt_suppress_self_swap(bool bmt_suppress_self_swap_);
+
+  /**
+   * B4.0 sparse slow load: enable deterministic sampling of ultra-long-wait
+   * loads. Default off.
+   */
+  self_type& bmt_sparse_slow_load_enabled(bool bmt_sparse_slow_load_enabled_);
+
+  /**
+   * B4.0 sparse slow load: sampling ratio in [0,1].
+   */
+  self_type& bmt_sparse_slow_load_ratio(double bmt_sparse_slow_load_ratio_);
+
+  /**
+   * B4.0 sparse slow load: return-path extra latency, in core cycles.
+   */
+  self_type& bmt_sparse_slow_load_extra_latency(std::size_t bmt_sparse_slow_load_extra_latency_);
 
   /**
    * B2.5 miss-edge signal source: the shared LLC whose per-context load-miss
@@ -570,6 +594,27 @@ template <typename B, typename T>
 auto champsim::core_builder<B, T>::bmt_suppress_self_swap(bool bmt_suppress_self_swap_) -> self_type&
 {
   m_bmt_suppress_self_swap = bmt_suppress_self_swap_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::bmt_sparse_slow_load_enabled(bool bmt_sparse_slow_load_enabled_) -> self_type&
+{
+  m_bmt_sparse_slow_load_enabled = bmt_sparse_slow_load_enabled_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::bmt_sparse_slow_load_ratio(double bmt_sparse_slow_load_ratio_) -> self_type&
+{
+  m_bmt_sparse_slow_load_ratio = bmt_sparse_slow_load_ratio_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::bmt_sparse_slow_load_extra_latency(std::size_t bmt_sparse_slow_load_extra_latency_) -> self_type&
+{
+  m_bmt_sparse_slow_load_extra_latency = bmt_sparse_slow_load_extra_latency_;
   return *this;
 }
 

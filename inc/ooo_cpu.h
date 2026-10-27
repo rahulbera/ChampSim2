@@ -155,6 +155,17 @@ public:
   // hiding. Off (default) is byte-identical to current behavior. Measurement-only
   // A/B knob.
   const bool suppress_self_swap;
+  // B4.0 sparse slow load (bmt.sparse_slow_load.*). `enabled` samples
+  // `threshold`-out-of-2^32 of demand loads by a deterministic (asid, ip) hash
+  // in execute_load, marks them slow on the memory packet, and the LLC charges
+  // `extra_latency` cycles of return-path wait on each marked load. Off ==
+  // enabled false == no mark == byte-identical.
+  const bool bmt_sparse_slow_load_enabled;
+  const uint64_t bmt_sparse_slow_load_threshold; // precomputed ratio * 2^32
+  const std::size_t bmt_sparse_slow_load_extra_latency;
+  // B4.0 census: demand loads sampled slow in the sim phase (ROI) only, emitted
+  // in end_phase so criterion [4] can verify slow_loads ~= ratio * total_loads.
+  uint64_t bmt_sparse_slow_loads = 0;
   // B2.5 miss-edge signal source: the shared LLC (never null in a built machine;
   // null only when a unit test constructs a core without wiring one, and then the
   // miss arm is simply inert). Its sim_stats.per_context_load_misses, filled only
@@ -497,6 +508,9 @@ public:
         quota_finish(b.m_quota_finish),
         per_virtual_small_state(b.m_per_virtual_small_state),
         suppress_self_swap(b.m_bmt_suppress_self_swap),
+        bmt_sparse_slow_load_enabled(b.m_bmt_sparse_slow_load_enabled),
+        bmt_sparse_slow_load_threshold(static_cast<uint64_t>(b.m_bmt_sparse_slow_load_ratio * 4294967296.0)),
+        bmt_sparse_slow_load_extra_latency(b.m_bmt_sparse_slow_load_extra_latency),
         llc(b.m_llc),
         swap_resume_time(b.m_num_contexts),
         mode(b.m_num_contexts),

@@ -41,7 +41,8 @@ CACHE::CACHE(CACHE&& other)
       cpu(other.cpu), NAME(std::move(other.NAME)), NUM_SET(other.NUM_SET), NUM_WAY(other.NUM_WAY), MSHR_SIZE(other.MSHR_SIZE), PQ_SIZE(other.PQ_SIZE),
       HIT_LATENCY(other.HIT_LATENCY), FILL_LATENCY(other.FILL_LATENCY), OFFSET_BITS(other.OFFSET_BITS), block(std::move(other.block)), MAX_TAG(other.MAX_TAG),
       MAX_FILL(other.MAX_FILL), prefetch_as_load(other.prefetch_as_load), match_offset_bits(other.match_offset_bits), virtual_prefetch(other.virtual_prefetch),
-      perfect(other.perfect), per_context_counters(other.per_context_counters), vmem(other.vmem), pref_activate_mask(std::move(other.pref_activate_mask)),
+      perfect(other.perfect), per_context_counters(other.per_context_counters), is_last_level(other.is_last_level), vmem(other.vmem),
+      pref_activate_mask(std::move(other.pref_activate_mask)),
 
       sim_stats(std::move(other.sim_stats)), roi_stats(std::move(other.roi_stats)),
 
@@ -81,6 +82,7 @@ auto CACHE::operator=(CACHE&& other) -> CACHE&
   this->virtual_prefetch = other.virtual_prefetch;
   this->perfect = other.perfect;
   this->per_context_counters = other.per_context_counters;
+  this->is_last_level = other.is_last_level;
   this->vmem = other.vmem;
   this->pref_activate_mask = std::move(other.pref_activate_mask);
 
@@ -103,6 +105,8 @@ CACHE::tag_lookup_type::tag_lookup_type(const request_type& req, bool local_pref
 {
   asid[0] = req.asid[0];
   asid[1] = req.asid[1];
+  slow = req.slow;
+  slow_extra_latency = req.slow_extra_latency;
 }
 
 CACHE::fill_type::fill_type(const tag_lookup_type& req, champsim::chrono::clock::time_point _time_enqueued)
@@ -112,6 +116,8 @@ CACHE::fill_type::fill_type(const tag_lookup_type& req, champsim::chrono::clock:
 {
   asid[0] = req.asid[0];
   asid[1] = req.asid[1];
+  slow = req.slow;
+  slow_extra_latency = req.slow_extra_latency;
 }
 
 CACHE::fill_type CACHE::fill_type::merge(fill_type predecessor, fill_type successor)
@@ -136,6 +142,11 @@ CACHE::fill_type CACHE::fill_type::merge(fill_type predecessor, fill_type succes
   retval.load_waiters = merged_waiters;
   retval.to_return = merged_return;
   retval.data_promise = predecessor.data_promise;
+
+  // A sparse slow load's mark survives a merge: if either constituent was slow,
+  // the merged fill stays slow and keeps the larger return-path latency.
+  retval.slow = predecessor.slow || successor.slow;
+  retval.slow_extra_latency = std::max(predecessor.slow_extra_latency, successor.slow_extra_latency);
 
   if constexpr (champsim::debug_print) {
     if (successor.type == access_type::PREFETCH) {
@@ -329,7 +340,15 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 
   // access cache
   auto [set_begin, set_end] = get_set_span(handle_pkt.address);
-  auto way = std::find_if(set_begin, set_end, [matcher = matches_tag(handle_pkt)](const auto& x) { return x.valid && matcher(x); });
+  // B4.0 sparse slow load: force a miss so the load always descends to DRAM.
+  // Treat the block as absent (way = set_end), which is exactly the genuine
+  // miss path -- the replacement policy sees the NUM_WAY miss sentinel and the
+  // miss counter fires in handle_miss. A TLB (vmem != nullptr) must NOT force:
+  // translation is upstream of the data caches and a slow load still needs its
+  // ordinary translation (its data path miss is forced at L1D/L2C/LLC).
+  const bool force_miss = (handle_pkt.slow && vmem == nullptr);
+  auto way = force_miss ? set_end
+                        : std::find_if(set_begin, set_end, [matcher = matches_tag(handle_pkt)](const auto& x) { return x.valid && matcher(x); });
   const auto hit = (way != set_end);
   const auto useful_prefetch = (hit && way->prefetch && !handle_pkt.prefetch_from_this);
 
@@ -395,6 +414,8 @@ auto CACHE::mshr_and_forward_packet(const tag_lookup_type& handle_pkt) -> std::p
   fwd_pkt.instr_depend_on_me = handle_pkt.instr_depend_on_me;
   fwd_pkt.load_waiters = handle_pkt.load_waiters;
   fwd_pkt.response_requested = (!handle_pkt.prefetch_from_this || !handle_pkt.skip_fill);
+  fwd_pkt.slow = handle_pkt.slow;
+  fwd_pkt.slow_extra_latency = handle_pkt.slow_extra_latency;
 
   return std::pair{std::move(to_allocate), std::move(fwd_pkt)};
 }
@@ -757,7 +778,16 @@ void CACHE::finish_packet(const response_type& packet)
 
   // MSHR holds the most updated information about this request
   fill_type::returned_value finished_value{packet.data, packet.pf_metadata};
-  mshr_entry->data_promise = champsim::waitable{finished_value, current_time + (warmup ? champsim::chrono::clock::duration{} : FILL_LATENCY)};
+  // B4.0 sparse slow load: the last-level cache charges the mark's extra
+  // return-path latency here, exactly once. The per-level data caches forward
+  // the mark down but do not charge (is_last_level false), so the total extra
+  // latency is a single slow_extra_latency on the DRAM return path, not once
+  // per level.
+  auto fill_latency = FILL_LATENCY;
+  if (is_last_level && mshr_entry->slow) {
+    fill_latency += mshr_entry->slow_extra_latency;
+  }
+  mshr_entry->data_promise = champsim::waitable{finished_value, current_time + (warmup ? champsim::chrono::clock::duration{} : fill_latency)};
   if constexpr (champsim::debug_print) {
     fmt::print("[{}_MSHR] finish_packet instr_id: {} address: {} data: {} type: {} current: {}\n", this->NAME, mshr_entry->instr_id, mshr_entry->address,
                mshr_entry->data_promise->data, access_type_names.at(champsim::to_underlying(mshr_entry->type)), current_time.time_since_epoch() / clock_period);

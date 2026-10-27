@@ -707,6 +707,14 @@ void O3_CPU::end_phase(unsigned finished_cpu)
   if (bmt_trace_events && !warmup && finished_cpu == this->cpu)
     print_bmt_trace_summary(bmt_trace_swap_outs, bmt_trace_defers, bmt_trace_defers_livelock, bmt_trace_defers_resource, bmt_swap_in_intervals,
                             bmt_inflight_waits, virtual_threads);
+
+  // B4.0 sparse slow load census, once per core at the end of the sim phase.
+  // Independent of trace_events so the ① / solo arms -- which run without the
+  // trace switch -- still report their slow-load count for pre-registration
+  // criterion [4] (slow_loads ~= ratio * total_loads). Off (default) prints
+  // nothing and stays byte-identical.
+  if (bmt_sparse_slow_load_enabled && !warmup && finished_cpu == this->cpu)
+    fmt::print(stderr, "[BMT][SPARSE] slow_loads={}\n", bmt_sparse_slow_loads);
 }
 
 void O3_CPU::record_roi_completion(std::size_t c, long long length)
@@ -1708,6 +1716,26 @@ bool O3_CPU::execute_load(const LSQ_ENTRY& lq_entry)
   // virtual block. This is independent of instr_depend_on_me, which stays the
   // instruction-fetch dependency set.
   data_packet.load_waiters = {lq_entry.load_waiter_id};
+
+  // B4.0 sparse slow load: deterministically sample a fraction of demand loads
+  // by a (asid, ip) hash and mark them slow. The mark travels on the packet: the
+  // data caches force a miss on it (so the load always reaches DRAM) and the LLC
+  // adds slow_extra_latency to the return path. There is no random source, so
+  // the hash is a fixed splitmix64 -- no std::rand, no time seed -- or the
+  // byte-identical lock gates could not pass. Off (enabled false) the whole
+  // block is skipped and the packet is left unmarked.
+  if (bmt_sparse_slow_load_enabled) {
+    uint64_t h = (uint64_t{lq_entry.asid[0]} << 32) ^ lq_entry.ip.to<uint64_t>();
+    h = (h ^ (h >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    h = (h ^ (h >> 27)) * 0x94d049bb133111ebULL;
+    h ^= h >> 31;
+    if ((h & 0xffffffffULL) < bmt_sparse_slow_load_threshold) {
+      data_packet.slow = true;
+      data_packet.slow_extra_latency = bmt_sparse_slow_load_extra_latency * clock_period;
+      if (!warmup)
+        ++bmt_sparse_slow_loads;
+    }
+  }
 
   if constexpr (champsim::debug_print) {
     fmt::print("[LQ] {} instr_id: {} vaddr: {}\n", __func__, data_packet.instr_id, data_packet.v_address);

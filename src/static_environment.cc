@@ -245,6 +245,19 @@ champsim::bmt_trigger_mode configured_bmt_trigger(const champsim::runtime_config
   throw std::runtime_error{"runtime config: " + key + " must be 'latency' or 'miss'"};
 }
 
+// B4.0 sparse slow load sampling ratio. A fraction in [0,1]; anything outside is
+// refused up front, because the O3_CPU casts ratio * 2^32 to a uint64 threshold
+// and an out-of-range double would produce a nonsensical (or, for a negative
+// ratio, undefined) sampling mask.
+double configured_bmt_sparse_slow_load_ratio(const champsim::runtime_config& cfg, const std::string& key)
+{
+  const auto value = cfg.value<double>(key, 0.0);
+  if (value < 0.0 || value > 1.0) {
+    throw std::runtime_error{"runtime config: " + key + " must be in [0, 1]"};
+  }
+  return value;
+}
+
 // The simulation's time quantum: do_phase() ticks the shared clock by the
 // SMALLEST clock_period among the operables, so a duration expressed in cycles
 // has to be scaled by this and not by any one component's period.
@@ -372,7 +385,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                           .prefetch_as_load(cfg.value<bool>("cache.llc.prefetch_as_load", false))
                           .virtual_prefetch(cfg.value<bool>("cache.llc.virtual_prefetch", false))
                           .perfect(cfg.value<bool>("cache.llc.perfect", false))
-                          .per_context_counters(cfg.value<bool>("cache.llc.per_context_counters", false)));
+                          .per_context_counters(cfg.value<bool>("cache.llc.per_context_counters", false))
+                          .is_last_level(true));
 
   for (std::size_t cpu = 0; cpu < defs::num_cpus; ++cpu) {
     const auto dtlb = cache_key(cpu, "DTLB");
@@ -540,6 +554,9 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                            .quota_finish(cfg.value<bool>(key + ".quota_finish", false))
                            .per_virtual_small_state(cfg.value<bool>(key + ".bmt.per_virtual_small_state", false))
                            .bmt_suppress_self_swap(cfg.value<bool>(key + ".bmt.suppress_self_swap", false))
+                           .bmt_sparse_slow_load_enabled(cfg.value<bool>(key + ".bmt.sparse_slow_load.enabled", false))
+                           .bmt_sparse_slow_load_ratio(configured_bmt_sparse_slow_load_ratio(cfg, key + ".bmt.sparse_slow_load.ratio"))
+                           .bmt_sparse_slow_load_extra_latency(cfg.value<std::size_t>(key + ".bmt.sparse_slow_load.extra_latency", 0))
                            .llc(&caches.at(0))
                            .rob_size(cfg.value<std::size_t>(key + ".rob_size", 352))
                            .rob_partition(configured_rob_partition(cfg, key + ".rob_partition"))

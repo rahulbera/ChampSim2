@@ -60,6 +60,9 @@ struct cache_builder_base {
   bool m_va_pref{};
   bool m_perfect{};
   bool m_per_context_counters{};
+  // B4.0: the last-level cache is the one place a sparse slow load's extra
+  // return-path latency is charged. Default false; set for the LLC only.
+  bool m_is_last_level{};
 
   std::vector<access_type> m_pref_act_mask{access_type::LOAD, access_type::PREFETCH};
   std::vector<champsim::channel*> m_uls{};
@@ -263,6 +266,12 @@ public:
    * without the knob. The bucket key is asid[0], an 8-bit value.
    */
   self_type& per_context_counters(bool per_context_counters_);
+
+  /**
+   * Mark this cache as the last level (the LLC): the one place a sparse slow
+   * load's extra return-path latency is charged. See CACHE::is_last_level.
+   */
+  self_type& is_last_level(bool is_last_level_);
 
   /**
    * Specify the ``access_type`` values that should activate the prefetcher.
@@ -591,6 +600,13 @@ template <typename P, typename R>
 auto champsim::cache_builder<P, R>::per_context_counters(bool per_context_counters_) -> self_type&
 {
   m_per_context_counters = per_context_counters_;
+  return *this;
+}
+
+template <typename P, typename R>
+auto champsim::cache_builder<P, R>::is_last_level(bool is_last_level_) -> self_type&
+{
+  m_is_last_level = is_last_level_;
   return *this;
 }
 
