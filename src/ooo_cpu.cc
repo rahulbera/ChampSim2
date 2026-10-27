@@ -1718,14 +1718,21 @@ bool O3_CPU::execute_load(const LSQ_ENTRY& lq_entry)
   data_packet.load_waiters = {lq_entry.load_waiter_id};
 
   // B4.0 sparse slow load: deterministically sample a fraction of demand loads
-  // by a (asid, ip) hash and mark them slow. The mark travels on the packet: the
-  // data caches force a miss on it (so the load always reaches DRAM) and the LLC
-  // adds slow_extra_latency to the return path. There is no random source, so
-  // the hash is a fixed splitmix64 -- no std::rand, no time seed -- or the
+  // and mark them slow. The mark travels on the packet: the data caches force a
+  // miss on it (so the load always reaches DRAM) and the LLC adds
+  // slow_extra_latency to the return path. There is no random source, so the
+  // hash is a fixed splitmix64 -- no std::rand, no time seed -- or the
   // byte-identical lock gates could not pass. Off (enabled false) the whole
   // block is skipped and the packet is left unmarked.
+  //
+  // The key is (asid, ip, instr_id): instr_id is assigned monotonically by the
+  // tracereader (one id per trace record = one dynamic instruction), so mixing
+  // it in samples DYNAMIC loads -- each executed load independently lands slow
+  // with ~ratio probability -- rather than static load sites. A static (asid,
+  // ip) key degrades on skewed traces (hot-loop sites are almost all cold, so a
+  // 0.5% site sample yields ~0.006% of dynamic loads, not 0.5%).
   if (bmt_sparse_slow_load_enabled) {
-    uint64_t h = (uint64_t{lq_entry.asid[0]} << 32) ^ lq_entry.ip.to<uint64_t>();
+    uint64_t h = (uint64_t{lq_entry.asid[0]} << 32) ^ lq_entry.ip.to<uint64_t>() ^ uint64_t{lq_entry.instr_id};
     h = (h ^ (h >> 30)) * 0xbf58476d1ce4e5b9ULL;
     h = (h ^ (h >> 27)) * 0x94d049bb133111ebULL;
     h ^= h >> 31;
