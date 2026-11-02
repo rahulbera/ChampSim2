@@ -22,8 +22,10 @@
  * so the tenant is a thin adapter (see the .cc). The differences are naming and
  * argument order only; no predictor logic is changed.
  *
- * SINGLE CORE ONLY, as with the other CBP6 tenants: predictor state lives in
- * namespace-scope globals shared by every instance.
+ * SINGLE CORE, SINGLE CONTEXT ONLY, as with the other CBP6 tenants: predictor
+ * state lives in namespace-scope globals shared by every instance. No
+ * smt_capability is declared, so it defaults to unsupported and the environment
+ * refuses it at configuration time.
  */
 
 #ifndef BRANCH_CBP6_DDTAGE_H
@@ -40,10 +42,11 @@ public:
   using branch_predictor::branch_predictor;
 
   void initialize_branch_predictor();
-  bool predict_branch(champsim::address ip, champsim::address predicted_target, bool always_taken, uint8_t branch_type);
-  void last_branch_result(champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type);
+  bool predict_branch(champsim::address ip, champsim::address predicted_target, bool always_taken, uint8_t branch_type, champsim::address_space_id asid);
+  void last_branch_result(champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type, champsim::address_space_id asid);
   void branch_predictor_final_stats();
-  void branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type);
+  void branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type,
+                              champsim::address_space_id asid);
 };
 
 #endif

@@ -14,6 +14,7 @@
 
 #include "access_type.h"
 #include "champsim.h"
+#include "champsim_assert.h"
 #include "defaults.hpp"
 #include "msl/bits.h"
 
@@ -172,6 +173,34 @@ std::size_t configured_register_file_size(const champsim::runtime_config& cfg, c
   return value;
 }
 
+// The RUNTIME number of hardware contexts (SMT threads) a core runs, chosen in
+// [1, champsim::defs::max_contexts]. max_contexts itself stays compile-time: the
+// single-context `if constexpr (champsim::defs::max_contexts == 1)` fast paths in
+// ooo_cpu.cc key on it, so it must remain a constant. positive_value rejects zero
+// and negatives; the upper bound is enforced here (and re-checked, redundantly but
+// harmlessly, by select_modules once per core).
+std::size_t configured_num_contexts(const champsim::runtime_config& cfg, const std::string& key)
+{
+  const auto value = cfg.positive_value<std::size_t>(key, 1);
+  if (value > champsim::defs::max_contexts) {
+    throw std::runtime_error{"runtime config: " + key + " must be between 1 and " + std::to_string(champsim::defs::max_contexts)};
+  }
+  return value;
+}
+
+// Stage 5.2b: the ROB partition policy is a parameter, but only `equal` is
+// implemented. A future dynamic-sharing value is refused loudly here rather than
+// silently treated as equal, so the one code path that maps the policy to a
+// quota (O3_CPU::rob_capacity) stays a single, obvious place to extend.
+champsim::rob_partition configured_rob_partition(const champsim::runtime_config& cfg, const std::string& key)
+{
+  const auto value = cfg.value<std::string>(key, "equal");
+  if (value == "equal") {
+    return champsim::rob_partition::equal;
+  }
+  throw std::runtime_error{"runtime config: " + key + " must be 'equal' (dynamic ROB sharing is not implemented)"};
+}
+
 // The simulation's time quantum: do_phase() ticks the shared clock by the
 // SMALLEST clock_period among the operables, so a duration expressed in cycles
 // has to be scaled by this and not by any one component's period.
@@ -259,6 +288,7 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                           .upper_levels({&channels.at(chan(cpu, stlb_to_ptw))})
                           .virtual_memory(&vmem)
                           .cpu(static_cast<uint32_t>(cpu))
+                          .asid({0, 0}) // Stage 2 single-context: the one address space is trace 0's ASID
                           .lower_level(&channels.at(chan(cpu, ptw_to_l1d)))
                           .mshr_size(cfg.value<uint32_t>(key + ".mshr_size", 5))
                           .tag_bandwidth(configured_bandwidth(cfg, key + ".max_read", 2))
@@ -345,6 +375,19 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .perfect(cfg.value<bool>(itlb + ".perfect", false))
                             .virtual_memory(&vmem));
 
+    // Stage 3.6, explicit L1D admission. L1D has exactly two upper channels, each
+    // with a declared source:
+    //   * ptw_to_l1d  -- the PTW's page-walk reads. The PTW is one component per
+    //     physical core, not per context, so this is a single channel.
+    //   * core_to_l1d -- the core's data loads (RQ) and stores (WQ). Every hardware
+    //     context SHARES this one channel; there is deliberately no per-context
+    //     core_to_l1d, because adding one would silently raise the aggregate core
+    //     admission to two loads + two stores per cycle with no knob naming it.
+    // With max_tag_check == 2 (below) and two uppers, CACHE::operate grants one tag
+    // check per upper queue per cycle, so the core's data channel initiates at most
+    // one load and one store per cycle. That is an explicit admission policy,
+    // decoupled from lq_width (which only bounds how many requests the core pushes
+    // into this channel) and pinned by test/cpp/src/418-l1d-admission.cc.
     caches.emplace_back(champsim::cache_builder{champsim::defaults::default_l1d}
                             .name(cache_name(cpu, "L1D"))
                             .upper_levels({&channels.at(chan(cpu, ptw_to_l1d)), &channels.at(chan(cpu, core_to_l1d))})
@@ -437,7 +480,9 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                            .decode_buffer_size(cfg.value<std::size_t>(key + ".decode_buffer_size", 32))
                            .dispatch_buffer_size(cfg.value<std::size_t>(key + ".dispatch_buffer_size", 32))
                            .register_file_size(configured_register_file_size(cfg, key + ".register_file_size"))
+                           .num_contexts(configured_num_contexts(cfg, key + ".num_contexts"))
                            .rob_size(cfg.value<std::size_t>(key + ".rob_size", 352))
+                           .rob_partition(configured_rob_partition(cfg, key + ".rob_partition"))
                            .lq_size(cfg.value<std::size_t>(key + ".lq_size", 128))
                            .sq_size(cfg.value<std::size_t>(key + ".sq_size", 72))
                            .fetch_width(configured_bandwidth(cfg, key + ".fetch_width", 6))
@@ -494,6 +539,16 @@ void champsim::static_environment::select_modules(const runtime_config& cfg)
       core.install_btb_module(registry::make_btb(btb, &core));
     }
     core.btb_module_pimpl->impl_configure(cfg, key + "." + btb);
+
+    // Stage 3.3: refuse an SMT-unsafe module at configuration time, not at
+    // initialize time (which is after --knobs and the unconsulted-key check).
+    const auto num_contexts = core.contexts.size();
+    if (num_contexts > champsim::defs::max_contexts) {
+      throw std::runtime_error{"configuration requests " + std::to_string(num_contexts) + " hardware contexts on " + key +
+                               " but this binary is compiled for at most " + std::to_string(champsim::defs::max_contexts)};
+    }
+    champsim::modules::check_smt_capability(core.branch_module_pimpl->capability(), cpu, num_contexts, key + ".branch_predictor");
+    champsim::modules::check_smt_capability(core.btb_module_pimpl->capability(), cpu, num_contexts, key + ".btb");
   }
 
   for (auto& cache : caches) {
@@ -532,5 +587,16 @@ std::vector<std::reference_wrapper<champsim::operable>> champsim::static_environ
   std::transform(std::begin(caches), std::end(caches), std::back_inserter(retval), make_ref);
   std::transform(std::begin(ptws), std::end(ptws), std::back_inserter(retval), make_ref);
   retval.push_back(std::ref(memory->clocked_component()));
+
+  // Pin the topology formula: one core + (1 + 6 per core) caches + one PTW per
+  // core + one DRAM controller = 8 * num_cpus + 2 operables, independent of the
+  // number of hardware contexts. do_cycle() orders operables by current_time with
+  // std::sort, whose equivalence stability libstdc++ only guarantees up to 16
+  // elements; one core is 10 operables (safe) and a two-core machine is 18, so
+  // multi-core already exceeds that bound today. The formula is keyed on
+  // num_cpus, not num_contexts, so a per-context TLB/PTW/cache replication would
+  // grow this size while num_cpus stayed fixed -- the assert then fails, which
+  // is exactly the anti-pattern to reject.
+  CHAMPSIM_ASSERT(retval.size() == 8 * champsim::defs::num_cpus + 2);
   return retval;
 }

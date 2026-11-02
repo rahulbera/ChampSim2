@@ -31,6 +31,15 @@ template <typename...>
 class core_builder_module_type_holder
 {
 };
+
+// How a core's single ROB budget (rob_size) is divided among its hardware
+// contexts. Only `equal` is implemented: a fixed equal quota per context
+// (rob_size / num_contexts), the total-capacity-conserving baseline -- the
+// aggregate in-flight ROB entries across contexts can never exceed one rob_size
+// budget. Dynamic sharing (reclaiming an idle context's quota, watermark-based
+// partition) is a future extension behind this enum, not implemented here.
+enum class rob_partition { equal };
+
 namespace detail
 {
 struct core_builder_base {
@@ -43,10 +52,15 @@ struct core_builder_base {
   std::size_t m_decode_buffer_size{1};
   std::size_t m_dispatch_buffer_size{1};
 
+  // Hardware contexts (SMT threads) per core. Stage 3 targets dual-context; the
+  // default stays 1 so single-context results are bit-identical.
+  std::size_t m_num_contexts{1};
+
   std::size_t m_dib_hit_buffer_size{1};
 
   std::size_t m_register_file_size{1};
   std::size_t m_rob_size{1};
+  champsim::rob_partition m_rob_partition{champsim::rob_partition::equal};
   std::size_t m_lq_size{1};
   std::size_t m_sq_size{1};
 
@@ -129,6 +143,11 @@ public:
   self_type& dispatch_buffer_size(std::size_t dispatch_buffer_size_);
 
   /**
+   * Specify the number of hardware contexts (SMT threads) on this core.
+   */
+  self_type& num_contexts(std::size_t num_contexts_);
+
+  /**
    * Specify the maximum size of the DIB hit buffer.
    */
   self_type& dib_hit_buffer_size(std::size_t dib_hit_buffer_size_);
@@ -142,6 +161,12 @@ public:
    * Specify the maximum size of the reorder buffer.
    */
   self_type& rob_size(std::size_t rob_size_);
+
+  /**
+   * Specify how the ROB budget is divided among hardware contexts. Only
+   * `equal` is implemented (see rob_partition).
+   */
+  self_type& rob_partition(champsim::rob_partition rob_partition_);
 
   /**
    * Specify the maximum size of the load queue.
@@ -326,6 +351,13 @@ auto champsim::core_builder<B, T>::dispatch_buffer_size(std::size_t dispatch_buf
 }
 
 template <typename B, typename T>
+auto champsim::core_builder<B, T>::num_contexts(std::size_t num_contexts_) -> self_type&
+{
+  m_num_contexts = num_contexts_;
+  return *this;
+}
+
+template <typename B, typename T>
 auto champsim::core_builder<B, T>::register_file_size(std::size_t register_file_size_) -> self_type&
 {
   m_register_file_size = register_file_size_;
@@ -336,6 +368,13 @@ template <typename B, typename T>
 auto champsim::core_builder<B, T>::rob_size(std::size_t rob_size_) -> self_type&
 {
   m_rob_size = rob_size_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::rob_partition(champsim::rob_partition rob_partition_) -> self_type&
+{
+  m_rob_partition = rob_partition_;
   return *this;
 }
 
