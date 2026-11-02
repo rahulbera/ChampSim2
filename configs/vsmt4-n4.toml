@@ -1,0 +1,28 @@
+# vSMT4 V1 N=4 config draft (static 4-context SMT4).
+#
+# Overlay on configs/sample.toml. --config may repeat and is applied in
+# command-line order (last definition wins), so apply this AFTER sample.toml:
+#
+#   ./bin/champsim --config configs/sample.toml --config configs/vsmt4-n4.toml \
+#     --trace-version=1 -w 1000000 -i 3000000 -- TRACE TRACE TRACE TRACE
+#
+# DRAFT STATUS: this file cannot run yet. max_contexts is still 2, so the
+# static_environment guard rejects num_contexts=4 at startup
+# ("ooo_cpu.cpu0.num_contexts must be between 1 and 2"). It becomes live after
+# V1.3 flips max_contexts 2 -> 4.
+#
+# register_file_size is NOT auto-scaled by num_contexts -- that code mechanism
+# would also change the N=2 pool and break lock-4 / Stage-5 comparability.
+# "Total capacity scales with mode" is V5.5's separate fidelity decision. Here
+# 256 is set explicitly for N=4 (4 x ~64, above the 4-thread fotonik3d footprint
+# of ~188; see vsmt4-baseline.md §4).
+
+[ooo_cpu.cpu0]
+num_contexts = 4
+register_file_size = 256
+# V2.2: elastic ROB partition. The per-context ROB quota follows the *active*
+# context count (rob_size / max(1, active)) instead of a fixed rob_size/4, so an
+# under-committed run (a context's ROB draining) reclaims the idle quota. The V1
+# equal split (rob_size/4) is the baseline recorded in vsmt4-v1-summary.md and
+# the V2.4 control (tag vsmt4-v1, commit 82e0b223).
+rob_partition = "active"

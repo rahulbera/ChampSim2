@@ -31,6 +31,38 @@ template <typename...>
 class core_builder_module_type_holder
 {
 };
+
+// How a core's single ROB budget (rob_size) is divided among its hardware
+// contexts.
+//
+//   equal  -- a fixed equal quota per context (rob_size / num_contexts), the
+//             total-capacity-conserving baseline: the aggregate in-flight ROB
+//             entries across contexts can never exceed one rob_size budget.
+//             This is the Stage 5.2b "rigid split" and remains the N=1 lock
+//             and V2.4-control denominator.
+//   active -- the quota follows the *actually active* context count
+//             (rob_size / max(1, active)), where `active` is the per-cycle
+//             count of contexts with a non-empty ROB. Idle-context quota is
+//             reclaimed, so an under-committed run can push a surviving
+//             context's ROB toward the full budget. At N=1 this is exactly
+//             rob_size/1 = equal, so single-context output is unchanged.
+enum class rob_partition { equal, active };
+
+// B2.4 swap-cost mode (bmt-design.md section 6). `instant` models the swap as an
+// atomic 1-cycle event (the default, so a BMT-off run is byte-identical);
+// `firmware` models the paper's step-by-step switch latency (~60 cycles total:
+// rsave 16 + rrestore 16 + detect/flush/select/gate overhead ~28), during which
+// the slot stalls (no fetch).
+enum class bmt_switch_mode { instant, firmware };
+
+// B2.5 long-latency-load detection source (bmt-design.md §5.6). `latency` is
+// the B2.1 fixed in-flight-cycle threshold (the default, so a BMT-off run is
+// byte-identical); `miss` is the miss-edge trigger -- a load is flagged the
+// cycle its LLC miss is confirmed (the request's own arrival at the LLC, not a
+// fixed cutoff), reusing the LLC's per-context load-miss census as the edge
+// signal. The two arms coexist so the acceptance experiment can reconcile them.
+enum class bmt_trigger_mode { latency, miss };
+
 namespace detail
 {
 struct core_builder_base {
@@ -43,10 +75,77 @@ struct core_builder_base {
   std::size_t m_decode_buffer_size{1};
   std::size_t m_dispatch_buffer_size{1};
 
+  // Hardware contexts (SMT threads) per core. Stage 3 targets dual-context; the
+  // default stays 1 so single-context results are bit-identical.
+  std::size_t m_num_contexts{1};
+
+  // BMT virtual threads per core (C_virt). 0 means "unset", and the O3_CPU
+  // constructor then falls back to num_contexts -- the identity case where the
+  // virtual layer is inert and results are byte-identical.
+  std::size_t m_num_virtual_threads{0};
+
+  // BMT master switch and long-latency-load detection threshold (B2.1). The
+  // threshold is in core cycles; the O3_CPU constructor scales it by the clock
+  // period into a duration. Both default to "off" (false / the conservative 56c)
+  // so a default run is byte-identical to B1/V2.5.
+  bool m_bmt_enabled{false};
+  std::size_t m_bmt_miss_threshold{56};
+  // B2.2 swap-out switch. Refines bmt_enabled: detection marks the loads, the
+  // swap-out acts on those marks. Off == byte-identical to B2.1 (detect-only).
+  bool m_bmt_swap_enabled{false};
+
+  // B2.4 swap-cost mode (instant vs firmware). Default instant == atomic swap,
+  // byte-identical to B2.3.
+  bmt_switch_mode m_bmt_switch_mode{bmt_switch_mode::instant};
+
+  // B3.0 per-event trace log switch (bmt.trace_events). Default off, so a
+  // default run is byte-identical; when on it emits one stderr line per
+  // swap-out/swap-in/defer plus an end-of-run aggregate summary.
+  bool m_bmt_trace_events{false};
+
+  // B2.5 detection source (latency threshold vs miss edge) and the optional
+  // miss-arm dwell (cycles between the LLC miss edge and swap-out). Default
+  // latency / dwell 0 == the B2.4 behavior.
+  bmt_trigger_mode m_bmt_trigger_mode{bmt_trigger_mode::latency};
+  std::size_t m_bmt_miss_dwell{0};
+
+  // B3.1.5 quota-finish seal switch. Default off, so a default run is inert and
+  // byte-identical to the pre-seal simulator.
+  bool m_quota_finish{false};
+
+  // B3.4 per-virtual small predictor state (GHR/RAS) keying. Default off == the
+  // shared single-instance GHR/RAS, byte-identical to prior stages. When on, the
+  // branch predictor's GHR (ghist) and the BTB's RAS are keyed by asid[0] (the
+  // virtual thread's trace slot) instead of shared across contexts; the big
+  // tables (PHT / BTB body) stay shared.
+  bool m_per_virtual_small_state{false};
+
+  // B3.2 Scenario-B self-swap suppression (bmt.suppress_self_swap). Default off
+  // == current behavior (a miss in the dual-live tail swaps the thread out and
+  // back into itself, a pure flush+restore with no latency hiding). On, a swap-out
+  // is skipped when no OTHER suspended virtual thread exists to swap in -- i.e.
+  // exactly the Scenario-B self-swap. Measurement-only A/B knob (bmt-design.md
+  // §5.6 tail), not a fix to adopt.
+  bool m_bmt_suppress_self_swap{false};
+
+  // B4.0 sparse slow load (ooo_cpu.cpu0.bmt.sparse_slow_load.*). Default off.
+  // `enabled` samples `ratio` of demand loads by a deterministic (asid, ip)
+  // hash; `extra_latency` is the return-path wait in core cycles, added at the
+  // LLC. Off == no mark == byte-identical.
+  bool m_bmt_sparse_slow_load_enabled{false};
+  double m_bmt_sparse_slow_load_ratio{0.0};
+  std::size_t m_bmt_sparse_slow_load_extra_latency{0};
+
+  // B2.5 miss-edge signal source: a pointer to the shared LLC, whose per-context
+  // load-miss counter (filled when the LLC is built with per_context_counters)
+  // is the edge the `miss` arm diffs. Wired by static_environment, like l1i.
+  CACHE* m_llc{};
+
   std::size_t m_dib_hit_buffer_size{1};
 
   std::size_t m_register_file_size{1};
   std::size_t m_rob_size{1};
+  champsim::rob_partition m_rob_partition{champsim::rob_partition::equal};
   std::size_t m_lq_size{1};
   std::size_t m_sq_size{1};
 
@@ -129,6 +228,89 @@ public:
   self_type& dispatch_buffer_size(std::size_t dispatch_buffer_size_);
 
   /**
+   * Specify the number of hardware contexts (SMT threads) on this core.
+   */
+  self_type& num_contexts(std::size_t num_contexts_);
+
+  /**
+   * Specify the number of BMT virtual threads (virtual contexts) on this core.
+   * Must be >= num_contexts; 0 lets the core fall back to num_contexts.
+   */
+  self_type& num_virtual_threads(std::size_t num_virtual_threads_);
+
+  /**
+   * Master switch for every BMT mechanism. Default off == byte-identical to B1/V2.5.
+   */
+  self_type& bmt_enabled(bool bmt_enabled_);
+
+  /**
+   * Long-latency-load detection threshold, in core cycles.
+   */
+  self_type& bmt_miss_threshold(std::size_t bmt_miss_threshold_);
+
+  /**
+   * B2.2 swap-out switch (refines bmt_enabled). Default off.
+   */
+  self_type& bmt_swap_enabled(bool bmt_swap_enabled_);
+
+  /**
+   * B2.4 swap-cost mode (instant vs firmware). Default instant.
+   */
+  self_type& bmt_switch(bmt_switch_mode bmt_switch_mode_);
+
+  /**
+   * B3.0 per-event trace log switch. Default off.
+   */
+  self_type& bmt_trace_events(bool bmt_trace_events_);
+
+  /**
+   * B2.5 detection source: latency threshold (default) or miss edge.
+   */
+  self_type& bmt_trigger(bmt_trigger_mode bmt_trigger_mode_);
+
+  /**
+   * B2.5 miss-arm dwell, in cycles between the LLC miss edge and swap-out.
+   */
+  self_type& bmt_miss_dwell(std::size_t bmt_miss_dwell_);
+
+  /**
+   * B3.1.5 quota-finish seal switch. Default off.
+   */
+  self_type& quota_finish(bool quota_finish_);
+
+  /**
+   * B3.4 per-virtual small predictor state (GHR/RAS) keying. Default off.
+   */
+  self_type& per_virtual_small_state(bool per_virtual_small_state_);
+
+  /**
+   * B3.2 Scenario-B self-swap suppression. Default off == current behavior.
+   */
+  self_type& bmt_suppress_self_swap(bool bmt_suppress_self_swap_);
+
+  /**
+   * B4.0 sparse slow load: enable deterministic sampling of ultra-long-wait
+   * loads. Default off.
+   */
+  self_type& bmt_sparse_slow_load_enabled(bool bmt_sparse_slow_load_enabled_);
+
+  /**
+   * B4.0 sparse slow load: sampling ratio in [0,1].
+   */
+  self_type& bmt_sparse_slow_load_ratio(double bmt_sparse_slow_load_ratio_);
+
+  /**
+   * B4.0 sparse slow load: return-path extra latency, in core cycles.
+   */
+  self_type& bmt_sparse_slow_load_extra_latency(std::size_t bmt_sparse_slow_load_extra_latency_);
+
+  /**
+   * B2.5 miss-edge signal source: the shared LLC whose per-context load-miss
+   * counter the `miss` arm reads. Wired by static_environment.
+   */
+  self_type& llc(CACHE* llc_);
+
+  /**
    * Specify the maximum size of the DIB hit buffer.
    */
   self_type& dib_hit_buffer_size(std::size_t dib_hit_buffer_size_);
@@ -142,6 +324,12 @@ public:
    * Specify the maximum size of the reorder buffer.
    */
   self_type& rob_size(std::size_t rob_size_);
+
+  /**
+   * Specify how the ROB budget is divided among hardware contexts. `equal` and
+   * `active` are implemented (see rob_partition).
+   */
+  self_type& rob_partition(champsim::rob_partition rob_partition_);
 
   /**
    * Specify the maximum size of the load queue.
@@ -326,6 +514,118 @@ auto champsim::core_builder<B, T>::dispatch_buffer_size(std::size_t dispatch_buf
 }
 
 template <typename B, typename T>
+auto champsim::core_builder<B, T>::num_contexts(std::size_t num_contexts_) -> self_type&
+{
+  m_num_contexts = num_contexts_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::num_virtual_threads(std::size_t num_virtual_threads_) -> self_type&
+{
+  m_num_virtual_threads = num_virtual_threads_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::bmt_enabled(bool bmt_enabled_) -> self_type&
+{
+  m_bmt_enabled = bmt_enabled_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::bmt_miss_threshold(std::size_t bmt_miss_threshold_) -> self_type&
+{
+  m_bmt_miss_threshold = bmt_miss_threshold_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::bmt_swap_enabled(bool bmt_swap_enabled_) -> self_type&
+{
+  m_bmt_swap_enabled = bmt_swap_enabled_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::bmt_switch(bmt_switch_mode bmt_switch_mode_) -> self_type&
+{
+  m_bmt_switch_mode = bmt_switch_mode_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::bmt_trace_events(bool bmt_trace_events_) -> self_type&
+{
+  m_bmt_trace_events = bmt_trace_events_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::bmt_trigger(bmt_trigger_mode bmt_trigger_mode_) -> self_type&
+{
+  m_bmt_trigger_mode = bmt_trigger_mode_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::bmt_miss_dwell(std::size_t bmt_miss_dwell_) -> self_type&
+{
+  m_bmt_miss_dwell = bmt_miss_dwell_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::quota_finish(bool quota_finish_) -> self_type&
+{
+  m_quota_finish = quota_finish_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::per_virtual_small_state(bool per_virtual_small_state_) -> self_type&
+{
+  m_per_virtual_small_state = per_virtual_small_state_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::bmt_suppress_self_swap(bool bmt_suppress_self_swap_) -> self_type&
+{
+  m_bmt_suppress_self_swap = bmt_suppress_self_swap_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::bmt_sparse_slow_load_enabled(bool bmt_sparse_slow_load_enabled_) -> self_type&
+{
+  m_bmt_sparse_slow_load_enabled = bmt_sparse_slow_load_enabled_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::bmt_sparse_slow_load_ratio(double bmt_sparse_slow_load_ratio_) -> self_type&
+{
+  m_bmt_sparse_slow_load_ratio = bmt_sparse_slow_load_ratio_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::bmt_sparse_slow_load_extra_latency(std::size_t bmt_sparse_slow_load_extra_latency_) -> self_type&
+{
+  m_bmt_sparse_slow_load_extra_latency = bmt_sparse_slow_load_extra_latency_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::llc(CACHE* llc_) -> self_type&
+{
+  m_llc = llc_;
+  return *this;
+}
+
+template <typename B, typename T>
 auto champsim::core_builder<B, T>::register_file_size(std::size_t register_file_size_) -> self_type&
 {
   m_register_file_size = register_file_size_;
@@ -336,6 +636,13 @@ template <typename B, typename T>
 auto champsim::core_builder<B, T>::rob_size(std::size_t rob_size_) -> self_type&
 {
   m_rob_size = rob_size_;
+  return *this;
+}
+
+template <typename B, typename T>
+auto champsim::core_builder<B, T>::rob_partition(champsim::rob_partition rob_partition_) -> self_type&
+{
+  m_rob_partition = rob_partition_;
   return *this;
 }
 

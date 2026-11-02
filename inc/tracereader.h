@@ -19,6 +19,7 @@
 
 #include <deque>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -145,6 +146,19 @@ ooo_model_instr bulk_tracereader<T, F>::operator()()
 {
   if (std::size(instr_buffer) <= refresh_thresh) {
     refill();
+  }
+
+  // An empty or truncated trace (fewer bytes than one record) refills nothing;
+  // front() on the empty deque would be undefined behaviour. Return a synthetic
+  // empty instruction instead: slot {max, max} can never be a stamped trace
+  // record ({position, position}), so it is recognizably not from the file, and
+  // it carries ip 0 with no branch, register or memory operand. eof() then reads
+  // true (the file is at EOF and the buffer is empty), so do_cycle stops feeding
+  // and the phase-completion check closes this context via eof. This branch is
+  // unreachable for any trace with at least one record, so the normal read path
+  // is byte-identical.
+  if (instr_buffer.empty()) {
+    return ooo_model_instr{std::numeric_limits<uint8_t>::max(), input_instr{}};
   }
 
   auto retval = std::move(instr_buffer.front());

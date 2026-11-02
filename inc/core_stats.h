@@ -13,6 +13,16 @@ struct cpu_stats {
   long long begin_cycles = 0;
   long long end_instrs = 0;
   long long end_cycles = 0;
+
+  // Stage 5.3: the cycle at which THIS context retires its `length`-th phase
+  // instruction -- its own ROI completion -- measured from the phase begin
+  // (i.e. the delta `roi_cycles`, not an absolute counter). In co-phase the
+  // faster context finishes before the phase ends, so `cycles()` (end - begin)
+  // overstates its turnaround; `roi_cycles` is the per-thread own-completion
+  // that fairness needs. Single-context it equals `cycles()`, so N=1 output is
+  // unchanged.
+  long long roi_cycles = 0;
+
   uint64_t total_rob_occupancy_at_branch_mispredict = 0;
 
   // Cycles fetch spent frozen after a misprediction, i.e. cycles that produced
@@ -38,6 +48,25 @@ struct cpu_stats {
   // instructions, not distinct windows, and is not a code-footprint proxy.
   uint64_t dib_hits = 0;
   uint64_t dib_misses = 0;
+
+  // B2.1 long-latency-load detection census, per hardware context. All four are
+  // charged only while BMT is enabled and the context is not in warmup; a
+  // default-off run leaves them zero, so the statistics document is unchanged.
+  //
+  //   bmt_long_latency_detections       -- loads whose issue-to-completion
+  //     latency reached bmt.miss_threshold (the "detected main-memory access").
+  //   bmt_detection_rob_occupancy       -- sum of ROB occupancy sampled at each
+  //     detection (divide by the count for the average).
+  //   bmt_detection_lq_occupancy        -- sum of allocated LQ entries sampled
+  //     at each detection (divide by the count for the average).
+  //   bmt_detections_with_parallel_miss -- detections at which another load of
+  //     the same context was also in flight (the paper's parallel second miss).
+  //   bmt_swap_outs                    -- swap-out sequences performed (B2.2).
+  uint64_t bmt_long_latency_detections = 0;
+  uint64_t bmt_detection_rob_occupancy = 0;
+  uint64_t bmt_detection_lq_occupancy = 0;
+  uint64_t bmt_detections_with_parallel_miss = 0;
+  uint64_t bmt_swap_outs = 0;
 
   [[nodiscard]] auto instrs() const { return end_instrs - begin_instrs; }
   [[nodiscard]] auto cycles() const { return end_cycles - begin_cycles; }

@@ -59,6 +59,10 @@ struct cache_builder_base {
   bool m_wq_full_addr{};
   bool m_va_pref{};
   bool m_perfect{};
+  bool m_per_context_counters{};
+  // B4.0: the last-level cache is the one place a sparse slow load's extra
+  // return-path latency is charged. Default false; set for the LLC only.
+  bool m_is_last_level{};
 
   std::vector<access_type> m_pref_act_mask{access_type::LOAD, access_type::PREFETCH};
   std::vector<champsim::channel*> m_uls{};
@@ -252,6 +256,22 @@ public:
    * Model this cache normally. See perfect(bool).
    */
   self_type& reset_perfect();
+
+  /**
+   * Collect a read-only per-context load-access census (BMT B1.4): every demand
+   * load that hits or misses here is additionally bucketed by the request's
+   * asid[0], which is the virtual-thread identity (ctx_index under the B1
+   * identity binding, virtual_id in B2). Default off: when off, the arrays stay
+   * zero, nothing is emitted, and a run is byte-identical to a cache built
+   * without the knob. The bucket key is asid[0], an 8-bit value.
+   */
+  self_type& per_context_counters(bool per_context_counters_);
+
+  /**
+   * Mark this cache as the last level (the LLC): the one place a sparse slow
+   * load's extra return-path latency is charged. See CACHE::is_last_level.
+   */
+  self_type& is_last_level(bool is_last_level_);
 
   /**
    * Specify the ``access_type`` values that should activate the prefetcher.
@@ -573,6 +593,20 @@ template <typename P, typename R>
 auto champsim::cache_builder<P, R>::reset_perfect() -> self_type&
 {
   m_perfect = false;
+  return *this;
+}
+
+template <typename P, typename R>
+auto champsim::cache_builder<P, R>::per_context_counters(bool per_context_counters_) -> self_type&
+{
+  m_per_context_counters = per_context_counters_;
+  return *this;
+}
+
+template <typename P, typename R>
+auto champsim::cache_builder<P, R>::is_last_level(bool is_last_level_) -> self_type&
+{
+  m_is_last_level = is_last_level_;
   return *this;
 }
 

@@ -152,7 +152,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 
   app.add_option("--listeners", requested_listeners, "A list of the listeners to be attached to the run");
 
-  app.add_option("traces", trace_names, "The paths to the traces")->expected(NUM_CPUS)->check(CLI::ExistingFile);
+  app.add_option("traces", trace_names, "The paths to the traces")->expected(1, -1)->check(CLI::ExistingFile);
 
   CLI11_PARSE(app, argc, argv);
 
@@ -163,15 +163,6 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
                "ERROR: --json has been removed. The machine-readable statistics document is now TOML, with lower_snake_case keys and a different structure; "
                "pass --toml{} instead.\n",
                std::empty(json_file_name) ? std::string{} : fmt::format(" {}", json_file_name));
-    return 1;
-  }
-
-  // An optional --toml argument can consume the next trace pathname. When that
-  // leaves too few traces, this check catches it; when one path too many was
-  // given, the count still matches, and only the output checks below stand
-  // between the consumed trace and its replacement by statistics.
-  if (!list_knobs && std::size(trace_names) != NUM_CPUS) {
-    fmt::print(stderr, "ERROR: expected {} trace(s), got {}. Use -- before trace paths when omitting the --toml filename.\n", NUM_CPUS, std::size(trace_names));
     return 1;
   }
 
@@ -202,6 +193,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   // anywhere is a clean diagnostic and exit 1, never an uncaught exception.
   champsim::simulation_knobs sim_knobs{};
   std::optional<configured_environment> built_environment{};
+  bool trace_repeat = true;
   try {
     // Heartbeat precedence: the explicit CLI flag beats the store, which
     // beats the configuration's baked default. positive_value gives the store
@@ -220,6 +212,11 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
       runtime_cfg.override_effective("sim.heartbeat_frequency", heartbeat_frequency);
     }
     sim_knobs.livelock_period = runtime_cfg.positive_value<uint64_t>("sim.livelock_period", sim_knobs.livelock_period);
+    // Default true = a trace rewinds at EOF under -i (the -i contract). False
+    // lets a truncated trace drain at EOF instead of looping, which V2.4 needs
+    // to build a real under-commit: a short trace must stop, not rewind.
+    // Consulted unconditionally so it never trips the unconsulted-key check.
+    trace_repeat = runtime_cfg.value<bool>("sim.trace_repeat", trace_repeat);
 
     built_environment.emplace(runtime_cfg);
     auto deadlock_default = sim_knobs.deadlock_cycle;
@@ -291,6 +288,24 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   }
   configured_environment& gen_environment = *built_environment;
 
+  // The trace count must equal the machine's total virtual-thread count: one
+  // trace per (core, virtual thread) pair, i.e. num_cpus x C_virt. C_virt is a
+  // runtime knob read during construction (defaulting to num_contexts, the
+  // identity case), so the exact count is only known here -- which is why the
+  // CLI option now enforces only "at least one".
+  if (!list_knobs) {
+    std::size_t expected_traces = 0;
+    for (const O3_CPU& cpu : gen_environment.cpu_view()) {
+      expected_traces += cpu.virtual_threads.size();
+    }
+    if (std::size(trace_names) != expected_traces) {
+      fmt::print(stderr, "ERROR: expected {} trace(s), one per virtual thread (num_cpus x num_virtual_threads), got {}. Use -- before trace paths when "
+                         "omitting the --toml filename.\n",
+                 expected_traces, std::size(trace_names));
+      return 1;
+    }
+  }
+
   // Every key the machine understands has now been read, so a key nothing
   // consulted is one this binary has no use for: a typo, or a knob aimed at a
   // component or module that is not part of this machine. This is the whole
@@ -361,18 +376,39 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 
   try {
     std::vector<champsim::tracereader> traces;
+    // repeat ties trace rewind to -i/--simulation-instructions: a short trace
+    // loops until the instruction count is met, which is the -i contract, not
+    // a defect. sim.trace_repeat (default true) decouples the two so a run can
+    // let truncated traces drain at EOF instead of rewinding -- V2.4's
+    // under-commit scenario needs a real EOF, not a loop. An empty trace under
+    // -i with repeat on therefore rewinds without progress (a user error, out
+    // of scope); see the stage 6 summary for the recorded boundary.
     std::transform(std::begin(trace_names), std::end(trace_names), std::back_inserter(traces),
-                   [knob_cloudsuite, trace_version, repeat = simulation_given, i = uint8_t(0)](auto name) mutable {
+                   [knob_cloudsuite, trace_version, repeat = trace_repeat && simulation_given, i = uint8_t(0)](auto name) mutable {
                      return get_tracereader(name, i++, knob_cloudsuite, repeat, trace_version);
                    });
 
-    std::vector<champsim::phase_info> phases{
-        {champsim::phase_info{"Warmup", true, warmup_instructions, std::vector<std::size_t>(std::size(trace_names), 0), trace_names},
-         champsim::phase_info{"Simulation", false, simulation_instructions, std::vector<std::size_t>(std::size(trace_names), 0), trace_names}}};
-
-    for (auto& p : phases) {
-      std::iota(std::begin(p.trace_index), std::end(p.trace_index), 0);
+    // One trace per (core, virtual thread) pair, keyed [core][virtual_id] in the
+    // same row-major order the positional arguments were read (core-major,
+    // virtual-minor): trace 0 -> (core0, vt0), trace 1 -> (core0, vt1), ...
+    // The tracereader stamped each trace's instructions with asid {position,
+    // position}, so this table is the whole of the asid landing point, and the
+    // asid therefore follows the virtual thread's trace (bmt-design.md §1.2).
+    std::vector<std::vector<std::size_t>> trace_index;
+    trace_index.reserve(std::size(gen_environment.cpu_view()));
+    std::size_t next_trace = 0;
+    for (const O3_CPU& cpu : gen_environment.cpu_view()) {
+      std::vector<std::size_t> core_row;
+      core_row.reserve(std::size(cpu.virtual_threads));
+      for (std::size_t v = 0; v < std::size(cpu.virtual_threads); ++v) {
+        core_row.push_back(next_trace++);
+      }
+      trace_index.push_back(std::move(core_row));
     }
+
+    std::vector<champsim::phase_info> phases{
+        {champsim::phase_info{"Warmup", true, warmup_instructions, trace_index, trace_names},
+         champsim::phase_info{"Simulation", false, simulation_instructions, trace_index, trace_names}}};
 
     fmt::print(
         "\n*** ChampSim Multicore Out-of-Order Simulator ***\nWarmup Instructions: {}\nSimulation Instructions: {}\nNumber of CPUs: {}\nPage size: {}\n\n",

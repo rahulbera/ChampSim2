@@ -214,6 +214,7 @@ std::vector<std::string> champsim::toml_printer::format(O3_CPU::stats_type stats
              {{"name", quote(stats.name)},
               {"instructions", fmt::format("{}", stats.instrs())},
               {"cycles", fmt::format("{}", stats.cycles())},
+              {"roi_cycles", fmt::format("{}", stats.roi_cycles)},
               {"ipc", toml_ratio(stats.instrs(), stats.cycles())},
               {"dib_lookups", fmt::format("{}", stats.dib_lookups())},
               {"dib_hits", fmt::format("{}", stats.dib_hits)},
@@ -238,6 +239,19 @@ std::vector<std::string> champsim::toml_printer::format(O3_CPU::stats_type stats
   }
   emit_table(lines, fmt::format("{}.mispredict", path), mispredicts);
   emit_table(lines, fmt::format("{}.executed", path), executed);
+
+  // B2.1: the long-latency-load detection census, present only when BMT was
+  // enabled and at least one load crossed the threshold. A default-off run
+  // leaves the count zero and omits the table, so its document is byte-identical.
+  // B2.2 appends swap_outs, which is nonzero only when a detection fired.
+  if (stats.bmt_long_latency_detections != 0) {
+    emit_table(lines, fmt::format("{}.bmt", path),
+               {{"long_latency_detections", fmt::format("{}", stats.bmt_long_latency_detections)},
+                {"detections_with_parallel_miss", fmt::format("{}", stats.bmt_detections_with_parallel_miss)},
+                {"swap_outs", fmt::format("{}", stats.bmt_swap_outs)},
+                {"avg_rob_occupancy_at_detection", toml_ratio(stats.bmt_detection_rob_occupancy, stats.bmt_long_latency_detections)},
+                {"avg_lq_occupancy_at_detection", toml_ratio(stats.bmt_detection_lq_occupancy, stats.bmt_long_latency_detections)}});
+  }
 
   return lines;
 }
@@ -282,6 +296,24 @@ std::vector<std::string> champsim::toml_printer::format(CACHE::stats_type stats,
       counters.emplace_back(fmt::format("{}_fill", name), fmt::format("{}", stats.fill.value_or(std::pair{type, cpu}, value_type{})));
     }
     emit_table(lines, fmt::format("{}.cpu{}", path, cpu), counters);
+  }
+
+  // B1.4: the read-only per-context load-access census, present only when the
+  // cache collected it (cache.<name>.per_context_counters). Buckets are keyed by
+  // asid[0] == the virtual-thread identity (ctx_index in B1, virtual_id in B2).
+  // Only non-zero buckets are emitted, so a default-off run's document omits the
+  // table entirely and stays byte-identical.
+  {
+    std::vector<entry> per_ctx{};
+    for (std::size_t asid = 0; asid < stats.per_context_load_hits.size(); ++asid) {
+      if (stats.per_context_load_hits[asid] != 0 || stats.per_context_load_misses[asid] != 0) {
+        per_ctx.emplace_back(fmt::format("load_hit_ctx{}", asid), fmt::format("{}", stats.per_context_load_hits[asid]));
+        per_ctx.emplace_back(fmt::format("load_miss_ctx{}", asid), fmt::format("{}", stats.per_context_load_misses[asid]));
+      }
+    }
+    if (!per_ctx.empty()) {
+      emit_table(lines, fmt::format("{}.per_context", path), per_ctx);
+    }
   }
 
   return lines;

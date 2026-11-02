@@ -1,4 +1,6 @@
 #include <algorithm>
+#include <array>
+#include <cstddef>
 #include <catch.hpp>
 #include <set>
 #include <string>
@@ -365,6 +367,76 @@ TEST_CASE("Invalid nonzero operational geometry is refused with the responsible 
   }
 }
 
+namespace
+{
+// The 147-leaf JSON key list, generalised over cores: per-core sections are
+// generated in a defs::num_cpus loop, shared sections (llc, pmem, vmem) stay
+// single. Section order is the full-key alphabetical order the legacy
+// hardcoded list used, so at num_cpus == 1 the generated sequence is
+// identical, key for key and order for order, to the golden list pinned in
+// the test below (Stage 6.3). Leaf names are verbatim; num_contexts and
+// rob_partition are deliberately absent -- they were never JSON keys, and
+// this test's contract is exactly "everything the deleted JSON could set".
+std::vector<std::string> every_parameter_keys()
+{
+  const std::array<const char*, 10> tlb_leaves{
+      "latency", "max_fill", "max_tag_check", "mshr_size", "pq_size",
+      "prefetch_as_load", "rq_size", "sets", "ways", "wq_size"};
+  const std::array<const char*, 13> data_leaves{
+      "latency", "max_fill", "max_tag_check", "mshr_size", "pq_size",
+      "prefetch_activate", "prefetch_as_load", "prefetcher", "rq_size",
+      "sets", "virtual_prefetch", "ways", "wq_size"};
+  const std::array<const char*, 15> llc_leaves{
+      "frequency", "latency", "max_fill", "max_tag_check", "mshr_size",
+      "pq_size", "prefetch_activate", "prefetch_as_load", "prefetcher",
+      "replacement", "rq_size", "sets", "virtual_prefetch", "ways", "wq_size"};
+  const std::array<const char*, 26> core_leaves{
+      "branch_predictor", "btb", "decode_buffer_size", "decode_latency",
+      "decode_width", "dib.sets", "dib.ways", "dib.window_size",
+      "dispatch_buffer_size", "dispatch_latency", "dispatch_width",
+      "execute_latency", "execute_width", "fetch_width", "frequency",
+      "ifetch_buffer_size", "lq_size", "lq_width", "mispredict_penalty",
+      "register_file_size", "retire_width", "rob_size", "schedule_latency",
+      "scheduler_size", "sq_size", "sq_width"};
+  const std::array<const char*, 16> pmem_leaves{
+      "bank_columns", "bank_rows", "bankgroups", "banks", "channel_width",
+      "channels", "data_rate", "ranks", "refresh_period",
+      "refreshes_per_period", "rq_size", "tcas", "tras", "trcd", "trp",
+      "wq_size"};
+  const std::array<const char*, 12> ptw_leaves{
+      "max_read", "max_write", "mshr_size", "pscl2_set", "pscl2_way",
+      "pscl3_set", "pscl3_way", "pscl4_set", "pscl4_way", "pscl5_set",
+      "pscl5_way", "rq_size"};
+  const std::array<const char*, 4> vmem_leaves{
+      "minor_fault_penalty", "num_levels", "pte_page_size", "randomization"};
+
+  std::vector<std::string> keys;
+  for (std::size_t cpu = 0; cpu < champsim::defs::num_cpus; ++cpu) {
+    for (const auto* level : {"dtlb", "itlb"})
+      for (const auto* leaf : tlb_leaves)
+        keys.push_back(fmt::format("cache.cpu{}_{}.{}", cpu, level, leaf));
+    for (const auto* level : {"l1d", "l1i", "l2c"})
+      for (const auto* leaf : data_leaves)
+        keys.push_back(fmt::format("cache.cpu{}_{}.{}", cpu, level, leaf));
+    for (const auto* leaf : tlb_leaves)
+      keys.push_back(fmt::format("cache.cpu{}_stlb.{}", cpu, leaf));
+  }
+  for (const auto* leaf : llc_leaves)
+    keys.push_back(fmt::format("cache.llc.{}", leaf));
+  for (std::size_t cpu = 0; cpu < champsim::defs::num_cpus; ++cpu)
+    for (const auto* leaf : core_leaves)
+      keys.push_back(fmt::format("ooo_cpu.cpu{}.{}", cpu, leaf));
+  for (const auto* leaf : pmem_leaves)
+    keys.push_back(fmt::format("pmem.{}", leaf));
+  for (std::size_t cpu = 0; cpu < champsim::defs::num_cpus; ++cpu)
+    for (const auto* leaf : ptw_leaves)
+      keys.push_back(fmt::format("ptw.cpu{}_ptw.{}", cpu, leaf));
+  for (const auto* leaf : vmem_leaves)
+    keys.push_back(fmt::format("vmem.{}", leaf));
+  return keys;
+}
+} // namespace
+
 TEST_CASE("Every parameter the deleted JSON configuration carried is still a knob")
 {
   // The migration's contract: nothing the old champsim_config.json could set
@@ -379,7 +451,11 @@ TEST_CASE("Every parameter the deleted JSON configuration carried is still a kno
   // the scalar store holds as the JSON's own comma-separated string) and
   // vmem.randomization (whose meaning depends on its type -- false disables,
   // an integer is the seed).
-  const std::vector<std::string> from_json{
+  // Golden: the legacy hardcoded cpu0 list, byte-for-byte. At one core the
+  // generated list must equal it exactly -- same keys, same count, same
+  // order -- so generalising the list cannot silently change what the
+  // num_cpus=1 binary pins (Stage 6.3).
+  [[maybe_unused]] const std::vector<std::string> legacy_cpu0_golden{
       "cache.cpu0_dtlb.latency",
       "cache.cpu0_dtlb.max_fill",
       "cache.cpu0_dtlb.max_tag_check",
@@ -523,6 +599,10 @@ TEST_CASE("Every parameter the deleted JSON configuration carried is still a kno
       "vmem.pte_page_size",
       "vmem.randomization",
   };
+  const std::vector<std::string> from_json = every_parameter_keys();
+  if constexpr (champsim::defs::num_cpus == 1) {
+    REQUIRE(from_json == legacy_cpu0_golden);
+  }
 
   champsim::runtime_config cfg{};
   champsim::static_environment env{cfg};

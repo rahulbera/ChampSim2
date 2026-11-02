@@ -30,14 +30,65 @@
 #include "champsim.h"
 #include "champsim_assert.h"
 #include "deadlock.h"
+#include "defs.h"
 #include "event_listeners.h"
 #include "instruction.h"
 #include "util/span.h"
+
+namespace
+{
+// B3.0 per-event trace aggregate summary (bmt.trace_events). Prints one line of
+// totals and one line per cycle distribution to stderr. Inert unless the trace
+// switch is on, so a default run never reaches it.
+void print_bmt_trace_summary(uint64_t swap_outs, uint64_t defers, uint64_t defers_livelock, uint64_t defers_resource,
+                             const std::vector<std::intmax_t>& swap_in_intervals, const std::vector<std::intmax_t>& inflight_waits,
+                             const std::vector<champsim::virtual_thread>& virtual_threads)
+{
+  fmt::print(stderr, "[BMT][SUMMARY] swap_outs={} defers={} (livelock={} resource={})\n", swap_outs, defers, defers_livelock, defers_resource);
+
+  // B3.1 per-thread decomposition: retired / swap_outs / cold_cycles per virtual
+  // thread, with trace_slot naming the positional trace that feeds it. vthread is
+  // the C_virt pool index; trace_slot is the command-line trace order, so a
+  // downstream script maps each line to a trace file directly.
+  for (std::size_t v = 0; v < virtual_threads.size(); ++v) {
+    const auto& vt = virtual_threads[v];
+    fmt::print(stderr, "[BMT][SUMMARY] vthread={} trace_slot={} retired={} swap_outs={} cold_cycles={}\n", v, vt.trace_slot, vt.num_retired, vt.swap_out_count,
+               vt.cold_cycles);
+  }
+
+  const auto print_distribution = [](const char* name, std::vector<std::intmax_t> values) {
+    if (values.empty()) {
+      fmt::print(stderr, "[BMT][SUMMARY] {}: count=0\n", name);
+      return;
+    }
+    std::sort(std::begin(values), std::end(values));
+    // Nearest-rank percentile: rank (1-indexed) = ceil(p/100 * n), clamped to
+    // [1, n]. Cycle counts are non-negative, so min == front and max == back.
+    const auto percentile = [&](double p) {
+      auto rank = static_cast<std::size_t>(std::ceil(p / 100.0 * static_cast<double>(values.size())));
+      if (rank == 0)
+        rank = 1;
+      return values[rank - 1];
+    };
+    const double avg = static_cast<double>(std::accumulate(std::begin(values), std::end(values), std::intmax_t{0})) / static_cast<double>(values.size());
+    fmt::print(stderr, "[BMT][SUMMARY] {}: count={} min={} avg={:.2f} p50={} p90={} p99={} max={}\n", name, values.size(), values.front(), avg,
+               percentile(50.0), percentile(90.0), percentile(99.0), values.back());
+  };
+
+  print_distribution("swap_in_interval_cycles", swap_in_intervals);
+  print_distribution("inflight_wait_cycles", inflight_waits);
+}
+} // namespace
 
 long O3_CPU::operate()
 {
   long progress{0};
   progress += retire_rob();                    // retire
+  // B3.1.5 quota-finish seal: mark a virtual thread `finished` the cycle it
+  // retires its phase budget. Must follow retire (num_retired is current) and
+  // precede swap-out (so the skip below sees the marker). Self-gates on
+  // quota_finish && !warmup, so a default run is byte-identical.
+  mark_quota_finished();
   progress += complete_inflight_instruction(); // finalize execution
   progress += execute_instruction();           // execute instructions
   progress += schedule_instruction();          // schedule instructions
@@ -52,7 +103,542 @@ long O3_CPU::operate()
   progress += check_dib();
   initialize_instruction();
 
+  // Advance the front-end round-robin start and the dispatch-owner pointer once
+  // per cycle (Stage 3.4), and the back-end round-robin start once per cycle
+  // (Stage 3.5). Each budget-point wrapper reads these to decide which context a
+  // shared width serves first; they must not advance per site.
+  fetch_round_robin = (fetch_round_robin + 1) % contexts.size();
+  dispatch_owner = (dispatch_owner + 1) % contexts.size();
+  backend_round_robin = (backend_round_robin + 1) % contexts.size();
+
+  // V1.5: refresh the buried `active` telemetry (contexts with a live ROB). V2.2
+  // now wires `active` into rob_capacity() under the `active` partition; the
+  // count is the end-of-cycle value, so the denominator lags dispatch by one cycle.
+  active = static_cast<std::size_t>(std::count_if(std::begin(contexts), std::end(contexts), [](const champsim::core_context& c) { return !c.ROB.empty(); }));
+
+  // V2.5: reclaim a finished thread's physical registers once its trace has
+  // EOF'd and its pipeline is fully drained. "Fully drained" is stricter than
+  // "ROB empty": the front-end buffers (input_queue/IFETCH/DECODE/DIB_HIT/
+  // DISPATCH) still feed the ROB after EOF, and dispatch can stall behind a
+  // sibling holding the aggregate budget, so reclaiming on ROB-empty alone could
+  // free registers out from under instructions still waiting to be renamed. Only
+  // when every buffer, the ROB and both queues are empty is frontend_RAT ==
+  // backend_RAT (the committed architectural state), and nothing of this thread
+  // can ever be renamed again. Under the default repeat=true trace_eof is never
+  // set, so this loop is dead code and single-context output is untouched.
+  for (auto& c : contexts) {
+    if (c.trace_eof && !c.finished && c.ROB.empty() && c.DISPATCH_BUFFER.empty() && c.DECODE_BUFFER.empty() && c.DIB_HIT_BUFFER.empty()
+        && c.IFETCH_BUFFER.empty() && c.input_queue.empty()
+        && std::all_of(std::begin(c.LQ), std::end(c.LQ), [](const auto& entry) { return !entry.has_value(); }) && c.SQ.empty()) {
+      c.reclaim_registers();
+      c.finished = true;
+    }
+  }
+
+  // B3.1.5 quota-finish seal: free a finished virtual thread's registers and
+  // release its slot once its pipeline has drained (self-gates on
+  // quota_finish && !warmup). Adjacent to the V2.5 EOF reclamation above -- the
+  // two share the same drained predicate and are otherwise orthogonal.
+  reclaim_finished_threads();
+
+  // V2.2 total-capacity conservation invariant: the single ROB_SIZE budget is
+  // never exceeded. `equal` conserves it by fixed per-context quota, so the
+  // assertion is only meaningful (and only guaranteed) under `active`, where the
+  // aggregate dispatch gate (rob_occupied() < ROB_SIZE) is what holds it. It is
+  // scoped to `active` because unit tests legitimately inject ROB entries
+  // directly (past dispatch) with the builder's default rob_size, which the
+  // per-context quota cannot reflect. Over-capacity only ever stops new
+  // admission, never clears in-flight entries.
+  CHAMPSIM_ASSERT(rob_partition_ != champsim::rob_partition::active || rob_occupied() <= ROB_SIZE);
+
+  // V2.5 free-pool conservation invariant: a physical register is either free or
+  // allocated (busy), never both and never neither, so the free count plus the
+  // busy count always equals the file size. This is what catches a double-free
+  // (free list overcounts) or a leak (busy count undercounts) introduced by
+  // reclamation; a reclaimed (finished) context holds zero busy registers, so it
+  // contributes nothing to the right-hand term.
+  CHAMPSIM_ASSERT(shared_prf->count_free_registers() + shared_prf->count_busy_registers() == REGISTER_FILE_SIZE);
+
+  // B2.1: long-latency-load detection, last so loads completed by this cycle's
+  // handle_memory_return are already gone. Pure observation -- it contributes
+  // nothing to `progress` and changes no pipeline state.
+  detect_long_latency_loads();
+
+  // B2.2: swap-out, after detection so this cycle's freshly-marked loads trigger
+  // the archive immediately. Gated on bmt_swap_enabled && !warmup; contributes
+  // nothing to `progress` (the pipeline state it clears is the point).
+  swap_out_detected_loads();
+
+  // B2.3: swap-in, after swap-out so a slot freed this cycle is re-filled with
+  // the next suspended virtual thread in the same cycle. Gated on
+  // bmt_swap_enabled && !warmup; contributes nothing to `progress`.
+  swap_in_suspended_threads();
+
   return progress;
+}
+
+void O3_CPU::detect_long_latency_loads()
+{
+  if (!bmt_enabled || warmup)
+    return;
+
+  // B2.5: two detection arms share the marking + census below. `latency` (the
+  // B2.1 default) flags a load once it has been in flight for the fixed
+  // threshold. `miss` flags it the cycle its LLC miss is confirmed -- the
+  // request's own arrival at the LLC, read as an increment of the LLC's
+  // per-context load-miss census over this core's last-seen snapshot. The
+  // snapshot is keyed by asid[0] == the virtual thread's trace slot, which is
+  // disjoint across cores, so a core only ever reads buckets its own loads
+  // wrote.
+  const bool miss_edge = (bmt_trigger_mode_ == champsim::bmt_trigger_mode::miss);
+
+  for (auto& c : contexts) {
+    for (auto& lq_entry : c.LQ) {
+      if (!lq_entry.has_value() || !lq_entry->fetch_issued || lq_entry->bmt_detected)
+        continue;
+
+      if (miss_edge) {
+        // Consume one confirmed miss for this load's asid. The LLC bucket is
+        // zero when the LLC was not built with per_context_counters, so the arm
+        // is inert (never fires) rather than mis-detecting -- the environment
+        // refuses trigger=miss without that flag at construction time.
+        const auto asid = lq_entry->asid[0];
+        if (llc == nullptr || llc->sim_stats.per_context_load_misses[asid] <= bmt_last_seen_llc_misses[asid])
+          continue;
+        ++bmt_last_seen_llc_misses[asid];
+      } else if (current_time - lq_entry->issue_time < bmt_miss_threshold) {
+        continue;
+      }
+
+      lq_entry->bmt_detected = true;
+      lq_entry->bmt_detected_at = current_time;
+
+      // Parallel-second-miss census: is another load of this context also in
+      // flight right now? A load is "in flight" once issued (fetch_issued) and
+      // still allocated. load_waiter_id names each LQ entry uniquely, so the
+      // comparison identifies "another" load, not this one.
+      const bool parallel_miss = std::any_of(std::begin(c.LQ), std::end(c.LQ), [&](const auto& other) {
+        return other.has_value() && other->fetch_issued && other->load_waiter_id != lq_entry->load_waiter_id;
+      });
+
+      c.sim_stats.bmt_long_latency_detections += 1;
+      c.sim_stats.bmt_detection_rob_occupancy += static_cast<uint64_t>(c.ROB.size());
+      c.sim_stats.bmt_detection_lq_occupancy += static_cast<uint64_t>(std::count_if(std::begin(c.LQ), std::end(c.LQ),
+                                                                                    [](const auto& entry) { return entry.has_value(); }));
+      if (parallel_miss)
+        c.sim_stats.bmt_detections_with_parallel_miss += 1;
+    }
+  }
+
+  // B2.5 miss arm: drain any confirmed misses that no in-flight load absorbed --
+  // an orphan request (its thread swapped out) reaches the LLC after the flush,
+  // or a completed load's edge landed before detect ran. Advancing the snapshot
+  // past them keeps them from leaking into the next re-executed load's marking.
+  if (miss_edge && llc != nullptr) {
+    for (std::size_t asid = 0; asid < bmt_last_seen_llc_misses.size(); ++asid) {
+      if (llc->sim_stats.per_context_load_misses[asid] > bmt_last_seen_llc_misses[asid])
+        bmt_last_seen_llc_misses[asid] = llc->sim_stats.per_context_load_misses[asid];
+    }
+  }
+}
+
+void O3_CPU::swap_out_detected_loads()
+{
+  // Swap-out refines detection: detection (bmt_enabled) marks the loads, swap-out
+  // (bmt_swap_enabled) acts on those marks. Off or during warmup this does
+  // nothing, so a default run is byte-identical to B2.1 detect-only.
+  if (!bmt_swap_enabled || !bmt_enabled || warmup)
+    return;
+
+  // B2.5 dwell: the miss-edge arm may wait a fixed number of cycles after the
+  // miss is confirmed before swap-out acts, so the DRAM request has time to
+  // seat itself before the flush. The latency arm swaps out the same cycle it
+  // detects -- it has no dwell, whatever miss_dwell is set to.
+  const auto dwell = (bmt_trigger_mode_ == champsim::bmt_trigger_mode::miss) ? bmt_miss_dwell : 0;
+
+  for (std::size_t slot = 0; slot < contexts.size(); ++slot) {
+    if (slot_map[slot] < 0)
+      continue; // empty slot: nothing bound to swap out
+
+    // B3.1.5: a quota-finished virtual thread drains to completion; do not
+    // re-archive it. The marker is set by mark_quota_finished() earlier this
+    // same cycle, so this sees the current state. Inert while quota_finish is
+    // off (no thread is ever marked `finished`).
+    if (virtual_threads[static_cast<std::size_t>(slot_map[slot])].st == champsim::virtual_thread::state::finished)
+      continue;
+
+    auto& c = contexts[slot];
+    const bool triggered = std::any_of(std::begin(c.LQ), std::end(c.LQ), [&](const auto& e) {
+      if (!e.has_value() || !e->fetch_issued || !e->bmt_detected)
+        return false;
+      const auto elapsed = (current_time - e->bmt_detected_at) / clock_period;
+      return elapsed >= static_cast<decltype(elapsed)>(dwell);
+    });
+    if (triggered)
+      swap_out_context(slot);
+  }
+}
+
+void O3_CPU::swap_out_context(std::size_t slot)
+{
+  const long v = slot_map[slot];
+  CHAMPSIM_ASSERT(v >= 0);
+  auto& vt = virtual_threads[static_cast<std::size_t>(v)];
+  auto& c = contexts[slot];
+
+  // B3.1.6 no-beneficiary clamp: a swap-out only buys multiplexing when some
+  // OTHER virtual thread could be swapped into the vacated slot. In the tail,
+  // once every other virtual thread has finished (trace EOF / quota seal), the
+  // only thread LRR swap-in could re-select is this one, so the swap-out is a
+  // pure flush+restore self-thrash with no beneficiary. Skip it: the thread
+  // stays seated and waits out its miss. Inert while quota_finish is off -- no
+  // thread is ever marked `finished`, so the predicate never fires.
+  const bool no_beneficiary = [&] {
+    for (std::size_t i = 0; i < virtual_threads.size(); ++i) {
+      if (i == static_cast<std::size_t>(v))
+        continue;
+      if (virtual_threads[i].st != champsim::virtual_thread::state::finished)
+        return false;
+    }
+    return true;
+  }();
+  if (no_beneficiary)
+    return;
+
+  // B3.2 Scenario-B self-swap suppression (measurement-only A/B): the no-
+  // beneficiary clamp above only fires when every OTHER thread has finished
+  // (Scenario-A tail). In the dual-live tail (Scenario-B) the co-resident is
+  // still `running` and no tail thread is suspended, so a swap-out would leave
+  // only this thread suspended and LRR would re-select it -- a flush+restore
+  // self-swap with no latency hiding. Suppress it when the flag is on: the
+  // thread stays seated and waits out its miss. Inert while off (default).
+  if (suppress_self_swap) {
+    const bool no_suspended_beneficiary = [&] {
+      for (std::size_t i = 0; i < virtual_threads.size(); ++i) {
+        if (i == static_cast<std::size_t>(v))
+          continue;
+        if (virtual_threads[i].st == champsim::virtual_thread::state::suspended)
+          return false;
+      }
+      return true;
+    }();
+    if (no_suspended_beneficiary)
+      return;
+  }
+
+  // Livelock guard (bmt-design.md section 3 step 1): a virtual thread must have
+  // retired at least one instruction since it was last bound before it may swap
+  // out again. A freshly swapped-in thread (retired_since_swapin == 0) whose
+  // first re-executed load is still in flight would otherwise churn swap-in ->
+  // swap-out -> swap-in with no progress. Defer the swap-out instead: the
+  // triggering load keeps flying in the channel, the thread stays bound and
+  // retires it when it returns, and the next detection (now with >= 1
+  // retirement) proceeds normally.
+  if (vt.retired_since_swapin < 1) {
+    // B3.0 per-event trace: record the livelock-gate defer (bmt-design.md
+    // section 3 step 1). Inert when the trace switch is off.
+    if (bmt_trace_events) {
+      ++bmt_trace_defers;
+      ++bmt_trace_defers_livelock;
+      fmt::print(stderr, "[BMT][DEFER] cycle={} slot={} vthread={} reason=livelock-gate\n", current_time.time_since_epoch() / clock_period, slot, v);
+    }
+    return;
+  }
+
+  // B2.4 switch-when-ready (bmt-design.md section 3 step 5): count this thread's
+  // still-in-flight loads before the scoped flush clears the LQ. Those requests
+  // keep flying in the channel and will return as orphans; the re-bound thread
+  // defers fetch until they return, so its re-executed load hits the warm cache
+  // instead of merging into the still-in-flight MSHR.
+  vt.outstanding_loads = static_cast<long>(
+      std::count_if(std::begin(c.LQ), std::end(c.LQ), [](const auto& e) { return e.has_value() && e->fetch_issued; }));
+
+  // B3.0 per-event trace: log the swap-out with the ROB/LQ occupancy at the
+  // moment of the flush and the latency of the triggering (detected) load, all
+  // measured before the scoped flush empties them. `criterion` names the B2.5
+  // detection arm; `dwell` is printed for the miss arm so the B3.2 scan is
+  // self-describing. Inert when the trace switch is off.
+  if (bmt_trace_events) {
+    ++bmt_trace_swap_outs;
+    ++vt.swap_out_count;
+    std::intmax_t trigger_latency = 0;
+    for (const auto& e : c.LQ) {
+      if (e.has_value() && e->fetch_issued && e->bmt_detected)
+        trigger_latency = std::max(trigger_latency, (current_time - e->issue_time) / clock_period);
+    }
+    const auto lq_occupancy = std::count_if(std::begin(c.LQ), std::end(c.LQ), [](const auto& e) { return e.has_value(); });
+    if (bmt_trigger_mode_ == champsim::bmt_trigger_mode::miss)
+      fmt::print(stderr, "[BMT][SWAP_OUT] cycle={} slot={} vthread={} trigger_latency={} rob={} lq={} criterion=miss dwell={}\n",
+                 current_time.time_since_epoch() / clock_period, slot, v, trigger_latency, c.ROB.size(), lq_occupancy, bmt_miss_dwell);
+    else
+      fmt::print(stderr, "[BMT][SWAP_OUT] cycle={} slot={} vthread={} trigger_latency={} rob={} lq={} criterion=latency\n",
+                 current_time.time_since_epoch() / clock_period, slot, v, trigger_latency, c.ROB.size(), lq_occupancy);
+    vt.swap_out_time = current_time;
+    vt.inflight_wait_pending = vt.outstanding_loads > 0;
+  }
+
+  // Segments (a)+(b) cancel load + scoped flush: discard every in-flight
+  // instruction and free its physical registers, leaving only committed state.
+  // Already-issued memory requests are NOT cancelled -- they keep flying in the
+  // channel and, on return, find no LQ entry to complete (value-less model,
+  // bmt-design.md §2 step 1). Clearing the LQ is the whole of "cancel".
+  c.flush_pipeline();
+
+  // Segment (c) rsave: snapshot the committed architectural mapping into the
+  // virtual thread's IRB entry, then release those registers and clear both RATs.
+  c.rsave_registers(vt.saved_rat);
+
+  // Segment (d) archive: move the unfetched trace residual into the virtual
+  // thread's record. The tracereader's own position is untouched -- it pauses
+  // naturally while the slot is empty. This is the whole of "save PC" in a
+  // trace-driven core (bmt-design.md §4).
+  vt.input_queue = std::move(c.input_queue);
+
+  // B3.4 per-virtual small-state snapshot: capture this thread's GHR (branch
+  // predictor) + RAS (BTB) fingerprint so swap-in can assert the per-asid keying
+  // kept them untouched while suspended. The shared-GHR default has no such
+  // invariant, so no snapshot is taken while per_virtual_small_state is off.
+  if (per_virtual_small_state) {
+    const champsim::address_space_id tid{static_cast<uint8_t>(vt.trace_slot), static_cast<uint8_t>(vt.trace_slot)};
+    vt.predictor_snapshot = branch_module_pimpl->impl_small_state_fingerprint(tid) ^ btb_module_pimpl->impl_small_state_fingerprint(tid);
+  }
+
+  // Segment (e) free the slot + mark suspended.
+  vt.st = champsim::virtual_thread::state::suspended;
+  slot_map[slot] = -1;
+
+  // Deprioritize the swapped-out thread in the LRR rotation: it just ran, so it
+  // is now the most-recently-run and must go to the back of the line. Without
+  // this the same-cycle swap-in (operate() runs swap_out then swap_in) would
+  // immediately re-select it -- it is suspended and, if the rotation pointer
+  // sits at it, first in line -- churning swap-out -> swap-in -> swap-out and
+  // tripping the livelock guard (bmt-design.md section 3 step 1).
+  virtual_round_robin = (static_cast<std::size_t>(v) + 1) % virtual_threads.size();
+
+  // B2.4 firmware switch cost (bmt-design.md section 6): the rsave event occupies
+  // the slot for its share of the ~60-cycle switch latency before it may fetch
+  // again. For a slot that just emptied this is moot -- nothing is bound to
+  // fetch -- but a same-cycle swap-in accumulates its own share on top of this
+  // deadline (swap_in_context takes the max), so a full switch costs the whole
+  // rsave+rrestore total. Instant mode adds nothing (atomic swap).
+  if (bmt_switch_mode_ == champsim::bmt_switch_mode::firmware)
+    swap_resume_time[slot] = std::max(current_time, swap_resume_time[slot]) + bmt_swap_out_cost;
+
+  c.sim_stats.bmt_swap_outs += 1;
+
+  // Zero-residue assertion: the slot leaves no trace. Every buffer and queue is
+  // empty, both RATs are cleared, and no register is held (flush freed the
+  // in-flight ones, rsave freed the committed ones).
+  CHAMPSIM_ASSERT(c.IFETCH_BUFFER.empty() && c.DECODE_BUFFER.empty() && c.DISPATCH_BUFFER.empty() && c.ROB.empty() && c.DIB_HIT_BUFFER.empty());
+  CHAMPSIM_ASSERT(c.input_queue.empty() && c.SQ.empty());
+  CHAMPSIM_ASSERT(std::all_of(std::begin(c.LQ), std::end(c.LQ), [](const auto& e) { return !e.has_value(); }));
+  CHAMPSIM_ASSERT(std::all_of(std::begin(c.frontend_RAT), std::end(c.frontend_RAT), [](PHYSICAL_REGISTER_ID p) { return p == -1; }));
+  CHAMPSIM_ASSERT(std::all_of(std::begin(c.backend_RAT), std::end(c.backend_RAT), [](PHYSICAL_REGISTER_ID p) { return p == -1; }));
+}
+
+void O3_CPU::swap_in_suspended_threads()
+{
+  // Swap-in refines swap-out: bmt_swap_enabled (with bmt_enabled) gates the whole
+  // BMT mechanism. Off or during warmup this does nothing, so a default run is
+  // byte-identical to B2.2 (swap-out only, no re-bind).
+  if (!bmt_swap_enabled || !bmt_enabled || warmup)
+    return;
+
+  for (std::size_t slot = 0; slot < contexts.size(); ++slot) {
+    if (slot_map[slot] >= 0)
+      continue; // bound slot: nothing to fill
+
+    // LRR selection (bmt-design.md section 3 step 1): scan the C_virt pool from
+    // the rotation pointer for the next suspended (recoverable) virtual thread.
+    // `suspended` is exactly "swapped out and rebindable"; a `finished` thread is
+    // skipped, and a `running` thread is already bound elsewhere.
+    const std::size_t n = virtual_threads.size();
+    long chosen = -1;
+    for (std::size_t i = 0; i < n; ++i) {
+      const std::size_t v = (virtual_round_robin + i) % n;
+      if (virtual_threads[v].st == champsim::virtual_thread::state::suspended) {
+        chosen = static_cast<long>(v);
+        break;
+      }
+    }
+    if (chosen < 0)
+      return; // nothing suspended: leave the slot empty until one appears
+
+    // Resource gate (bmt-design.md section 3 step 3): rrestore must allocate one
+    // fresh physical register per mapped architectural register. The pool is
+    // shared, so a sibling may currently hold it (deep pipeline). Defer -- leave
+    // the slot empty and the pointer unmoved -- rather than restore under-backed,
+    // exactly as rename stalls when the free pool is empty.
+    const auto& cand = virtual_threads[static_cast<std::size_t>(chosen)];
+    const auto mapped = static_cast<unsigned long>(
+        std::count_if(std::begin(cand.saved_rat), std::end(cand.saved_rat), [](PHYSICAL_REGISTER_ID p) { return p != -1; }));
+    if (mapped > shared_prf->count_free_registers()) {
+      // B3.0 per-event trace: record the resource-gate defer (bmt-design.md
+      // section 3 step 3). Inert when the trace switch is off.
+      if (bmt_trace_events) {
+        ++bmt_trace_defers;
+        ++bmt_trace_defers_resource;
+        fmt::print(stderr, "[BMT][DEFER] cycle={} slot={} vthread={} reason=resource-gate mapped={} free={}\n", current_time.time_since_epoch() / clock_period,
+                   slot, chosen, mapped, shared_prf->count_free_registers());
+      }
+      continue;
+    }
+
+    virtual_round_robin = (static_cast<std::size_t>(chosen) + 1) % n;
+    swap_in_context(slot, chosen);
+  }
+}
+
+void O3_CPU::swap_in_context(std::size_t slot, long v)
+{
+  auto& vt = virtual_threads[static_cast<std::size_t>(v)];
+  auto& c = contexts[slot];
+  CHAMPSIM_ASSERT(slot_map[slot] == -1);
+  CHAMPSIM_ASSERT(vt.st == champsim::virtual_thread::state::suspended);
+
+  // Segment (3) rrestore: rebuild the committed RAT from the IRB snapshot,
+  // allocating a fresh physical register per mapped architectural register.
+  // IRB conservation: rrestore must re-allocate exactly the registers rsave
+  // released -- count the snapshot's mapped entries against the free pool, then
+  // re-check the V2.5 free+busy==SIZE invariant (the value-less IRB holds
+  // mappings, not registers, so the conserved term is unchanged; bmt-design.md
+  // section 9's "free+busy+IRB_occupied" collapses back to free+busy under 4.3).
+  const auto mapped = static_cast<unsigned long>(
+      std::count_if(std::begin(vt.saved_rat), std::end(vt.saved_rat), [](PHYSICAL_REGISTER_ID p) { return p != -1; }));
+
+  // B3.0 per-event trace: log the swap-in with the out-to-in suspension
+  // interval and the number of physical registers rrestore re-allocates. A
+  // tail virtual thread (C_virt > C_phys) bound for the first time was never
+  // swapped out, so it has no interval. Inert when the trace switch is off.
+  if (bmt_trace_events) {
+    if (vt.swap_out_time.has_value()) {
+      const auto out_in_interval = (current_time - *vt.swap_out_time) / clock_period;
+      bmt_swap_in_intervals.push_back(out_in_interval);
+      vt.cold_cycles += out_in_interval;
+      fmt::print(stderr, "[BMT][SWAP_IN] cycle={} slot={} vthread={} out_in_interval={} rrestore_mapped={}\n", current_time.time_since_epoch() / clock_period,
+                 slot, v, out_in_interval, mapped);
+    } else {
+      fmt::print(stderr, "[BMT][SWAP_IN] cycle={} slot={} vthread={} out_in_interval=first-bind rrestore_mapped={}\n",
+                 current_time.time_since_epoch() / clock_period, slot, v, mapped);
+    }
+  }
+
+  const auto free_before = shared_prf->count_free_registers();
+  c.rrestore_registers(vt.saved_rat);
+  CHAMPSIM_ASSERT(shared_prf->count_free_registers() == free_before - mapped);
+  CHAMPSIM_ASSERT(shared_prf->count_free_registers() + shared_prf->count_busy_registers() == REGISTER_FILE_SIZE);
+
+  // Segment (4) restore fetch: move the archived trace residual back into the
+  // slot's input queue. The tracereader's own position is untouched -- it paused
+  // while the slot was empty and resumes from where it left off.
+  c.input_queue = std::move(vt.input_queue);
+
+  // B3.4 per-virtual small-state assertion: a real swap-in (not a first-bind)
+  // must find this thread's GHR/RAS exactly as it was at swap-out -- the per-asid
+  // keying means no other virtual thread wrote its slot while it was suspended.
+  // Gated on per_virtual_small_state (off == shared GHR/RAS, where a suspension
+  // does NOT preserve a thread's own history, so no invariant is asserted).
+  if (per_virtual_small_state && vt.swap_out_time.has_value()) {
+    const champsim::address_space_id tid{static_cast<uint8_t>(vt.trace_slot), static_cast<uint8_t>(vt.trace_slot)};
+    const auto now = branch_module_pimpl->impl_small_state_fingerprint(tid) ^ btb_module_pimpl->impl_small_state_fingerprint(tid);
+    CHAMPSIM_ASSERT(now == vt.predictor_snapshot);
+  }
+
+  // Segment (2) bind the slot + mark running, and reset the livelock guard so the
+  // next swap-out must retire >= 1 instruction first (bmt-design.md section 3
+  // step 1). Nothing reads the binding until the next cycle's operate(), so the
+  // order relative to rrestore/restore-fetch is immaterial.
+  slot_map[slot] = v;
+  vt.st = champsim::virtual_thread::state::running;
+  vt.retired_since_swapin = 0;
+
+  // B2.4 firmware switch cost: the rrestore event adds its share of the ~60-cycle
+  // latency on top of whatever the swap-out already charged (max accumulates a
+  // same-cycle out-then-in into the full total). Instant mode adds nothing.
+  if (bmt_switch_mode_ == champsim::bmt_switch_mode::firmware)
+    swap_resume_time[slot] = std::max(current_time, swap_resume_time[slot]) + bmt_swap_in_cost;
+
+  // B2.4 switch-when-ready (bmt-design.md section 3 step 5): the outstanding-load
+  // count stays on the virtual thread (it is not moved onto the slot) and keeps
+  // draining as this thread's orphaned requests return. The bound slot defers
+  // fetch (initialize_instruction_impl) until the count reaches zero, so the
+  // re-executed load hits the cache the original request warmed rather than
+  // being re-issued into the same still-in-flight fill.
+
+  // Consume the IRB entry: the snapshot is spent. Leaving the stale physical IDs
+  // around would dangle once the freed registers are re-issued to a sibling, and
+  // clearing here makes a second swap-in of the same suspension impossible.
+  vt.saved_rat.fill(-1);
+}
+
+void O3_CPU::mark_quota_finished()
+{
+  // Gate exactly as the other BMT mechanisms do: off or during warmup this is a
+  // no-op, so a default run (and the whole warmup phase) stays byte-identical.
+  // The quota_length guard covers the first cycle of the run before do_phase has
+  // stamped it with the phase length.
+  if (!quota_finish || warmup || quota_length <= 0)
+    return;
+
+  // A virtual thread is `finished` the cycle it retires its phase instruction
+  // budget. The marker seals it: do_cycle stops feeding its trace, swap-out skips
+  // it, and reclaim_finished_threads() frees its slot once its pipeline drains.
+  // It runs after retire_rob() (num_retired is current) and before
+  // swap_out_detected_loads() (so the skip sees the marker).
+  for (std::size_t slot = 0; slot < contexts.size(); ++slot) {
+    const long bound = slot_map[slot];
+    if (bound < 0)
+      continue;
+    auto& vt = virtual_threads[static_cast<std::size_t>(bound)];
+    if (vt.st == champsim::virtual_thread::state::running && vt.num_retired >= quota_length) {
+      vt.st = champsim::virtual_thread::state::finished;
+      // B3.5-lite tail decomposition: record the exact seal cycle of each finished
+      // thread so the analysis can split W into the Scenario-B (dual-live) and
+      // Scenario-A (single-live) tail windows. Trace-only, gated like every other
+      // [BMT] event; a default run never reaches it.
+      if (bmt_trace_events)
+        fmt::print(stderr, "[BMT][FINISH] cycle={} vthread={} trace_slot={} retired={}\n",
+                   current_time.time_since_epoch() / clock_period, bound, vt.trace_slot, vt.num_retired);
+    }
+  }
+}
+
+void O3_CPU::reclaim_finished_threads()
+{
+  if (!quota_finish || warmup)
+    return;
+
+  // B3.1.5 slot-arm guard: only a genuine BMT arm (C_virt > C_phys) has a cold
+  // (suspended) thread waiting to inherit a finished thread's slot. In a slot arm
+  // (C_virt == C_phys) every thread has its own constant slot; freeing it would
+  // only leave a spare empty slot that a sibling could later migrate into,
+  // scrambling the per-context (slot) accounting. A slot-arm finished thread
+  // therefore just idles on its slot instead of being reclaimed.
+  if (virtual_threads.size() <= contexts.size())
+    return;
+
+  // Free a quota-finished thread's physical registers and release its slot once
+  // its pipeline has fully drained. "Fully drained" is the same stricter-than-
+  // ROB-empty predicate the V2.5 EOF path uses: every front-end buffer, the ROB
+  // and both queues are empty, so frontend_RAT == backend_RAT (the committed
+  // state) and nothing of this thread can ever be renamed again. The freed slot
+  // is re-filled by swap_in_suspended_threads() later this same cycle (BMT), so
+  // a finished virtual thread stops occupying hardware.
+  for (std::size_t slot = 0; slot < contexts.size(); ++slot) {
+    const long bound = slot_map[slot];
+    if (bound < 0)
+      continue;
+    auto& vt = virtual_threads[static_cast<std::size_t>(bound)];
+    if (vt.st != champsim::virtual_thread::state::finished)
+      continue;
+    auto& c = contexts[slot];
+    if (c.ROB.empty() && c.DISPATCH_BUFFER.empty() && c.DECODE_BUFFER.empty() && c.DIB_HIT_BUFFER.empty() && c.IFETCH_BUFFER.empty()
+        && c.input_queue.empty()
+        && std::all_of(std::begin(c.LQ), std::end(c.LQ), [](const auto& entry) { return !entry.has_value(); }) && c.SQ.empty()) {
+      c.reclaim_registers();
+      slot_map[slot] = -1;
+    }
+  }
 }
 
 void O3_CPU::initialize()
@@ -64,47 +650,125 @@ void O3_CPU::initialize()
 
 void O3_CPU::begin_phase()
 {
-  begin_phase_instr = num_retired;
-  begin_phase_time = current_time;
+  // Per-context phase bookkeeping. contexts.size() == 1 collapses this to the
+  // single-context path byte-for-byte: the name gets no suffix and only one
+  // context is touched.
+  for (auto& c : contexts) {
+    c.begin_phase_instr = c.num_retired;
+    c.begin_phase_time = current_time;
+    c.roi_complete_recorded = false;
 
-  // Record where the next phase begins
-  stats_type stats;
-  stats.name = "CPU " + std::to_string(cpu);
-  stats.begin_instrs = num_retired;
-  stats.begin_cycles = begin_phase_time.time_since_epoch() / clock_period;
-  sim_stats = stats;
+    // Record where the next phase begins
+    stats_type stats;
+    stats.name = "CPU " + std::to_string(cpu);
+    if (contexts.size() > 1 && c.ctx_index.value > 0)
+      stats.name += " ctx " + std::to_string(c.ctx_index.value);
+    stats.begin_instrs = c.num_retired;
+    stats.begin_cycles = c.begin_phase_time.time_since_epoch() / clock_period;
+    c.sim_stats = stats;
+  }
+
+  // B2.5 miss arm: the LLC's per-context load-miss census also resets here (the
+  // cache's begin_phase zeroes its sim_stats), so reset this core's snapshot to
+  // match -- otherwise warmup's consumed count would offset the ROI's. The LLC
+  // (cache) begins its phase before the cores in the operate order, so its
+  // counter is already zero by the time this runs. Inert (all zeros) for the
+  // latency arm, which never reads it.
+  bmt_last_seen_llc_misses.fill(0);
+
+  // B3.1: reset the per-thread cumulative retirement at the start of each phase
+  // so the end-of-ROI SUMMARY reports the ROI retirement only. The retire path
+  // runs during warmup too (unlike the swap paths, which are gated on !warmup),
+  // so without this reset num_retired would include warmup. The swap census
+  // riders (swap_out_count / cold_cycles) only accumulate in those gated paths,
+  // so they need no reset here. Inert (zero) when BMT is off.
+  for (auto& vt : virtual_threads)
+    vt.num_retired = 0;
 }
 
 void O3_CPU::end_phase(unsigned finished_cpu)
 {
-  // Record where the phase ended (overwrite if this is later)
-  sim_stats.end_instrs = num_retired;
-  sim_stats.end_cycles = current_time.time_since_epoch() / clock_period;
+  for (auto& c : contexts) {
+    // Record where the phase ended (overwrite if this is later)
+    c.sim_stats.end_instrs = c.num_retired;
+    c.sim_stats.end_cycles = current_time.time_since_epoch() / clock_period;
 
-  if (finished_cpu == this->cpu) {
-    finish_phase_instr = num_retired;
-    finish_phase_time = current_time;
+    if (finished_cpu == this->cpu) {
+      c.finish_phase_instr = c.num_retired;
+      c.finish_phase_time = current_time;
 
-    roi_stats = sim_stats;
+      c.roi_stats = c.sim_stats;
+    }
+  }
+
+  // B3.0 per-event trace aggregate summary, once per core at the end of the
+  // simulation phase (the ROI). Gated on the switch and !warmup so a default
+  // run prints nothing and stays byte-identical.
+  if (bmt_trace_events && !warmup && finished_cpu == this->cpu)
+    print_bmt_trace_summary(bmt_trace_swap_outs, bmt_trace_defers, bmt_trace_defers_livelock, bmt_trace_defers_resource, bmt_swap_in_intervals,
+                            bmt_inflight_waits, virtual_threads);
+
+  // B4.0 sparse slow load census, once per core at the end of the sim phase.
+  // Independent of trace_events so the ① / solo arms -- which run without the
+  // trace switch -- still report their slow-load count for pre-registration
+  // criterion [4] (slow_loads ~= ratio * total_loads). Off (default) prints
+  // nothing and stays byte-identical.
+  if (bmt_sparse_slow_load_enabled && !warmup && finished_cpu == this->cpu)
+    fmt::print(stderr, "[BMT][SPARSE] slow_loads={}\n", bmt_sparse_slow_loads);
+}
+
+void O3_CPU::record_roi_completion(std::size_t c, long long length)
+{
+  if (!contexts[c].roi_complete_recorded && sim_instr(c) >= length) {
+    contexts[c].roi_complete_recorded = true;
+    contexts[c].sim_stats.roi_cycles = sim_cycle(c);
   }
 }
 
 void O3_CPU::initialize_instruction()
 {
+  if constexpr (champsim::defs::max_contexts == 1) {
+    champsim::bandwidth fetch_bw{FETCH_WIDTH};
+    initialize_instruction_impl(ctx(), champsim::context_index{}, fetch_bw);
+  } else {
+    champsim::bandwidth fetch_bw{FETCH_WIDTH};
+    for (std::size_t i = 0; i < contexts.size() && fetch_bw.has_remaining(); ++i) {
+      const std::size_t c = (fetch_round_robin + i) % contexts.size();
+      initialize_instruction_impl(contexts[c], champsim::context_index{static_cast<uint8_t>(c)}, fetch_bw);
+    }
+  }
+}
+
+void O3_CPU::initialize_instruction_impl(champsim::core_context& c, champsim::context_index idx, champsim::bandwidth& fetch_bw)
+{
+  // B2.4 fetch gate: the slot does not fetch while a firmware switch event is
+  // still occupying it (swap_resume_time), nor while the bound thread's orphaned
+  // loads are still in flight (switch-when-ready, section 3 step 5; the count
+  // lives on the virtual thread and travels with it across re-binds). Both are
+  // inert (empty / zero) when BMT is off or in instant mode, so a default run is
+  // byte-identical. idx.value is the physical-slot index.
+  const std::size_t slot = static_cast<std::size_t>(idx.value);
+  if (current_time < swap_resume_time[slot])
+    return;
+  if (slot_map[slot] >= 0 && virtual_threads[static_cast<std::size_t>(slot_map[slot])].outstanding_loads > 0)
+    return;
+
   champsim::bandwidth instrs_to_read_this_cycle{
-      std::min(FETCH_WIDTH, champsim::bandwidth::maximum_type{static_cast<long>(IFETCH_BUFFER_SIZE - std::size(IFETCH_BUFFER))})};
+      std::min(champsim::bandwidth::maximum_type{fetch_bw.amount_remaining()},
+               champsim::bandwidth::maximum_type{static_cast<long>(IFETCH_BUFFER_SIZE - std::size(c.IFETCH_BUFFER))})};
 
   bool stop_fetch = false;
-  while (current_time >= fetch_resume_time && instrs_to_read_this_cycle.has_remaining() && !stop_fetch && !std::empty(input_queue)) {
+  while (current_time >= c.fetch_resume_time && instrs_to_read_this_cycle.has_remaining() && !stop_fetch && !std::empty(c.input_queue)) {
     instrs_to_read_this_cycle.consume();
+    fetch_bw.consume();
 
-    stop_fetch = do_init_instruction(input_queue.front());
+    stop_fetch = do_init_instruction(c, idx, c.input_queue.front());
 
     // Add to IFETCH_BUFFER
-    IFETCH_BUFFER.push_back(std::move(input_queue.front()));
-    input_queue.pop_front();
+    c.IFETCH_BUFFER.push_back(std::move(c.input_queue.front()));
+    c.input_queue.pop_front();
 
-    IFETCH_BUFFER.back().ready_time = current_time;
+    c.IFETCH_BUFFER.back().ready_time = current_time;
   }
 }
 
@@ -131,14 +795,14 @@ void do_stack_pointer_folding(ooo_model_instr& arch_instr)
 }
 } // namespace
 
-bool O3_CPU::do_predict_branch(ooo_model_instr& arch_instr)
+bool O3_CPU::do_predict_branch(champsim::core_context& c, champsim::context_index idx, ooo_model_instr& arch_instr)
 {
   bool stop_fetch = false;
 
   // handle branch prediction for all instructions as at this point we do not know if the instruction is a branch
-  sim_stats.total_branch_types.increment(arch_instr.branch);
-  auto [predicted_branch_target, always_taken] = impl_btb_prediction(arch_instr.ip, arch_instr.branch);
-  arch_instr.branch_prediction = impl_predict_branch(arch_instr.ip, predicted_branch_target, always_taken, arch_instr.branch) || always_taken;
+  c.sim_stats.total_branch_types.increment(arch_instr.branch);
+  auto [predicted_branch_target, always_taken] = impl_btb_prediction(arch_instr.ip, arch_instr.branch, idx, arch_instr.asid);
+  arch_instr.branch_prediction = impl_predict_branch(arch_instr.ip, predicted_branch_target, always_taken, arch_instr.branch, arch_instr.asid) || always_taken;
   if (!arch_instr.branch_prediction) {
     predicted_branch_target = champsim::address{};
   }
@@ -154,32 +818,32 @@ bool O3_CPU::do_predict_branch(ooo_model_instr& arch_instr)
     if (predicted_branch_target != arch_instr.branch_target
         || (((arch_instr.branch == BRANCH_CONDITIONAL) || (arch_instr.branch == BRANCH_OTHER))
             && arch_instr.branch_taken != arch_instr.branch_prediction)) { // conditional branches are re-evaluated at decode when the target is computed
-      sim_stats.total_rob_occupancy_at_branch_mispredict += std::size(ROB);
-      sim_stats.branch_type_misses.increment(arch_instr.branch);
+      c.sim_stats.total_rob_occupancy_at_branch_mispredict += std::size(c.ROB);
+      c.sim_stats.branch_type_misses.increment(arch_instr.branch);
       if (!warmup) {
-        fetch_resume_time = champsim::chrono::clock::time_point::max();
+        c.fetch_resume_time = champsim::chrono::clock::time_point::max();
         stop_fetch = true;
         arch_instr.branch_mispredicted = true;
 
         // Only the first freeze starts the clock: a second misprediction can be
         // detected while fetch is already frozen, and the lost cycles overlap.
-        if (!fetch_stalled_on_mispredict) {
-          fetch_stalled_on_mispredict = true;
-          fetch_stall_begin = current_time;
+        if (!c.fetch_stalled_on_mispredict) {
+          c.fetch_stalled_on_mispredict = true;
+          c.fetch_stall_begin = current_time;
         }
       }
     } else {
       stop_fetch = arch_instr.branch_taken; // if correctly predicted taken, then we can't fetch anymore instructions this cycle
     }
 
-    impl_update_btb(arch_instr.ip, arch_instr.branch_target, arch_instr.branch_taken, arch_instr.branch);
-    impl_last_branch_result(arch_instr.ip, arch_instr.branch_target, arch_instr.branch_taken, arch_instr.branch);
+    impl_update_btb(arch_instr.ip, arch_instr.branch_target, arch_instr.branch_taken, arch_instr.branch, idx, arch_instr.asid);
+    impl_last_branch_result(arch_instr.ip, arch_instr.branch_target, arch_instr.branch_taken, arch_instr.branch, arch_instr.asid);
   }
 
   return stop_fetch;
 }
 
-bool O3_CPU::do_init_instruction(ooo_model_instr& arch_instr)
+bool O3_CPU::do_init_instruction(champsim::core_context& c, champsim::context_index idx, ooo_model_instr& arch_instr)
 {
   // fast warmup eliminates register dependencies between instructions branch predictor, cache contents, and prefetchers are still warmed up
   if (warmup) {
@@ -188,29 +852,51 @@ bool O3_CPU::do_init_instruction(ooo_model_instr& arch_instr)
   }
 
   ::do_stack_pointer_folding(arch_instr);
-  return do_predict_branch(arch_instr);
+  return do_predict_branch(c, idx, arch_instr);
 }
 
 long O3_CPU::check_dib()
 {
-  // scan through IFETCH_BUFFER to find instructions that hit in the decoded instruction buffer
-  auto begin = std::find_if(std::begin(IFETCH_BUFFER), std::end(IFETCH_BUFFER), [](const ooo_model_instr& x) { return !x.dib_checked; });
-  auto [window_begin, window_end] = champsim::get_span(begin, std::end(IFETCH_BUFFER), champsim::bandwidth{FETCH_WIDTH});
-  std::for_each(window_begin, window_end, [this](auto& ifetch_entry) { this->do_check_dib(ifetch_entry); });
-  return std::distance(window_begin, window_end);
+  if constexpr (champsim::defs::max_contexts == 1) {
+    champsim::bandwidth fetch_bw{FETCH_WIDTH};
+    return check_dib_impl(ctx(), fetch_bw);
+  } else {
+    champsim::bandwidth fetch_bw{FETCH_WIDTH};
+    long progress = 0;
+    for (std::size_t i = 0; i < contexts.size() && fetch_bw.has_remaining(); ++i) {
+      const std::size_t c = (fetch_round_robin + i) % contexts.size();
+      progress += check_dib_impl(contexts[c], fetch_bw);
+    }
+    return progress;
+  }
 }
 
-void O3_CPU::do_check_dib(ooo_model_instr& instr)
+long O3_CPU::check_dib_impl(champsim::core_context& c, champsim::bandwidth& fetch_bw)
+{
+  // scan through IFETCH_BUFFER to find instructions that hit in the decoded instruction buffer
+  auto begin = std::find_if(std::begin(c.IFETCH_BUFFER), std::end(c.IFETCH_BUFFER), [](const ooo_model_instr& x) { return !x.dib_checked; });
+  auto [window_begin, window_end] =
+      champsim::get_span(begin, std::end(c.IFETCH_BUFFER), champsim::bandwidth{champsim::bandwidth::maximum_type{fetch_bw.amount_remaining()}});
+  std::for_each(window_begin, window_end, [this, &c](auto& ifetch_entry) { this->do_check_dib(c, ifetch_entry); });
+  const long progress = std::distance(window_begin, window_end);
+  fetch_bw.consume(progress);
+  return progress;
+}
+
+void O3_CPU::do_check_dib(ooo_model_instr& instr) { do_check_dib(ctx(), instr); }
+
+void O3_CPU::do_check_dib(champsim::core_context& c, ooo_model_instr& instr)
 {
   // Check DIB to see if we recently fetched this line
-  auto dib_result = DIB.check_hit(instr.ip);
+  auto dib_result = c.DIB.check_hit({instr.ip, instr.asid});
 
   // Every instruction is checked exactly once -- `dib_checked` below gates
   // re-entry -- so this is the only site that charges a DIB lookup, and the
   // hit/miss counts sum to one lookup per fetched instruction. The fill is at
   // decode (`do_dib_update`), not here, so a whole cold fetch group misses.
   if (dib_result) {
-    sim_stats.dib_hits++;
+    CHAMPSIM_ASSERT(dib_result->asid == instr.asid); // a DIB hit is keyed by (ip, asid)
+    c.sim_stats.dib_hits++;
 
     // The cache line is in the L0, so we can mark this as complete
     instr.fetch_completed = true;
@@ -221,7 +907,7 @@ void O3_CPU::do_check_dib(ooo_model_instr& instr)
     // It can be acted on immediately
     instr.ready_time = current_time;
   } else {
-    sim_stats.dib_misses++;
+    c.sim_stats.dib_misses++;
   }
 
   instr.dib_checked = true;
@@ -246,21 +932,47 @@ long O3_CPU::fetch_instruction()
     return champsim::block_number{lhs.ip} != champsim::block_number{rhs.ip};
   };
 
-  auto l1i_req_begin = std::find_if(std::begin(IFETCH_BUFFER), std::end(IFETCH_BUFFER), fetch_ready);
-  for (champsim::bandwidth l1i_bw{L1I_BANDWIDTH}; l1i_bw.has_remaining() && l1i_req_begin != std::end(IFETCH_BUFFER); l1i_bw.consume()) {
-    auto l1i_req_end = std::adjacent_find(l1i_req_begin, std::end(IFETCH_BUFFER), no_match_ip);
-    if (l1i_req_end != std::end(IFETCH_BUFFER)) {
-      l1i_req_end = std::next(l1i_req_end); // adjacent_find returns the first of the non-equal elements
-    }
+  if constexpr (champsim::defs::max_contexts == 1) {
+    auto l1i_req_begin = std::find_if(std::begin(ctx().IFETCH_BUFFER), std::end(ctx().IFETCH_BUFFER), fetch_ready);
+    for (champsim::bandwidth l1i_bw{L1I_BANDWIDTH}; l1i_bw.has_remaining() && l1i_req_begin != std::end(ctx().IFETCH_BUFFER); l1i_bw.consume()) {
+      auto l1i_req_end = std::adjacent_find(l1i_req_begin, std::end(ctx().IFETCH_BUFFER), no_match_ip);
+      if (l1i_req_end != std::end(ctx().IFETCH_BUFFER)) {
+        l1i_req_end = std::next(l1i_req_end); // adjacent_find returns the first of the non-equal elements
+      }
 
-    // Issue to L1I
-    auto success = do_fetch_instruction(l1i_req_begin, l1i_req_end);
-    if (success) {
-      std::for_each(l1i_req_begin, l1i_req_end, [](auto& x) { x.fetch_issued = true; });
-      ++progress;
-    }
+      // Issue to L1I
+      auto success = do_fetch_instruction(l1i_req_begin, l1i_req_end);
+      if (success) {
+        std::for_each(l1i_req_begin, l1i_req_end, [](auto& x) { x.fetch_issued = true; });
+        ++progress;
+      }
 
-    l1i_req_begin = std::find_if(l1i_req_end, std::end(IFETCH_BUFFER), fetch_ready);
+      l1i_req_begin = std::find_if(l1i_req_end, std::end(ctx().IFETCH_BUFFER), fetch_ready);
+    }
+  } else {
+    // Stage 3.4: share L1I_BANDWIDTH across contexts with a rotating start,
+    // work-conserving like the other fetch-budget sites.
+    champsim::bandwidth l1i_bw{L1I_BANDWIDTH};
+    for (std::size_t i = 0; i < contexts.size() && l1i_bw.has_remaining(); ++i) {
+      const std::size_t c = (fetch_round_robin + i) % contexts.size();
+      auto& ifetch_buffer = contexts[c].IFETCH_BUFFER;
+      auto l1i_req_begin = std::find_if(std::begin(ifetch_buffer), std::end(ifetch_buffer), fetch_ready);
+      while (l1i_bw.has_remaining() && l1i_req_begin != std::end(ifetch_buffer)) {
+        auto l1i_req_end = std::adjacent_find(l1i_req_begin, std::end(ifetch_buffer), no_match_ip);
+        if (l1i_req_end != std::end(ifetch_buffer)) {
+          l1i_req_end = std::next(l1i_req_end);
+        }
+
+        auto success = do_fetch_instruction(l1i_req_begin, l1i_req_end);
+        if (success) {
+          std::for_each(l1i_req_begin, l1i_req_end, [](auto& x) { x.fetch_issued = true; });
+          ++progress;
+        }
+
+        l1i_bw.consume();
+        l1i_req_begin = std::find_if(l1i_req_end, std::end(ifetch_buffer), fetch_ready);
+      }
+    }
   }
 
   return progress;
@@ -272,6 +984,8 @@ bool O3_CPU::do_fetch_instruction(std::deque<ooo_model_instr>::iterator begin, s
   fetch_packet.v_address = begin->ip;
   fetch_packet.instr_id = begin->instr_id;
   fetch_packet.ip = begin->ip;
+  fetch_packet.asid[0] = begin->asid[0];
+  fetch_packet.asid[1] = begin->asid[1];
 
   std::transform(begin, end, std::back_inserter(fetch_packet.instr_depend_on_me), [](const auto& instr) { return instr.instr_id; });
 
@@ -285,6 +999,22 @@ bool O3_CPU::do_fetch_instruction(std::deque<ooo_model_instr>::iterator begin, s
 
 long O3_CPU::promote_to_decode()
 {
+  if constexpr (champsim::defs::max_contexts == 1) {
+    champsim::bandwidth fetch_bw{FETCH_WIDTH};
+    return promote_to_decode_impl(ctx(), fetch_bw);
+  } else {
+    champsim::bandwidth fetch_bw{FETCH_WIDTH};
+    long progress = 0;
+    for (std::size_t i = 0; i < contexts.size() && fetch_bw.has_remaining(); ++i) {
+      const std::size_t c = (fetch_round_robin + i) % contexts.size();
+      progress += promote_to_decode_impl(contexts[c], fetch_bw);
+    }
+    return progress;
+  }
+}
+
+long O3_CPU::promote_to_decode_impl(champsim::core_context& c, champsim::bandwidth& fetch_bw)
+{
   auto is_decoded = [](const ooo_model_instr& x) {
     return x.decoded;
   };
@@ -294,12 +1024,13 @@ long O3_CPU::promote_to_decode()
   };
 
   champsim::bandwidth available_fetch_bandwidth{
-      std::min(FETCH_WIDTH, std::min(champsim::bandwidth::maximum_type{static_cast<long>(DIB_HIT_BUFFER_SIZE - std::size(DIB_HIT_BUFFER))},
-                                     champsim::bandwidth::maximum_type{static_cast<long>(DECODE_BUFFER_SIZE - std::size(DECODE_BUFFER))}))};
+      std::min(champsim::bandwidth::maximum_type{fetch_bw.amount_remaining()},
+               std::min(champsim::bandwidth::maximum_type{static_cast<long>(DIB_HIT_BUFFER_SIZE - std::size(c.DIB_HIT_BUFFER))},
+                        champsim::bandwidth::maximum_type{static_cast<long>(DECODE_BUFFER_SIZE - std::size(c.DECODE_BUFFER))}))};
 
-  auto fetched_check_end = std::find_if(std::begin(IFETCH_BUFFER), std::end(IFETCH_BUFFER), [](const ooo_model_instr& x) { return !x.fetch_completed; });
+  auto fetched_check_end = std::find_if(std::begin(c.IFETCH_BUFFER), std::end(c.IFETCH_BUFFER), [](const ooo_model_instr& x) { return !x.fetch_completed; });
   // find the first not fetch completed
-  auto [window_begin, window_end] = champsim::get_span_p(std::begin(IFETCH_BUFFER), fetched_check_end, available_fetch_bandwidth, fetch_complete_and_ready);
+  auto [window_begin, window_end] = champsim::get_span_p(std::begin(c.IFETCH_BUFFER), fetched_check_end, available_fetch_bandwidth, fetch_complete_and_ready);
   auto decoded_window_end = std::stable_partition(window_begin, window_end, is_decoded); // reorder instructions
   auto mark_for_decode = [time = current_time, lat = DECODE_LATENCY, warmup = warmup](auto& x) {
     return x.ready_time = time + (warmup ? champsim::chrono::clock::duration{} : lat);
@@ -313,61 +1044,79 @@ long O3_CPU::promote_to_decode()
   };
 
   std::for_each(window_begin, decoded_window_end, mark_for_dib); // assume DECODE_LATENCY = DIB_HIT_LATENCY
-  std::move(window_begin, decoded_window_end, std::back_inserter(DIB_HIT_BUFFER));
+  std::move(window_begin, decoded_window_end, std::back_inserter(c.DIB_HIT_BUFFER));
   // to DECODE_BUFFER
 
   std::for_each(decoded_window_end, window_end, mark_for_decode);
-  std::move(decoded_window_end, window_end, std::back_inserter(DECODE_BUFFER));
+  std::move(decoded_window_end, window_end, std::back_inserter(c.DECODE_BUFFER));
 
-  long progress{std::distance(window_begin, window_end)};
-  IFETCH_BUFFER.erase(window_begin, window_end);
+  const long progress{std::distance(window_begin, window_end)};
+  c.IFETCH_BUFFER.erase(window_begin, window_end);
+  fetch_bw.consume(progress);
   return progress;
 }
 long O3_CPU::decode_instruction()
+{
+  if constexpr (champsim::defs::max_contexts == 1) {
+    champsim::bandwidth decode_bw{DECODE_WIDTH};
+    champsim::bandwidth inorder_bw{DIB_INORDER_WIDTH};
+    return decode_instruction_impl(ctx(), decode_bw, inorder_bw);
+  } else {
+    champsim::bandwidth decode_bw{DECODE_WIDTH};
+    champsim::bandwidth inorder_bw{DIB_INORDER_WIDTH};
+    long progress = 0;
+    for (std::size_t i = 0; i < contexts.size() && (decode_bw.has_remaining() || inorder_bw.has_remaining()); ++i) {
+      const std::size_t c = (fetch_round_robin + i) % contexts.size();
+      progress += decode_instruction_impl(contexts[c], decode_bw, inorder_bw);
+    }
+    return progress;
+  }
+}
+
+long O3_CPU::decode_instruction_impl(champsim::core_context& c, champsim::bandwidth& decode_bw, champsim::bandwidth& inorder_bw)
 {
   auto is_ready = [time = current_time](const auto& x) {
     return x.ready_time <= time;
   };
 
-  auto dib_hit_buffer_begin = std::begin(DIB_HIT_BUFFER);
+  auto dib_hit_buffer_begin = std::begin(c.DIB_HIT_BUFFER);
   auto dib_hit_buffer_end = dib_hit_buffer_begin;
-  auto decode_buffer_begin = std::begin(DECODE_BUFFER);
+  auto decode_buffer_begin = std::begin(c.DECODE_BUFFER);
   auto decode_buffer_end = decode_buffer_begin;
 
-  champsim::bandwidth available_decode_bandwidth{DECODE_WIDTH};
-
-  // bw move instructions to dispatch_buffer
+  // bw move instructions to dispatch_buffer, capped by the shared inorder width
+  // and this context's remaining dispatch-buffer space.
   champsim::bandwidth available_dib_inorder_bandwidth{
-      std::min(DIB_INORDER_WIDTH, champsim::bandwidth::maximum_type{static_cast<long>(DISPATCH_BUFFER_SIZE - std::size(DISPATCH_BUFFER))})};
+      std::min(champsim::bandwidth::maximum_type{inorder_bw.amount_remaining()},
+               champsim::bandwidth::maximum_type{static_cast<long>(DISPATCH_BUFFER_SIZE - std::size(c.DISPATCH_BUFFER))})};
 
   // conditions choose how many instructions sent to dispatch_buffer
-  while (dib_hit_buffer_end != std::end(DIB_HIT_BUFFER) && decode_buffer_end != std::end(DECODE_BUFFER) && available_dib_inorder_bandwidth.has_remaining()
-         && available_decode_bandwidth.has_remaining() && is_ready(std::min(*dib_hit_buffer_end, *decode_buffer_end, ooo_model_instr::program_order))) {
+  while (dib_hit_buffer_end != std::end(c.DIB_HIT_BUFFER) && decode_buffer_end != std::end(c.DECODE_BUFFER) && available_dib_inorder_bandwidth.has_remaining()
+         && decode_bw.has_remaining() && is_ready(std::min(*dib_hit_buffer_end, *decode_buffer_end, ooo_model_instr::program_order))) {
     if (ooo_model_instr::program_order(*dib_hit_buffer_end, *decode_buffer_end)) {
       dib_hit_buffer_end++;
       available_dib_inorder_bandwidth.consume();
     } else {
       decode_buffer_end++;
       available_dib_inorder_bandwidth.consume();
-      available_decode_bandwidth.consume();
+      decode_bw.consume();
     }
   }
-  while (dib_hit_buffer_end != std::end(DIB_HIT_BUFFER) && available_dib_inorder_bandwidth.has_remaining() && is_ready(*dib_hit_buffer_end)
-         && (decode_buffer_end == std::end(DECODE_BUFFER) || ooo_model_instr::program_order(*dib_hit_buffer_end, *decode_buffer_end))) {
+  while (dib_hit_buffer_end != std::end(c.DIB_HIT_BUFFER) && available_dib_inorder_bandwidth.has_remaining() && is_ready(*dib_hit_buffer_end)
+         && (decode_buffer_end == std::end(c.DECODE_BUFFER) || ooo_model_instr::program_order(*dib_hit_buffer_end, *decode_buffer_end))) {
     dib_hit_buffer_end++;
     available_dib_inorder_bandwidth.consume();
   }
-  while (decode_buffer_end != std::end(DECODE_BUFFER) && available_dib_inorder_bandwidth.has_remaining() && available_decode_bandwidth.has_remaining()
-         && is_ready(*decode_buffer_end)
-         && (dib_hit_buffer_end == std::end(DIB_HIT_BUFFER) || ooo_model_instr::program_order(*decode_buffer_end, *dib_hit_buffer_end))) {
+  while (decode_buffer_end != std::end(c.DECODE_BUFFER) && available_dib_inorder_bandwidth.has_remaining() && decode_bw.has_remaining() && is_ready(*decode_buffer_end)
+         && (dib_hit_buffer_end == std::end(c.DIB_HIT_BUFFER) || ooo_model_instr::program_order(*decode_buffer_end, *dib_hit_buffer_end))) {
     decode_buffer_end++;
     available_dib_inorder_bandwidth.consume();
-    available_decode_bandwidth.consume();
+    decode_bw.consume();
   }
 
   // decode instructions have not decoded, merge instructions with dib_hit_buffer then send to dispatch_buffer
   auto do_decode = [&, this](auto& db_entry) {
-    this->do_dib_update(db_entry);
+    this->do_dib_update(c, db_entry);
 
     // Report each architectural destination register while the numbers are
     // still architectural: do_scheduling() overwrites this vector with
@@ -384,7 +1133,7 @@ long O3_CPU::decode_instruction()
         // clear the branch_mispredicted bit so we don't attempt to resume fetch again at execute
         db_entry.branch_mispredicted = 0;
         // pay misprediction penalty
-        this->resume_fetch_after_mispredict();
+        this->resume_fetch_after_mispredict(c);
       }
     }
     // Add to dispatch
@@ -402,42 +1151,104 @@ long O3_CPU::decode_instruction()
   std::for_each(decode_buffer_begin, decode_buffer_end, do_decode);
   std::for_each(dib_hit_buffer_begin, dib_hit_buffer_end, do_dib_hit);
 
-  long progress{std::distance(dib_hit_buffer_begin, dib_hit_buffer_end) + std::distance(decode_buffer_begin, decode_buffer_end)};
+  const long progress{std::distance(dib_hit_buffer_begin, dib_hit_buffer_end) + std::distance(decode_buffer_begin, decode_buffer_end)};
 
-  std::merge(dib_hit_buffer_begin, dib_hit_buffer_end, decode_buffer_begin, decode_buffer_end, std::back_inserter(DISPATCH_BUFFER),
+  std::merge(dib_hit_buffer_begin, dib_hit_buffer_end, decode_buffer_begin, decode_buffer_end, std::back_inserter(c.DISPATCH_BUFFER),
              ooo_model_instr::program_order);
-  DECODE_BUFFER.erase(decode_buffer_begin, decode_buffer_end);
-  DIB_HIT_BUFFER.erase(dib_hit_buffer_begin, dib_hit_buffer_end);
+  c.DECODE_BUFFER.erase(decode_buffer_begin, decode_buffer_end);
+  c.DIB_HIT_BUFFER.erase(dib_hit_buffer_begin, dib_hit_buffer_end);
+
+  // Charge the shared inorder width for what this context actually moved.
+  inorder_bw.consume(available_dib_inorder_bandwidth.amount_consumed());
 
   return progress;
 }
 
-void O3_CPU::do_dib_update(const ooo_model_instr& instr) { DIB.fill(instr.ip); }
+void O3_CPU::do_dib_update(const ooo_model_instr& instr) { do_dib_update(ctx(), instr); }
+
+void O3_CPU::do_dib_update(champsim::core_context& c, const ooo_model_instr& instr) { c.DIB.fill({instr.ip, instr.asid}); }
+
+std::size_t O3_CPU::rob_capacity() const
+{
+  // Single entry point for the ROB partition policy. `equal` (Stage 5.2b) grants
+  // each context a fixed ROB_SIZE / num_contexts quota, so the aggregate in-flight
+  // ROB entries across contexts can never exceed the core's one ROB_SIZE budget
+  // (total-capacity conservation). `active` (V2) is the elastic split: the quota
+  // follows the *actually active* context count (contexts with a non-empty ROB,
+  // refreshed at the end of operate()), reclaiming an idle context's quota so an
+  // under-committed run can push a surviving context's ROB toward the full budget.
+  // With one context both are exactly ROB_SIZE, so single-context output is
+  // unchanged.
+  switch (rob_partition_) {
+    case champsim::rob_partition::equal:
+      return ROB_SIZE / contexts.size();
+    case champsim::rob_partition::active:
+      // max(1, ...) degenerates the N=1 case to ROB_SIZE/1 (the original formula)
+      // and guards the active == 0 instant before any context has dispatched.
+      return ROB_SIZE / std::max<std::size_t>(1, active);
+  }
+  return ROB_SIZE; // unreachable: rob_partition_ is validated at construction
+}
+
+std::size_t O3_CPU::rob_occupied() const
+{
+  std::size_t total = 0;
+  for (const auto& c : contexts) {
+    total += std::size(c.ROB);
+  }
+  return total;
+}
 
 long O3_CPU::dispatch_instruction()
 {
-  champsim::bandwidth available_dispatch_bandwidth{DISPATCH_WIDTH};
+  if constexpr (champsim::defs::max_contexts == 1) {
+    champsim::bandwidth dispatch_bw{DISPATCH_WIDTH};
+    return dispatch_instruction_impl(ctx(), dispatch_bw);
+  } else {
+    champsim::bandwidth dispatch_bw{DISPATCH_WIDTH};
+    const std::size_t owner = dispatch_owner % contexts.size();
+    long progress = dispatch_instruction_impl(contexts[owner], dispatch_bw);
+
+    // Exclusive round with yield: an owner that stalls outright (ROB/rename
+    // full, nothing ready, downstream blocked) wastes its round, so hand the
+    // remaining width to the sibling rather than burning it. Two hungry
+    // contexts still alternate strictly, one round each.
+    if (progress == 0 && dispatch_bw.has_remaining() && contexts.size() > 1) {
+      progress += dispatch_instruction_impl(contexts[(owner + 1) % contexts.size()], dispatch_bw);
+    }
+
+    return progress;
+  }
+}
+
+long O3_CPU::dispatch_instruction_impl(champsim::core_context& c, champsim::bandwidth& dispatch_bw)
+{
+  const long before = dispatch_bw.amount_consumed();
 
   // dispatch DISPATCH_WIDTH instructions into the ROB
-  while (available_dispatch_bandwidth.has_remaining() && !std::empty(DISPATCH_BUFFER) && DISPATCH_BUFFER.front().ready_time <= current_time
-         && std::size(ROB) != ROB_SIZE
-         && ((std::size_t)std::count_if(std::begin(LQ), std::end(LQ), [](const auto& lq_entry) { return !lq_entry.has_value(); })
-             >= std::size(DISPATCH_BUFFER.front().source_memory))
-         && ((std::size(DISPATCH_BUFFER.front().destination_memory) + std::size(SQ)) <= SQ_SIZE)) {
-    ROB.push_back(std::move(DISPATCH_BUFFER.front()));
-    DISPATCH_BUFFER.pop_front();
-    do_memory_scheduling(ROB.back());
+  while (dispatch_bw.has_remaining() && !std::empty(c.DISPATCH_BUFFER) && c.DISPATCH_BUFFER.front().ready_time <= current_time && std::size(c.ROB) != rob_capacity()
+         && rob_occupied() < ROB_SIZE
+         && ((std::size_t)std::count_if(std::begin(c.LQ), std::end(c.LQ), [](const auto& lq_entry) { return !lq_entry.has_value(); })
+             >= std::size(c.DISPATCH_BUFFER.front().source_memory))
+         && ((std::size(c.DISPATCH_BUFFER.front().destination_memory) + std::size(c.SQ)) <= SQ_SIZE)) {
+    c.ROB.push_back(std::move(c.DISPATCH_BUFFER.front()));
+    c.DISPATCH_BUFFER.pop_front();
+    do_memory_scheduling(c, c.ROB.back());
 
-    available_dispatch_bandwidth.consume();
-    ROB.back().ready_time = current_time + (warmup ? champsim::chrono::clock::duration{} : SCHEDULING_LATENCY);
+    // Stamp the core-wide age key. instr_id cannot order across contexts (each
+    // trace restarts it at 0); this monotonic counter is the one such key.
+    c.ROB.back().dispatch_sequence = next_dispatch_sequence++;
+
+    dispatch_bw.consume();
+    c.ROB.back().ready_time = current_time + (warmup ? champsim::chrono::clock::duration{} : SCHEDULING_LATENCY);
   }
 
-  return available_dispatch_bandwidth.amount_consumed();
+  return dispatch_bw.amount_consumed() - before;
 }
 
 void O3_CPU::throw_register_file_too_small(const ooo_model_instr& instr, unsigned long needed) const
 {
-  const auto free = reg_allocator.count_free_registers();
+  const auto free = shared_prf->count_free_registers();
   throw std::runtime_error{fmt::format(
       "runtime config: ooo_cpu.cpu{}.register_file_size = {} is too small for this trace: the oldest instruction (instr_id {}) needs {} register{} to "
       "rename, with {} free; the other {} hold architectural registers the trace has already used. A physical register is freed only when a newer "
@@ -446,59 +1257,215 @@ void O3_CPU::throw_register_file_too_small(const ooo_model_instr& instr, unsigne
       cpu, REGISTER_FILE_SIZE, instr.instr_id, needed, needed == 1 ? "" : "s", free, REGISTER_FILE_SIZE - free)};
 }
 
+void O3_CPU::throw_register_file_too_small_smt(const ooo_model_instr& instr, unsigned long needed, unsigned long total_need) const
+{
+  const auto free = shared_prf->count_free_registers();
+  throw std::runtime_error{fmt::format(
+      "runtime config: ooo_cpu.cpu{}.register_file_size = {} is too small for this trace: the oldest instruction (instr_id {}) needs {} register{} to "
+      "rename, with {} free; the other {} hold architectural registers the trace has already used. {} contexts together need {} more register{} to "
+      "rename their oldest unscheduled instructions, so the file must hold at least {} + {} = {}; with no instruction in flight nothing can free a "
+      "register, and no context can proceed.",
+      cpu, REGISTER_FILE_SIZE, instr.instr_id, needed, needed == 1 ? "" : "s", free, REGISTER_FILE_SIZE - free, contexts.size(), total_need,
+      total_need == 1 ? "" : "s", REGISTER_FILE_SIZE - free, total_need, (REGISTER_FILE_SIZE - free) + total_need)};
+}
+
+namespace
+{
+// Upper bound on need_k: NUM_INSTR_SOURCES distinct unmapped sources plus
+// NUM_INSTR_DESTINATIONS destinations. The bound holds only because "need =
+// distinct unmapped sources + destinations" is rename's billing rule; constexpr
+// tracks a change to the NUM_INSTR_* constants but cannot track a change to that
+// *semantic* -- if rename's register accounting itself ever changes, this bound
+// (and the deadlock floor N >= C + sum(need_k) that rests on it) silently breaks
+// and must be revisited. It guards the constants, not the rule.
+constexpr unsigned long max_need = NUM_INSTR_SOURCES + NUM_INSTR_DESTINATIONS;
+
+// The physical registers one rename consumes for a single unscheduled
+// instruction: each distinct source register not yet mapped in the context's
+// RAT, plus every destination. This is exactly the quantity the scheduler's
+// per-candidate gate computes; factored out so the sibling-reservation pass can
+// ask it of a context it is not currently scheduling.
+unsigned long rename_need(const champsim::core_context& c, const ooo_model_instr& instr)
+{
+  const auto& sources = instr.source_registers;
+  unsigned long sources_to_allocate = 0;
+  for (auto src_it = std::begin(sources); src_it != std::end(sources); ++src_it) {
+    if (!c.isAllocated(*src_it) && std::find(std::begin(sources), src_it, *src_it) == src_it)
+      ++sources_to_allocate;
+  }
+  return sources_to_allocate + instr.destination_registers.size();
+}
+
+// A context's dynamic waterline (need_k): the rename requirement of its oldest
+// unscheduled instruction -- the one gating its in-order retirement -- or 0 if it
+// has none. Recomputed every scheduling round, so it tracks the context's
+// committed set as that set grows.
+unsigned long context_need(const champsim::core_context& c)
+{
+  for (const auto& instr : c.ROB)
+    if (!instr.scheduled) {
+      const auto need = rename_need(c, instr);
+      CHAMPSIM_ASSERT(need <= max_need);
+      return need;
+    }
+  return 0;
+}
+} // namespace
+
 long O3_CPU::schedule_instruction()
 {
-  // Renaming is in program order: the walk stops at the first instruction the
-  // free registers cannot cover. Skipping an unscheduled instruction that is not
-  // ready yet keeps that order only because dispatch sets ready_time in program
-  // order, so no younger unscheduled instruction is ready before it.
-  champsim::bandwidth search_bw{SCHEDULER_SIZE};
+  if constexpr (champsim::defs::max_contexts == 1) {
+    // Single-context fast path: the original search window, byte-identical. The
+    // walk stops at the first instruction the free registers cannot cover; an
+    // unscheduled not-ready entry ends scheduling only because dispatch sets
+    // ready_time in program order, so no younger entry is ready before it.
+    champsim::bandwidth search_bw{SCHEDULER_SIZE};
+    int progress{0};
+    for (auto rob_it = std::begin(ctx().ROB); rob_it != std::end(ctx().ROB) && search_bw.has_remaining(); ++rob_it) {
+      if (!rob_it->scheduled && rob_it->ready_time <= current_time) {
+        // The free-register rename gate applies only to instructions being
+        // renamed this cycle. An already-scheduled instruction has claimed its
+        // registers, so evaluating the gate against it (and breaking when free
+        // registers fall below its destination count) wrongly blocks scheduling.
+        // Renaming maps an unmapped source on its first read, so a repeat of it
+        // allocates nothing: count each unmapped source register once.
+        const auto& sources = rob_it->source_registers;
+        unsigned long sources_to_allocate = 0;
+        for (auto src_it = std::begin(sources); src_it != std::end(sources); ++src_it) {
+          if (!ctx().isAllocated(*src_it) && std::find(std::begin(sources), src_it, *src_it) == src_it) {
+            ++sources_to_allocate;
+          }
+        }
+        if (shared_prf->count_free_registers() < (sources_to_allocate + rob_it->destination_registers.size())) {
+          if (rob_it == std::begin(ctx().ROB)) {
+            // Nothing older is in flight, and only a retiring write frees a register.
+            throw_register_file_too_small(*rob_it, sources_to_allocate + rob_it->destination_registers.size());
+          }
+          break;
+        }
+        do_scheduling(*rob_it);
+        ++progress;
+      }
+
+      if (!rob_it->executed) {
+        search_bw.consume();
+      }
+    }
+
+    return progress;
+  } else {
+    // Shared scheduler (Stage 3.5): SCHEDULER_SIZE is the reservation-station
+    // capacity, i.e. the aggregate count of instructions scheduled but not yet
+    // executed. The per-cycle search budget the single-context path uses only
+    // bounds this count there; across contexts a shared scan budget would let
+    // two threads each fill the window, doubling it. So the gate is the live
+    // occupancy itself: schedule only while the shared count is below capacity.
+    const long capacity = champsim::to_underlying(SCHEDULER_SIZE);
+    long occupied = 0;
+    for (const auto& c : contexts)
+      occupied += static_cast<long>(std::count_if(std::begin(c.ROB), std::end(c.ROB), [](const auto& x) { return x.scheduled && !x.executed; }));
+
+    // Per-context rename waterline (Stage 5.1): reserve each sibling's next
+    // rename so no context can drain the shared pool past the point where its
+    // sibling can no longer schedule its oldest instruction. need[c] is context
+    // c's current requirement and total_need their sum. Both are snapshotted once
+    // for the whole round -- safe because a context's need changes only when that
+    // context itself renames (advancing its own ROB head), and this round renames
+    // only the contexts it schedules, never their sibling's RAT or ROB. Anyone
+    // who later interleaves renames across contexts inside one round breaks that
+    // assumption and must recompute sibling_need, not trust the snapshot.
+    std::array<unsigned long, champsim::defs::max_contexts> need{};
+    unsigned long total_need = 0;
+    for (std::size_t k = 0; k < contexts.size(); ++k) {
+      need[k] = context_need(contexts[k]);
+      total_need += need[k];
+    }
+
+    long progress = 0;
+    for (std::size_t i = 0; i < contexts.size() && occupied < capacity; ++i) {
+      const std::size_t c = (backend_round_robin + i) % contexts.size();
+      const unsigned long sibling_need = total_need - need[c];
+      progress += schedule_instruction_impl(contexts[c], occupied, capacity, sibling_need);
+    }
+
+    // L2 occupancy invariant, asserted every cycle: the shared reservation
+    // station can never hold more than SCHEDULER_SIZE scheduled-not-executed
+    // instructions, however the arbitration interleaves the contexts.
+    long scheduled_not_executed = 0;
+    for (const auto& c : contexts)
+      scheduled_not_executed += static_cast<long>(std::count_if(std::begin(c.ROB), std::end(c.ROB), [](const auto& x) { return x.scheduled && !x.executed; }));
+    CHAMPSIM_ASSERT(scheduled_not_executed <= champsim::to_underlying(SCHEDULER_SIZE));
+
+    return progress;
+  }
+}
+
+long O3_CPU::schedule_instruction_impl(champsim::core_context& c, long& occupied, long capacity, unsigned long sibling_need)
+{
+  // Renaming stays in program order: the walk stops at the first instruction the
+  // free registers cannot cover. The register shortage stops only this context's
+  // walk; with a single context the oldest instruction cannot free a register
+  // and only a retiring write would, so it is a config error and throws. With a
+  // sibling, that sibling may retire and free one, so this context just waits.
+  // sibling_need is the rename requirement reserved for every other context (the
+  // Stage 5.1 waterline): free must cover this instruction *and* each sibling's
+  // next rename, so no context can starve its siblings out of the shared pool.
   int progress{0};
-  for (auto rob_it = std::begin(ROB); rob_it != std::end(ROB) && search_bw.has_remaining(); ++rob_it) {
+  for (auto rob_it = std::begin(c.ROB); rob_it != std::end(c.ROB) && occupied < capacity; ++rob_it) {
     if (!rob_it->scheduled && rob_it->ready_time <= current_time) {
-      // The free-register rename gate applies only to instructions being
-      // renamed this cycle. An already-scheduled instruction has claimed its
-      // registers, so evaluating the gate against it (and breaking when free
-      // registers fall below its destination count) wrongly blocks scheduling.
-      // Renaming maps an unmapped source on its first read, so a repeat of it
-      // allocates nothing: count each unmapped source register once.
       const auto& sources = rob_it->source_registers;
       unsigned long sources_to_allocate = 0;
       for (auto src_it = std::begin(sources); src_it != std::end(sources); ++src_it) {
-        if (!reg_allocator.isAllocated(*src_it) && std::find(std::begin(sources), src_it, *src_it) == src_it) {
+        if (!c.isAllocated(*src_it) && std::find(std::begin(sources), src_it, *src_it) == src_it) {
           ++sources_to_allocate;
         }
       }
-      if (reg_allocator.count_free_registers() < (sources_to_allocate + rob_it->destination_registers.size())) {
-        if (rob_it == std::begin(ROB)) {
-          // Nothing older is in flight, and only a retiring write frees a register.
-          throw_register_file_too_small(*rob_it, sources_to_allocate + rob_it->destination_registers.size());
+      if (shared_prf->count_free_registers() < (sources_to_allocate + rob_it->destination_registers.size() + sibling_need)) {
+        if (rob_it == std::begin(c.ROB)) {
+          // Stage 5.1b: this context's oldest instruction cannot rename, so this
+          // context can retire nothing. A register is freed only when a retiring
+          // superseding write recycles it, so the stall is a config error unless a
+          // sibling still has an instruction in flight that may retire and free
+          // one. Any scheduled instruction anywhere is in flight (renamed but not
+          // yet retired), so its absence is the criterion for "no one can free".
+          const bool any_in_flight = std::any_of(std::begin(contexts), std::end(contexts), [](const auto& ctx) {
+            return std::any_of(std::begin(ctx.ROB), std::end(ctx.ROB), [](const auto& x) { return x.scheduled; });
+          });
+          if (!any_in_flight) {
+            if (contexts.size() == 1) {
+              throw_register_file_too_small(*rob_it, sources_to_allocate + rob_it->destination_registers.size());
+            } else {
+              unsigned long total_need = 0;
+              for (const auto& ctx : contexts)
+                total_need += context_need(ctx);
+              throw_register_file_too_small_smt(*rob_it, sources_to_allocate + rob_it->destination_registers.size(), total_need);
+            }
+          }
         }
         break;
       }
-      do_scheduling(*rob_it);
+      do_scheduling(c, *rob_it);
       ++progress;
-    }
-
-    if (!rob_it->executed) {
-      search_bw.consume();
+      ++occupied;
     }
   }
 
   return progress;
 }
 
-void O3_CPU::do_scheduling(ooo_model_instr& instr)
+void O3_CPU::do_scheduling(ooo_model_instr& instr) { do_scheduling(ctx(), instr); }
+
+void O3_CPU::do_scheduling(champsim::core_context& c, ooo_model_instr& instr)
 {
   // Mark register dependencies
   for (auto& src_reg : instr.source_registers) {
     // rename source register
-    src_reg = reg_allocator.rename_src_register(src_reg);
+    src_reg = c.rename_src_register(src_reg);
   }
 
   for (auto& dreg : instr.destination_registers) {
     // rename destination register
-    dreg = reg_allocator.rename_dest_register(dreg, instr.instr_id);
+    dreg = c.rename_dest_register(dreg, instr.instr_id);
   }
 
   instr.scheduled = true;
@@ -506,29 +1473,77 @@ void O3_CPU::do_scheduling(ooo_model_instr& instr)
 
 long O3_CPU::execute_instruction()
 {
-  champsim::bandwidth exec_bw{EXEC_WIDTH};
-  for (auto rob_it = std::begin(ROB); rob_it != std::end(ROB) && exec_bw.has_remaining(); ++rob_it) {
+  if constexpr (champsim::defs::max_contexts == 1) {
+    champsim::bandwidth exec_bw{EXEC_WIDTH};
+    return execute_instruction_impl(ctx(), exec_bw);
+  } else {
+    // Shared scheduler (Stage 3.5): issue by global age, not by a rotating
+    // per-context walk. The reservation station is shared, so this cycle's
+    // EXEC_WIDTH issue slots go to the globally oldest ready instructions,
+    // keyed on dispatch_sequence -- the core-wide age key. instr_id cannot
+    // order across contexts (it restarts at 0 in each trace); with a single
+    // context dispatch_sequence is monotone with ROB position, so this loop
+    // reduces to the single-context in-order walk bit-for-bit.
+    champsim::bandwidth exec_bw{EXEC_WIDTH};
+    long progress = 0;
+    while (exec_bw.has_remaining()) {
+      champsim::core_context* best_c = nullptr;
+      ooo_model_instr* best = nullptr;
+      uint64_t best_seq = std::numeric_limits<uint64_t>::max();
+
+      for (auto& c : contexts) {
+        for (auto& instr : c.ROB) {
+          if (instr.scheduled && !instr.executed && instr.ready_time <= current_time
+              && std::all_of(std::begin(instr.source_registers), std::end(instr.source_registers),
+                             [this](auto srcreg) { return shared_prf->isValid(srcreg); })) {
+            if (instr.dispatch_sequence < best_seq) {
+              best_c = &c;
+              best = &instr;
+              best_seq = instr.dispatch_sequence;
+            }
+            break; // this context's oldest candidate; later entries are younger
+          }
+        }
+      }
+
+      if (best == nullptr)
+        break;
+
+      do_execution(*best_c, *best);
+      exec_bw.consume();
+      ++progress;
+    }
+    return progress;
+  }
+}
+
+long O3_CPU::execute_instruction_impl(champsim::core_context& c, champsim::bandwidth& exec_bw)
+{
+  const long before = exec_bw.amount_consumed();
+  for (auto rob_it = std::begin(c.ROB); rob_it != std::end(c.ROB) && exec_bw.has_remaining(); ++rob_it) {
     if (rob_it->scheduled && !rob_it->executed && rob_it->ready_time <= current_time) {
       bool ready = std::all_of(std::begin(rob_it->source_registers), std::end(rob_it->source_registers),
-                               [&alloc = std::as_const(reg_allocator)](auto srcreg) { return alloc.isValid(srcreg); });
+                               [this](auto srcreg) { return shared_prf->isValid(srcreg); });
       if (ready) {
-        do_execution(*rob_it);
+        do_execution(c, *rob_it);
         exec_bw.consume();
       }
     }
   }
 
-  return exec_bw.amount_consumed();
+  return exec_bw.amount_consumed() - before;
 }
 
-void O3_CPU::do_execution(ooo_model_instr& instr)
+void O3_CPU::do_execution(ooo_model_instr& instr) { do_execution(ctx(), instr); }
+
+void O3_CPU::do_execution(champsim::core_context& c, ooo_model_instr& instr)
 {
   instr.executed = true;
   instr.ready_time = current_time + (warmup ? champsim::chrono::clock::duration{} : EXEC_LATENCY);
 
   // Mark LQ entries as ready to translate
   if (!std::empty(instr.source_memory)) {
-    for (auto& lq_entry : LQ) {
+    for (auto& lq_entry : c.LQ) {
       if (lq_entry.has_value() && lq_entry->instr_id == instr.instr_id) {
         lq_entry->ready_time = current_time + (warmup ? champsim::chrono::clock::duration{} : EXEC_LATENCY);
       }
@@ -537,7 +1552,7 @@ void O3_CPU::do_execution(ooo_model_instr& instr)
 
   // Mark SQ entries as ready to translate
   if (!std::empty(instr.destination_memory)) {
-    for (auto& sq_entry : SQ) {
+    for (auto& sq_entry : c.SQ) {
       if (sq_entry.instr_id == instr.instr_id) {
         sq_entry.ready_time = current_time + (warmup ? champsim::chrono::clock::duration{} : EXEC_LATENCY);
       }
@@ -549,19 +1564,23 @@ void O3_CPU::do_execution(ooo_model_instr& instr)
   }
 }
 
-void O3_CPU::do_memory_scheduling(ooo_model_instr& instr)
+void O3_CPU::do_memory_scheduling(ooo_model_instr& instr) { do_memory_scheduling(ctx(), instr); }
+
+void O3_CPU::do_memory_scheduling(champsim::core_context& c, ooo_model_instr& instr)
 {
   // load
   for (auto& smem : instr.source_memory) {
-    auto q_entry = std::find_if_not(std::begin(LQ), std::end(LQ), [](const auto& lq_entry) { return lq_entry.has_value(); });
-    CHAMPSIM_ASSERT(q_entry != std::end(LQ));
-    q_entry->emplace(smem, instr.instr_id, instr.ip, instr.asid); // add it to the load queue
+    auto q_entry = std::find_if_not(std::begin(c.LQ), std::end(c.LQ), [](const auto& lq_entry) { return lq_entry.has_value(); });
+    CHAMPSIM_ASSERT(q_entry != std::end(c.LQ));
+    auto& new_lq = q_entry->emplace(smem, instr.instr_id, instr.ip, instr.asid); // add it to the load queue
+    new_lq.load_waiter_id = c.next_load_waiter_id++;                             // name this entry as its own load waiter
 
     // Check for forwarding
-    auto sq_it = std::max_element(std::begin(SQ), std::end(SQ), [smem](const auto& lhs, const auto& rhs) {
+    auto sq_it = std::max_element(std::begin(c.SQ), std::end(c.SQ), [smem](const auto& lhs, const auto& rhs) {
       return lhs.virtual_address != smem || (rhs.virtual_address == smem && LSQ_ENTRY::program_order(lhs, rhs));
     });
-    if (sq_it != std::end(SQ) && sq_it->virtual_address == smem) {
+    if (sq_it != std::end(c.SQ) && sq_it->virtual_address == smem) {
+      CHAMPSIM_ASSERT(sq_it->asid == instr.asid); // store-to-load forwarding must stay within one address space
       if (sq_it->fetch_issued) { // Store already executed
         (*q_entry)->finish(instr);
         q_entry->reset();
@@ -579,7 +1598,7 @@ void O3_CPU::do_memory_scheduling(ooo_model_instr& instr)
 
   // store
   for (auto& dmem : instr.destination_memory) {
-    SQ.emplace_back(dmem, instr.instr_id, instr.ip, instr.asid); // add it to the store queue
+    c.SQ.emplace_back(dmem, instr.instr_id, instr.ip, instr.asid); // add it to the store queue
   }
 
   if constexpr (champsim::debug_print) {
@@ -590,57 +1609,79 @@ void O3_CPU::do_memory_scheduling(ooo_model_instr& instr)
 
 long O3_CPU::operate_lsq()
 {
-  champsim::bandwidth store_bw{SQ_WIDTH};
+  if constexpr (champsim::defs::max_contexts == 1) {
+    champsim::bandwidth store_bw{SQ_WIDTH};
+    champsim::bandwidth load_bw{LQ_WIDTH};
+    return operate_lsq_impl(ctx(), store_bw, load_bw);
+  } else {
+    champsim::bandwidth store_bw{SQ_WIDTH};
+    champsim::bandwidth load_bw{LQ_WIDTH};
+    long progress = 0;
+    for (std::size_t i = 0; i < contexts.size() && (store_bw.has_remaining() || load_bw.has_remaining()); ++i) {
+      const std::size_t c = (backend_round_robin + i) % contexts.size();
+      progress += operate_lsq_impl(contexts[c], store_bw, load_bw);
+    }
+    return progress;
+  }
+}
 
-  const auto complete_id = std::empty(ROB) ? std::numeric_limits<uint64_t>::max() : ROB.front().instr_id;
+long O3_CPU::operate_lsq_impl(champsim::core_context& c, champsim::bandwidth& store_bw, champsim::bandwidth& load_bw)
+{
+  const long before = store_bw.amount_consumed() + load_bw.amount_consumed();
+
+  const auto complete_id = std::empty(c.ROB) ? std::numeric_limits<uint64_t>::max() : c.ROB.front().instr_id;
   auto do_complete = [time = current_time, finished = LSQ_ENTRY::precedes(complete_id), this](const auto& x) {
     return finished(x) && x.ready_time <= time && this->do_complete_store(x);
   };
 
-  auto unfetched_begin = std::partition_point(std::begin(SQ), std::end(SQ), [](const auto& x) { return x.fetch_issued; });
-  auto [fetch_begin, fetch_end] =
-      champsim::get_span_p(unfetched_begin, std::end(SQ), store_bw, [time = current_time](const auto& x) { return !x.fetch_issued && x.ready_time <= time; });
+  auto unfetched_begin = std::partition_point(std::begin(c.SQ), std::end(c.SQ), [](const auto& x) { return x.fetch_issued; });
+  auto [fetch_begin, fetch_end] = champsim::get_span_p(unfetched_begin, std::end(c.SQ),
+                                                       champsim::bandwidth{champsim::bandwidth::maximum_type{store_bw.amount_remaining()}},
+                                                       [time = current_time](const auto& x) { return !x.fetch_issued && x.ready_time <= time; });
   store_bw.consume(std::distance(fetch_begin, fetch_end));
-  std::for_each(fetch_begin, fetch_end, [time = current_time, this](auto& sq_entry) {
-    this->do_finish_store(sq_entry);
+  std::for_each(fetch_begin, fetch_end, [time = current_time, this, &c](auto& sq_entry) {
+    this->do_finish_store(c, sq_entry);
     sq_entry.fetch_issued = true;
     sq_entry.ready_time = time;
   });
 
-  auto [complete_begin, complete_end] = champsim::get_span_p(std::cbegin(SQ), std::cend(SQ), store_bw, do_complete);
+  auto [complete_begin, complete_end] = champsim::get_span_p(std::cbegin(c.SQ), std::cend(c.SQ),
+                                                             champsim::bandwidth{champsim::bandwidth::maximum_type{store_bw.amount_remaining()}}, do_complete);
   store_bw.consume(std::distance(complete_begin, complete_end));
-  SQ.erase(complete_begin, complete_end);
+  c.SQ.erase(complete_begin, complete_end);
 
-  champsim::bandwidth load_bw{LQ_WIDTH};
-
-  for (auto& lq_entry : LQ) {
+  for (auto& lq_entry : c.LQ) {
     if (load_bw.has_remaining() && lq_entry.has_value() && lq_entry->producer_id == std::numeric_limits<uint64_t>::max() && !lq_entry->fetch_issued
         && lq_entry->ready_time < current_time) {
       auto success = execute_load(*lq_entry);
       if (success) {
         load_bw.consume();
         lq_entry->fetch_issued = true;
+        lq_entry->issue_time = current_time; // B2.1: start the long-latency counter
       }
     }
   }
 
-  return store_bw.amount_consumed() + load_bw.amount_consumed();
+  return (store_bw.amount_consumed() + load_bw.amount_consumed()) - before;
 }
 
-void O3_CPU::do_finish_store(const LSQ_ENTRY& sq_entry)
+void O3_CPU::do_finish_store(const LSQ_ENTRY& sq_entry) { do_finish_store(ctx(), sq_entry); }
+
+void O3_CPU::do_finish_store(champsim::core_context& c, const LSQ_ENTRY& sq_entry)
 {
   if constexpr (champsim::debug_print) {
     fmt::print("[SQ] {} instr_id: {} vaddr: {}\n", __func__, sq_entry.instr_id, sq_entry.virtual_address);
   }
 
-  sq_entry.finish(std::begin(ROB), std::end(ROB));
+  sq_entry.finish(std::begin(c.ROB), std::end(c.ROB));
 
   // Release dependent loads
   for (std::optional<LSQ_ENTRY>& dependent : sq_entry.lq_depend_on_me) {
     CHAMPSIM_ASSERT(dependent.has_value()); // LQ entry is still allocated
     CHAMPSIM_ASSERT(dependent->producer_id == sq_entry.instr_id);
+    CHAMPSIM_ASSERT(dependent->asid == sq_entry.asid); // a store forwards only to loads in its own address space
 
-    dependent->finish(std::begin(ROB), std::end(ROB));
+    dependent->finish(std::begin(c.ROB), std::end(c.ROB));
     dependent.reset();
   }
 }
@@ -651,6 +1692,8 @@ bool O3_CPU::do_complete_store(const LSQ_ENTRY& sq_entry)
   data_packet.v_address = sq_entry.virtual_address;
   data_packet.instr_id = sq_entry.instr_id;
   data_packet.ip = sq_entry.ip;
+  data_packet.asid[0] = sq_entry.asid[0];
+  data_packet.asid[1] = sq_entry.asid[1];
 
   if constexpr (champsim::debug_print) {
     fmt::print("[SQ] {} instr_id: {} vaddr: {}\n", __func__, data_packet.instr_id, data_packet.v_address);
@@ -665,6 +1708,41 @@ bool O3_CPU::execute_load(const LSQ_ENTRY& lq_entry)
   data_packet.v_address = lq_entry.virtual_address;
   data_packet.instr_id = lq_entry.instr_id;
   data_packet.ip = lq_entry.ip;
+  data_packet.asid[0] = lq_entry.asid[0];
+  data_packet.asid[1] = lq_entry.asid[1];
+  // The load names itself as the only waiter on this request. The returned block
+  // echoes this token end-to-end, so handle_memory_return can complete exactly
+  // this LQ entry, even when another address space's load shares the same
+  // virtual block. This is independent of instr_depend_on_me, which stays the
+  // instruction-fetch dependency set.
+  data_packet.load_waiters = {lq_entry.load_waiter_id};
+
+  // B4.0 sparse slow load: deterministically sample a fraction of demand loads
+  // and mark them slow. The mark travels on the packet: the data caches force a
+  // miss on it (so the load always reaches DRAM) and the LLC adds
+  // slow_extra_latency to the return path. There is no random source, so the
+  // hash is a fixed splitmix64 -- no std::rand, no time seed -- or the
+  // byte-identical lock gates could not pass. Off (enabled false) the whole
+  // block is skipped and the packet is left unmarked.
+  //
+  // The key is (asid, ip, instr_id): instr_id is assigned monotonically by the
+  // tracereader (one id per trace record = one dynamic instruction), so mixing
+  // it in samples DYNAMIC loads -- each executed load independently lands slow
+  // with ~ratio probability -- rather than static load sites. A static (asid,
+  // ip) key degrades on skewed traces (hot-loop sites are almost all cold, so a
+  // 0.5% site sample yields ~0.006% of dynamic loads, not 0.5%).
+  if (bmt_sparse_slow_load_enabled) {
+    uint64_t h = (uint64_t{lq_entry.asid[0]} << 32) ^ lq_entry.ip.to<uint64_t>() ^ uint64_t{lq_entry.instr_id};
+    h = (h ^ (h >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    h = (h ^ (h >> 27)) * 0x94d049bb133111ebULL;
+    h ^= h >> 31;
+    if ((h & 0xffffffffULL) < bmt_sparse_slow_load_threshold) {
+      data_packet.slow = true;
+      data_packet.slow_extra_latency = bmt_sparse_slow_load_extra_latency * clock_period;
+      if (!warmup)
+        ++bmt_sparse_slow_loads;
+    }
+  }
 
   if constexpr (champsim::debug_print) {
     fmt::print("[LQ] {} instr_id: {} vaddr: {}\n", __func__, data_packet.instr_id, data_packet.v_address);
@@ -673,11 +1751,11 @@ bool O3_CPU::execute_load(const LSQ_ENTRY& lq_entry)
   return L1D_bus.issue_read(data_packet);
 }
 
-void O3_CPU::do_complete_execution(ooo_model_instr& instr)
+void O3_CPU::do_complete_execution(champsim::core_context& c, ooo_model_instr& instr)
 {
   for (auto dreg : instr.destination_registers) {
     // mark physical register's data as valid
-    reg_allocator.complete_dest_register(dreg);
+    shared_prf->complete_dest_register(dreg);
   }
 
   instr.completed = true;
@@ -686,7 +1764,7 @@ void O3_CPU::do_complete_execution(ooo_model_instr& instr)
   // analogue of CBP6's execute-time update (cbp2025/lib/uarchsim.cc:352);
   // ChampSim's own last_branch_result already fired for it back at fetch.
   if (instr.is_branch) {
-    impl_branch_execute_resolve(instr.instr_id, instr.ip, instr.branch_target, instr.branch_taken, instr.branch);
+    impl_branch_execute_resolve(instr.instr_id, instr.ip, instr.branch_target, instr.branch_taken, instr.branch, instr.asid);
   }
 
   // Deliver the value this instruction's destination register received, where
@@ -712,73 +1790,190 @@ void O3_CPU::do_complete_execution(ooo_model_instr& instr)
   }
 
   if (instr.branch_mispredicted) {
-    resume_fetch_after_mispredict();
+    resume_fetch_after_mispredict(c);
   }
 }
 
 // Restart fetch after a misprediction and charge the frozen interval, penalty
 // included, to cycles_on_wrong_path.
-void O3_CPU::resume_fetch_after_mispredict()
-{
-  fetch_resume_time = current_time + BRANCH_MISPREDICT_PENALTY;
+void O3_CPU::resume_fetch_after_mispredict() { resume_fetch_after_mispredict(ctx()); }
 
-  if (fetch_stalled_on_mispredict) {
-    sim_stats.cycles_on_wrong_path += static_cast<uint64_t>((fetch_resume_time - fetch_stall_begin) / clock_period);
-    fetch_stalled_on_mispredict = false;
+void O3_CPU::resume_fetch_after_mispredict(champsim::core_context& c)
+{
+  c.fetch_resume_time = current_time + BRANCH_MISPREDICT_PENALTY;
+
+  if (c.fetch_stalled_on_mispredict) {
+    c.sim_stats.cycles_on_wrong_path += static_cast<uint64_t>((c.fetch_resume_time - c.fetch_stall_begin) / clock_period);
+    c.fetch_stalled_on_mispredict = false;
   }
 }
 
 long O3_CPU::complete_inflight_instruction()
 {
+  if constexpr (champsim::defs::max_contexts == 1) {
+    champsim::bandwidth complete_bw{EXEC_WIDTH};
+    return complete_inflight_instruction_impl(ctx(), complete_bw);
+  } else {
+    // Shared scheduler (Stage 3.5): complete by global age, mirroring execute's
+    // oldest-first issue. The writeback width is shared, so the globally oldest
+    // executed instruction completes first, keyed on dispatch_sequence. With a
+    // single context this is the in-order walk bit-for-bit.
+    champsim::bandwidth complete_bw{EXEC_WIDTH};
+    long progress = 0;
+    while (complete_bw.has_remaining()) {
+      champsim::core_context* best_c = nullptr;
+      ooo_model_instr* best = nullptr;
+      uint64_t best_seq = std::numeric_limits<uint64_t>::max();
+
+      for (auto& c : contexts) {
+        for (auto& instr : c.ROB) {
+          if (instr.executed && !instr.completed && instr.ready_time <= current_time && instr.completed_mem_ops == instr.num_mem_ops()) {
+            if (instr.dispatch_sequence < best_seq) {
+              best_c = &c;
+              best = &instr;
+              best_seq = instr.dispatch_sequence;
+            }
+            break; // this context's oldest candidate; later entries are younger
+          }
+        }
+      }
+
+      if (best == nullptr)
+        break;
+
+      do_complete_execution(*best_c, *best);
+      complete_bw.consume();
+      ++progress;
+    }
+    return progress;
+  }
+}
+
+long O3_CPU::complete_inflight_instruction_impl(champsim::core_context& c, champsim::bandwidth& complete_bw)
+{
+  const long before = complete_bw.amount_consumed();
   // update ROB entries with completed executions
-  champsim::bandwidth complete_bw{EXEC_WIDTH};
-  for (auto rob_it = std::begin(ROB); rob_it != std::end(ROB) && complete_bw.has_remaining(); ++rob_it) {
+  for (auto rob_it = std::begin(c.ROB); rob_it != std::end(c.ROB) && complete_bw.has_remaining(); ++rob_it) {
     if (rob_it->executed && !rob_it->completed && (rob_it->ready_time <= current_time) && rob_it->completed_mem_ops == rob_it->num_mem_ops()) {
-      do_complete_execution(*rob_it);
+      do_complete_execution(c, *rob_it);
       complete_bw.consume();
     }
   }
 
-  return complete_bw.amount_consumed();
+  return complete_bw.amount_consumed() - before;
 }
 
 long O3_CPU::handle_memory_return()
 {
   long progress{0};
 
-  for (champsim::bandwidth fetch_bw{FETCH_WIDTH}, l1i_bw{L1I_BANDWIDTH};
-       fetch_bw.has_remaining() && l1i_bw.has_remaining() && !L1I_bus.lower_level->returned.empty(); l1i_bw.consume()) {
-    auto& l1i_entry = L1I_bus.lower_level->returned.front();
+  if constexpr (champsim::defs::max_contexts == 1) {
+    for (champsim::bandwidth fetch_bw{FETCH_WIDTH}, l1i_bw{L1I_BANDWIDTH};
+         fetch_bw.has_remaining() && l1i_bw.has_remaining() && !L1I_bus.lower_level->returned.empty(); l1i_bw.consume()) {
+      auto& l1i_entry = L1I_bus.lower_level->returned.front();
 
-    while (fetch_bw.has_remaining() && !l1i_entry.instr_depend_on_me.empty()) {
-      auto fetched = std::find_if(std::begin(IFETCH_BUFFER), std::end(IFETCH_BUFFER), ooo_model_instr::matches_id(l1i_entry.instr_depend_on_me.front()));
-      if (fetched != std::end(IFETCH_BUFFER) && champsim::block_number{fetched->ip} == champsim::block_number{l1i_entry.v_address} && fetched->fetch_issued) {
-        fetched->fetch_completed = true;
-        fetch_bw.consume();
-        ++progress;
+      while (fetch_bw.has_remaining() && !l1i_entry.instr_depend_on_me.empty()) {
+        auto fetched = std::find_if(std::begin(ctx().IFETCH_BUFFER), std::end(ctx().IFETCH_BUFFER), ooo_model_instr::matches_id(l1i_entry.instr_depend_on_me.front()));
+        if (fetched != std::end(ctx().IFETCH_BUFFER) && champsim::block_number{fetched->ip} == champsim::block_number{l1i_entry.v_address} && fetched->fetch_issued) {
+          CHAMPSIM_ASSERT(fetched->asid[0] == l1i_entry.asid[0] && fetched->asid[1] == l1i_entry.asid[1]); // fetch completion stays within one address space
+          fetched->fetch_completed = true;
+          fetch_bw.consume();
+          ++progress;
 
-        if constexpr (champsim::debug_print) {
-          fmt::print("[IFETCH] {} instr_id: {} fetch completed\n", __func__, fetched->instr_id);
+          if constexpr (champsim::debug_print) {
+            fmt::print("[IFETCH] {} instr_id: {} fetch completed\n", __func__, fetched->instr_id);
+          }
         }
+
+        l1i_entry.instr_depend_on_me.erase(std::begin(l1i_entry.instr_depend_on_me));
       }
 
-      l1i_entry.instr_depend_on_me.erase(std::begin(l1i_entry.instr_depend_on_me));
+      // remove this entry if we have serviced all of its instructions
+      if (l1i_entry.instr_depend_on_me.empty()) {
+        L1I_bus.lower_level->returned.pop_front();
+        ++progress;
+      }
     }
+  } else {
+    // Stage 3.4: a returned L1I line names its dependents by instr_id, which may
+    // live in any context's IFETCH_BUFFER; search them all. FETCH_WIDTH and
+    // L1I_BANDWIDTH stay shared across contexts.
+    for (champsim::bandwidth fetch_bw{FETCH_WIDTH}, l1i_bw{L1I_BANDWIDTH};
+         fetch_bw.has_remaining() && l1i_bw.has_remaining() && !L1I_bus.lower_level->returned.empty(); l1i_bw.consume()) {
+      auto& l1i_entry = L1I_bus.lower_level->returned.front();
 
-    // remove this entry if we have serviced all of its instructions
-    if (l1i_entry.instr_depend_on_me.empty()) {
-      L1I_bus.lower_level->returned.pop_front();
-      ++progress;
+      while (fetch_bw.has_remaining() && !l1i_entry.instr_depend_on_me.empty()) {
+        bool matched = false;
+        for (auto& c : contexts) {
+          auto fetched = std::find_if(std::begin(c.IFETCH_BUFFER), std::end(c.IFETCH_BUFFER), ooo_model_instr::matches_id(l1i_entry.instr_depend_on_me.front()));
+          if (fetched != std::end(c.IFETCH_BUFFER) && champsim::block_number{fetched->ip} == champsim::block_number{l1i_entry.v_address} && fetched->fetch_issued) {
+            CHAMPSIM_ASSERT(fetched->asid[0] == l1i_entry.asid[0] && fetched->asid[1] == l1i_entry.asid[1]); // fetch completion stays within one address space
+            fetched->fetch_completed = true;
+            matched = true;
+            break;
+          }
+        }
+
+        if (matched) {
+          fetch_bw.consume();
+          ++progress;
+
+          if constexpr (champsim::debug_print) {
+            fmt::print("[IFETCH] {} instr_id: {} fetch completed\n", __func__, l1i_entry.instr_depend_on_me.front());
+          }
+        }
+
+        l1i_entry.instr_depend_on_me.erase(std::begin(l1i_entry.instr_depend_on_me));
+      }
+
+      // remove this entry if we have serviced all of its instructions
+      if (l1i_entry.instr_depend_on_me.empty()) {
+        L1I_bus.lower_level->returned.pop_front();
+        ++progress;
+      }
     }
   }
 
   auto l1d_it = std::begin(L1D_bus.lower_level->returned);
   for (champsim::bandwidth l1d_bw{L1D_BANDWIDTH}; l1d_bw.has_remaining() && l1d_it != std::end(L1D_bus.lower_level->returned); l1d_bw.consume(), ++l1d_it) {
-    for (auto& lq_entry : LQ) {
-      if (lq_entry.has_value() && lq_entry->fetch_issued && champsim::block_number{lq_entry->virtual_address} == champsim::block_number{l1d_it->v_address}) {
-        lq_entry->finish(std::begin(ROB), std::end(ROB));
-        lq_entry.reset();
-        ++progress;
+    // A returned L1D line completes every issued load that shares its block and
+    // address space, whichever context owns that load (block+asid completion, as
+    // before Stage 3). Each load and its ROB entry live in the same context.
+    long matched_count = 0;
+    for (auto& c : contexts) {
+      for (auto& lq_entry : c.LQ) {
+        if (lq_entry.has_value() && lq_entry->fetch_issued
+            && champsim::block_number{lq_entry->virtual_address} == champsim::block_number{l1d_it->v_address} && lq_entry->asid[0] == l1d_it->asid[0]
+            && lq_entry->asid[1] == l1d_it->asid[1]) {
+          lq_entry->finish(std::begin(c.ROB), std::end(c.ROB));
+          lq_entry.reset();
+          ++progress;
+          ++matched_count;
+        }
+      }
+    }
+    // B2.4 switch-when-ready: a returned block completes every load that waited
+    // on it (its load_waiters). Those no live LQ entry absorbed (matched_count)
+    // were orphaned by a swap-out clearing their LQ; decrement the owning
+    // threads' outstanding counts so their fetch gates open. Gated on swap so a
+    // default run is byte-identical.
+    if (bmt_swap_enabled) {
+      long orphan_returned = static_cast<long>(l1d_it->load_waiters.size()) - matched_count;
+      for (auto& vt : virtual_threads) {
+        if (orphan_returned <= 0)
+          break;
+        if (vt.outstanding_loads > 0) {
+          const long decrement = std::min(vt.outstanding_loads, orphan_returned);
+          vt.outstanding_loads -= decrement;
+          orphan_returned -= decrement;
+          // B3.0 per-event trace: when a thread's orphaned loads finish
+          // draining, record the switch-when-ready wait it spent in flight
+          // since its swap-out. Inert when the trace switch is off.
+          if (bmt_trace_events && vt.outstanding_loads == 0 && vt.inflight_wait_pending && vt.swap_out_time.has_value()) {
+            bmt_inflight_waits.push_back((current_time - *vt.swap_out_time) / clock_period);
+            vt.inflight_wait_pending = false;
+          }
+        }
       }
     }
     ++progress;
@@ -790,8 +1985,27 @@ long O3_CPU::handle_memory_return()
 
 long O3_CPU::retire_rob()
 {
-  auto [retire_begin, retire_end] =
-      champsim::get_span_p(std::cbegin(ROB), std::cend(ROB), champsim::bandwidth{RETIRE_WIDTH}, [](const auto& x) { return x.completed; });
+  if constexpr (champsim::defs::max_contexts == 1) {
+    champsim::bandwidth retire_bw{RETIRE_WIDTH};
+    return retire_rob_impl(ctx(), retire_bw);
+  } else {
+    // Independent in-order prefixes: each context retires its own completed
+    // prefix, sharing one aggregate RETIRE_WIDTH with a rotating start.
+    champsim::bandwidth retire_bw{RETIRE_WIDTH};
+    long progress = 0;
+    for (std::size_t i = 0; i < contexts.size() && retire_bw.has_remaining(); ++i) {
+      const std::size_t c = (backend_round_robin + i) % contexts.size();
+      progress += retire_rob_impl(contexts[c], retire_bw);
+    }
+    return progress;
+  }
+}
+
+long O3_CPU::retire_rob_impl(champsim::core_context& c, champsim::bandwidth& retire_bw)
+{
+  auto [retire_begin, retire_end] = champsim::get_span_p(std::cbegin(c.ROB), std::cend(c.ROB),
+                                                         champsim::bandwidth{champsim::bandwidth::maximum_type{retire_bw.amount_remaining()}},
+                                                         [](const auto& x) { return x.completed; });
   CHAMPSIM_ASSERT(std::distance(retire_begin, retire_end) >= 0); // end succeeds begin
   if constexpr (champsim::debug_print) {
     std::for_each(retire_begin, retire_end, [cycle = current_time.time_since_epoch() / clock_period](const auto& x) {
@@ -803,7 +2017,7 @@ long O3_CPU::retire_rob()
   // and recycle the old physical registers
   for (auto rob_it = retire_begin; rob_it != retire_end; ++rob_it) {
     for (auto dreg : rob_it->destination_registers) {
-      reg_allocator.retire_dest_register(dreg);
+      c.retire_dest_register(dreg);
     }
   }
 
@@ -811,8 +2025,22 @@ long O3_CPU::retire_rob()
   handle_event<Event::RETIRE>(cpu, retire_begin, retire_end, cycles);
 
   auto retire_count = std::distance(retire_begin, retire_end);
-  num_retired += retire_count;
-  ROB.erase(retire_begin, retire_end);
+  c.num_retired += retire_count;
+
+  // B2.2 livelock-guard bookkeeping: accumulate retired instructions on the
+  // virtual thread bound to this physical slot. Consult-only when BMT is off;
+  // the value feeds swap_out_context's guard, which is gated on bmt_swap_enabled.
+  // An empty slot (slot_map == -1) cannot retire, so the guard just skips it.
+  // B3.1 also keeps the cumulative (swap-in-preserved) count here for the
+  // per-thread weighted-speedup decomposition.
+  const long bound = slot_map.at(static_cast<std::size_t>(c.ctx_index.value));
+  if (bound >= 0) {
+    virtual_threads.at(static_cast<std::size_t>(bound)).retired_since_swapin += retire_count;
+    virtual_threads.at(static_cast<std::size_t>(bound)).num_retired += retire_count;
+  }
+
+  retire_bw.consume(retire_count);
+  c.ROB.erase(retire_begin, retire_end);
 
   return retire_count;
 }
@@ -821,9 +2049,10 @@ void O3_CPU::impl_initialize_branch_predictor() const { branch_module_pimpl->imp
 
 void O3_CPU::impl_branch_predictor_final_stats() const { branch_module_pimpl->impl_branch_predictor_final_stats(); }
 
-void O3_CPU::impl_branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type) const
+void O3_CPU::impl_branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type,
+                                         champsim::address_space_id asid) const
 {
-  branch_module_pimpl->impl_branch_execute_resolve(instr_id, ip, branch_target, taken, branch_type);
+  branch_module_pimpl->impl_branch_execute_resolve(instr_id, ip, branch_target, taken, branch_type, asid);
 }
 
 void O3_CPU::impl_branch_decode_notify(uint64_t instr_id, uint8_t arch_dst_reg) const
@@ -836,26 +2065,29 @@ void O3_CPU::impl_branch_execute_notify(uint64_t instr_id, bool has_value, uint6
   branch_module_pimpl->impl_branch_execute_notify(instr_id, has_value, value);
 }
 
-void O3_CPU::impl_last_branch_result(champsim::address ip, champsim::address target, bool taken, uint8_t branch_type) const
+void O3_CPU::impl_last_branch_result(champsim::address ip, champsim::address target, bool taken, uint8_t branch_type, champsim::address_space_id asid) const
 {
-  branch_module_pimpl->impl_last_branch_result(ip, target, taken, branch_type);
+  branch_module_pimpl->impl_last_branch_result(ip, target, taken, branch_type, asid);
 }
 
-bool O3_CPU::impl_predict_branch(champsim::address ip, champsim::address predicted_target, bool always_taken, uint8_t branch_type) const
+bool O3_CPU::impl_predict_branch(champsim::address ip, champsim::address predicted_target, bool always_taken, uint8_t branch_type,
+                                 champsim::address_space_id asid) const
 {
-  return branch_module_pimpl->impl_predict_branch(ip, predicted_target, always_taken, branch_type);
+  return branch_module_pimpl->impl_predict_branch(ip, predicted_target, always_taken, branch_type, asid);
 }
 
 void O3_CPU::impl_initialize_btb() const { btb_module_pimpl->impl_initialize_btb(); }
 
-void O3_CPU::impl_update_btb(champsim::address ip, champsim::address predicted_target, bool taken, uint8_t branch_type) const
+void O3_CPU::impl_update_btb(champsim::address ip, champsim::address predicted_target, bool taken, uint8_t branch_type, champsim::context_index context,
+                             champsim::address_space_id asid) const
 {
-  btb_module_pimpl->impl_update_btb(ip, predicted_target, taken, branch_type);
+  btb_module_pimpl->impl_update_btb(ip, predicted_target, taken, branch_type, context, asid);
 }
 
-std::pair<champsim::address, bool> O3_CPU::impl_btb_prediction(champsim::address ip, uint8_t branch_type) const
+std::pair<champsim::address, bool> O3_CPU::impl_btb_prediction(champsim::address ip, uint8_t branch_type, champsim::context_index context,
+                                                               champsim::address_space_id asid) const
 {
-  return btb_module_pimpl->impl_btb_prediction(ip, branch_type);
+  return btb_module_pimpl->impl_btb_prediction(ip, branch_type, context, asid);
 }
 
 // LCOV_EXCL_START Exclude the following function from LCOV
@@ -864,20 +2096,21 @@ void O3_CPU::print_deadlock()
   fmt::print("DEADLOCK! CPU {} cycle {}\n", cpu, current_time.time_since_epoch() / clock_period);
 
   auto instr_pack = [period = clock_period, this](const auto& entry) {
-    return std::tuple{entry.instr_id, entry.fetch_issued, entry.fetch_completed, entry.scheduled, entry.executed, entry.completed,
+return std::tuple{entry.instr_id, entry.fetch_issued, entry.fetch_completed, entry.scheduled, entry.executed, entry.completed,
                       // Until do_scheduling renames an entry its operands are architectural IDs.
-                      entry.scheduled ? std::to_string(reg_allocator.count_reg_dependencies(entry)) : std::string{"-"},
+                      entry.scheduled ? std::to_string(shared_prf->count_reg_dependencies(entry)) : std::string{"-"},
                       entry.num_mem_ops() - entry.completed_mem_ops, entry.ready_time.time_since_epoch() / period};
   };
   std::string_view instr_fmt{
       "instr_id: {} fetch_issued: {} fetch_completed: {} scheduled: {} executed: {} completed: {} num_reg_dependent: {} num_mem_ops: {} event: {}"};
-  champsim::range_print_deadlock(IFETCH_BUFFER, "cpu" + std::to_string(cpu) + "_IFETCH", instr_fmt, instr_pack);
-  champsim::range_print_deadlock(DECODE_BUFFER, "cpu" + std::to_string(cpu) + "_DECODE", instr_fmt, instr_pack);
-  champsim::range_print_deadlock(DISPATCH_BUFFER, "cpu" + std::to_string(cpu) + "_DISPATCH", instr_fmt, instr_pack);
-  champsim::range_print_deadlock(ROB, "cpu" + std::to_string(cpu) + "_ROB", instr_fmt, instr_pack);
+  champsim::range_print_deadlock(ctx().IFETCH_BUFFER, "cpu" + std::to_string(cpu) + "_IFETCH", instr_fmt, instr_pack);
+  champsim::range_print_deadlock(ctx().DECODE_BUFFER, "cpu" + std::to_string(cpu) + "_DECODE", instr_fmt, instr_pack);
+  champsim::range_print_deadlock(ctx().DISPATCH_BUFFER, "cpu" + std::to_string(cpu) + "_DISPATCH", instr_fmt, instr_pack);
+  champsim::range_print_deadlock(ctx().ROB, "cpu" + std::to_string(cpu) + "_ROB", instr_fmt, instr_pack);
 
-  // print occupied physical registers
-  reg_allocator.print_deadlock();
+  // print the RATs, then the occupied physical registers
+  ctx().print_deadlock();
+  shared_prf->print_deadlock();
 
   // print LQ entry
   auto lq_pack = [period = clock_period](const auto& entry) {
@@ -901,8 +2134,8 @@ void O3_CPU::print_deadlock()
     return std::tuple{entry.instr_id, entry.virtual_address, entry.fetch_issued, entry.ready_time.time_since_epoch() / period, depend_ids};
   };
   std::string_view sq_fmt{"instr_id: {} address: {} fetch_issued: {} event_cycle: {} LQ waiting: {}"};
-  champsim::range_print_deadlock(LQ, "cpu" + std::to_string(cpu) + "_LQ", lq_fmt, lq_pack);
-  champsim::range_print_deadlock(SQ, "cpu" + std::to_string(cpu) + "_SQ", sq_fmt, sq_pack);
+  champsim::range_print_deadlock(ctx().LQ, "cpu" + std::to_string(cpu) + "_LQ", lq_fmt, lq_pack);
+  champsim::range_print_deadlock(ctx().SQ, "cpu" + std::to_string(cpu) + "_SQ", sq_fmt, sq_pack);
 }
 // LCOV_EXCL_STOP
 
@@ -921,6 +2154,7 @@ void LSQ_ENTRY::finish(std::deque<ooo_model_instr>::iterator begin, std::deque<o
 void LSQ_ENTRY::finish(ooo_model_instr& rob_entry) const
 {
   CHAMPSIM_ASSERT(rob_entry.instr_id == this->instr_id);
+  CHAMPSIM_ASSERT(rob_entry.asid == this->asid); // memory completion stays within one address space
 
   ++rob_entry.completed_mem_ops;
   CHAMPSIM_ASSERT(rob_entry.completed_mem_ops <= rob_entry.num_mem_ops());

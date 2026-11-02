@@ -12,6 +12,11 @@ cache_stats operator-(cache_stats lhs, cache_stats rhs)
   result.hits = lhs.hits - rhs.hits;
   result.misses = lhs.misses - rhs.misses;
 
+  for (std::size_t i = 0; i < result.per_context_load_hits.size(); ++i) {
+    result.per_context_load_hits[i] = lhs.per_context_load_hits[i] - rhs.per_context_load_hits[i];
+    result.per_context_load_misses[i] = lhs.per_context_load_misses[i] - rhs.per_context_load_misses[i];
+  }
+
   result.total_miss_latency_cycles = lhs.total_miss_latency_cycles - rhs.total_miss_latency_cycles;
   return result;
 }

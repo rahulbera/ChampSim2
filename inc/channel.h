@@ -27,6 +27,7 @@
 #include "access_type.h"
 #include "address.h"
 #include "champsim.h"
+#include "chrono.h"
 
 namespace champsim
 {
@@ -62,6 +63,15 @@ class channel
     champsim::address ip{};
 
     std::vector<uint64_t> instr_depend_on_me{};
+    std::vector<uint64_t> load_waiters{};
+
+    // B4.0 sparse slow load. `slow` marks a demand load the core sampled for an
+    // ultra-long return-path wait; the data caches force a miss on it so it
+    // always descends to DRAM, and the LLC adds `slow_extra_latency` (already
+    // scaled to a duration by the core) to its fill. Off == slow=false /
+    // slow_extra_latency zero == byte-identical.
+    bool slow = false;
+    champsim::chrono::clock::duration slow_extra_latency{};
   };
 
   struct response {
@@ -69,13 +79,21 @@ class channel
     champsim::address v_address{};
     champsim::address data{};
     uint32_t pf_metadata = 0;
+    uint32_t cpu = std::numeric_limits<uint32_t>::max();
+    uint8_t asid[2] = {std::numeric_limits<uint8_t>::max(), std::numeric_limits<uint8_t>::max()};
     std::vector<uint64_t> instr_depend_on_me{};
+    std::vector<uint64_t> load_waiters{};
 
-    response(champsim::address addr, champsim::address v_addr, champsim::address data_, uint32_t pf_meta, std::vector<uint64_t> deps)
-        : address(addr), v_address(v_addr), data(data_), pf_metadata(pf_meta), instr_depend_on_me(deps)
+    response(champsim::address addr, champsim::address v_addr, champsim::address data_, uint32_t pf_meta, uint32_t cpu_, uint8_t asid_0, uint8_t asid_1,
+             std::vector<uint64_t> deps, std::vector<uint64_t> waiters = {})
+        : address(addr), v_address(v_addr), data(data_), pf_metadata(pf_meta), cpu(cpu_), asid{asid_0, asid_1}, instr_depend_on_me(deps),
+          load_waiters(waiters)
     {
     }
-    explicit response(request req) : response(req.address, req.v_address, req.data, req.pf_metadata, req.instr_depend_on_me) {}
+    explicit response(request req)
+        : response(req.address, req.v_address, req.data, req.pf_metadata, req.cpu, req.asid[0], req.asid[1], req.instr_depend_on_me, req.load_waiters)
+    {
+    }
   };
 
   template <typename R>

@@ -1,0 +1,32 @@
+# BMT-2/3 scenario: C_phys=2 physical slots, C_virt=3 virtual threads.
+#
+# Overlay on configs/sample.toml. --config may repeat and is applied in
+# command-line order (last definition of a key wins), so apply this AFTER
+# sample.toml:
+#
+#   ./bin/champsim --config configs/sample.toml --config configs/bmt-2-3.toml \
+#     --trace-version=2 -w 1000000 -i 3000000 -- \
+#     sqlite.champsim2 omnetpp.champsim2 llvm.champsim2
+#
+# The C_virt scan (bmt-design.md §0/§9) fixes C_phys=2 and walks C_virt over the
+# four v2 traces in order; 2/3 is the first under-commit arm (one extra virtual
+# thread over the two slots). A long-latency load swaps the running thread out to
+# its IRB cold-storage and LRR selects the suspended third to swap in. The shared
+# physical register file (sample.toml default 128) holds only the two bound
+# threads' committed + in-flight registers at once: rsave releases a swapped-out
+# thread's mappings, rrestore re-allocates them fresh.
+#
+# bmt_switch = "instant" models the swap atomically (no slot stall); the firmware
+# ~60-cycle arm is the A/B comparison knob, not this baseline.
+
+[ooo_cpu.cpu0]
+num_contexts = 2
+num_virtual_threads = 3
+# V2.2 elastic ROB partition: a swapped-out thread's ROB is flushed empty, so it
+# stops counting toward `active` and the remaining slot reclaims the quota.
+rob_partition = "active"
+
+[ooo_cpu.cpu0.bmt]
+enabled = true
+swap_enabled = true
+switch = "instant"

@@ -79,7 +79,13 @@ class CACHE : public champsim::operable
     champsim::chrono::clock::time_point event_cycle = champsim::chrono::clock::time_point::max();
 
     std::vector<uint64_t> instr_depend_on_me{};
+    std::vector<uint64_t> load_waiters{};
     std::vector<std::deque<response_type>*> to_return{};
+
+    // B4.0 sparse slow load: carried through from channel::request so the data
+    // caches can force a miss and the LLC can add the return-path latency.
+    bool slow = false;
+    champsim::chrono::clock::duration slow_extra_latency{};
 
     explicit tag_lookup_type(request_type req) : tag_lookup_type(req, false, false) {}
     tag_lookup_type(const request_type& req, bool local_pref, bool skip);
@@ -107,7 +113,13 @@ public:
     champsim::chrono::clock::time_point time_enqueued;
 
     std::vector<uint64_t> instr_depend_on_me{};
+    std::vector<uint64_t> load_waiters{};
     std::vector<std::deque<response_type>*> to_return{};
+
+    // B4.0 sparse slow load: the MSHR entry keeps the mark so finish_packet at
+    // the LLC can add slow_extra_latency to the fill's ready time.
+    bool slow = false;
+    champsim::chrono::clock::duration slow_extra_latency{};
 
     fill_type(const tag_lookup_type& req, champsim::chrono::clock::time_point _time_enqueued);
     static fill_type merge(fill_type predecessor, fill_type successor);
@@ -144,6 +156,8 @@ private:
   champsim::address module_address(const T& element) const;
 
   auto matches_address(champsim::address address) const;
+  template <typename T>
+  auto matches_tag(const T& pkt) const;
   std::pair<fill_type, request_type> mshr_and_forward_packet(const tag_lookup_type& handle_pkt);
 
   std::deque<tag_lookup_type> internal_PQ{};
@@ -169,6 +183,15 @@ public:
   bool virtual_prefetch;
   // Every lookup hits, including cold blocks. See cache_builder::perfect(bool).
   bool perfect;
+  // B1.4: collect the read-only per-context (per-asid) load-access census. See
+  // cache_builder::per_context_counters(bool). Off means zero-overhead and no
+  // emitted change; on means sim_stats.per_context_load_{hits,misses} fill in.
+  bool per_context_counters;
+  // B4.0: true only for the last-level cache (the LLC), whose fill is where a
+  // sparse slow load's extra return-path latency is added. The per-level data
+  // caches forward the mark down but must NOT add the latency, or it would be
+  // charged once per level. Set by static_environment for the LLC only.
+  bool is_last_level;
   // The translations a TLB holds; null for every other cache. See
   // cache_builder::virtual_memory.
   VirtualMemory* vmem;
@@ -217,6 +240,7 @@ public:
 
   long invalidate_entry(champsim::address inval_addr);
   bool prefetch_line(champsim::address pf_addr, bool fill_this_level, uint32_t prefetch_metadata);
+  bool prefetch_line(champsim::address pf_addr, bool fill_this_level, uint32_t prefetch_metadata, champsim::address_space_id asid, uint32_t pf_cpu);
 
   [[deprecated]] bool prefetch_line(uint64_t pf_addr, bool fill_this_level, uint32_t prefetch_metadata);
 
@@ -236,7 +260,7 @@ public:
 
     virtual void impl_prefetcher_initialize() = 0;
     virtual uint32_t impl_prefetcher_cache_operate(champsim::address addr, champsim::address ip, bool cache_hit, bool useful_prefetch, access_type type,
-                                                   uint32_t metadata_in) = 0;
+                                                   uint32_t metadata_in, champsim::address_space_id asid, uint32_t cpu) = 0;
     virtual uint32_t impl_prefetcher_cache_fill(champsim::address addr, long set, long way, bool prefetch, champsim::address evicted_addr,
                                                 uint32_t metadata_in) = 0;
     virtual void impl_prefetcher_cycle_operate() = 0;
@@ -274,7 +298,7 @@ public:
 
     void impl_prefetcher_initialize() final;
     [[nodiscard]] uint32_t impl_prefetcher_cache_operate(champsim::address addr, champsim::address ip, bool cache_hit, bool useful_prefetch, access_type type,
-                                                         uint32_t metadata_in) final;
+                                                         uint32_t metadata_in, champsim::address_space_id asid, uint32_t cpu) final;
     [[nodiscard]] uint32_t impl_prefetcher_cache_fill(champsim::address addr, long set, long way, bool prefetch, champsim::address evicted_addr,
                                                       uint32_t metadata_in) final;
     void impl_prefetcher_cycle_operate() final;
@@ -325,6 +349,8 @@ public:
   void impl_prefetcher_initialize() const;
   [[nodiscard]] uint32_t impl_prefetcher_cache_operate(champsim::address addr, champsim::address ip, bool cache_hit, bool useful_prefetch, access_type type,
                                                        uint32_t metadata_in) const;
+  [[nodiscard]] uint32_t impl_prefetcher_cache_operate(champsim::address addr, champsim::address ip, bool cache_hit, bool useful_prefetch, access_type type,
+                                                       uint32_t metadata_in, champsim::address_space_id asid, uint32_t triggering_cpu) const;
   [[nodiscard]] uint32_t impl_prefetcher_cache_fill(champsim::address addr, long set, long way, bool prefetch, champsim::address evicted_addr,
                                                     uint32_t metadata_in) const;
   void impl_prefetcher_cycle_operate() const;
@@ -346,8 +372,9 @@ public:
       : champsim::operable(b.m_clock_period), upper_levels(b.m_uls), lower_level(b.m_ll), lower_translate(b.m_lt), NAME(b.m_name), NUM_SET(b.get_num_sets()),
         NUM_WAY(b.get_num_ways()), MSHR_SIZE(b.get_num_mshrs()), PQ_SIZE(b.m_pq_size), HIT_LATENCY(b.get_hit_latency() * b.m_clock_period),
         FILL_LATENCY(b.get_fill_latency() * b.m_clock_period), OFFSET_BITS(b.m_offset_bits), MAX_TAG(b.get_tag_bandwidth()), MAX_FILL(b.get_fill_bandwidth()),
-        prefetch_as_load(b.m_pref_load), match_offset_bits(b.m_wq_full_addr), virtual_prefetch(b.m_va_pref), perfect(b.m_perfect), vmem(b.m_vmem),
-        pref_activate_mask(b.m_pref_act_mask), pref_module_pimpl(std::make_unique<prefetcher_module_model<Ps...>>(this)),
+        prefetch_as_load(b.m_pref_load), match_offset_bits(b.m_wq_full_addr), virtual_prefetch(b.m_va_pref), perfect(b.m_perfect),
+        per_context_counters(b.m_per_context_counters), is_last_level(b.m_is_last_level), vmem(b.m_vmem), pref_activate_mask(b.m_pref_act_mask),
+        pref_module_pimpl(std::make_unique<prefetcher_module_model<Ps...>>(this)),
         repl_module_pimpl(std::make_unique<replacement_module_model<Rs...>>(this))
   {
   }
@@ -384,11 +411,17 @@ void CACHE::prefetcher_module_model<Ps...>::impl_prefetcher_initialize()
 
 template <typename... Ps>
 uint32_t CACHE::prefetcher_module_model<Ps...>::impl_prefetcher_cache_operate(champsim::address addr, champsim::address ip, bool cache_hit,
-                                                                              bool useful_prefetch, access_type type, uint32_t metadata_in)
+                                                                              bool useful_prefetch, access_type type, uint32_t metadata_in,
+                                                                              champsim::address_space_id asid, uint32_t cpu)
 {
   using return_type = uint32_t;
   [[maybe_unused]] auto process_one = [&](auto& p) {
     using namespace champsim::modules;
+    /* Strong addresses, with explicit origin */
+    if constexpr (prefetcher::has_cache_operate<decltype(p), champsim::address, champsim::address, bool, bool, access_type, uint32_t,
+                                                champsim::address_space_id, uint32_t>)
+      return return_type{p.prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata_in, asid, cpu)};
+
     /* Strong addresses */
     if constexpr (prefetcher::has_cache_operate<decltype(p), champsim::address, champsim::address, bool, bool, access_type, uint32_t>)
       return return_type{p.prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata_in)};
