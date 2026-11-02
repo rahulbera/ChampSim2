@@ -624,13 +624,16 @@ overwrite that one.
 - **`SET_ASIDE_CHAMPSIM_MODULE` is not re-entrant.** A module cannot simply
   `#include "ooo_cpu.h"`: `inc/ooo_cpu.h:20-23` sets the flag aside and undefines
   `CHAMPSIM_MODULE`, the `address.h` it pulls in re-defines the macro on its own way
-  out (`inc/address.h:671-673`), and the `util/lru_table.h` at `ooo_cpu.h:46` then
+  out (`inc/address.h:671-673`), and the `util/lru_table.h` at `ooo_cpu.h:43` then
   fires its `#error` from outside its own include guard (`inc/util/lru_table.h:17`).
   Do `#undef CHAMPSIM_MODULE` / include / `#define` at the *outermost* level.
   Upstream ships no module that needs this, which is why the bug survives there; on
   this branch sixteen do — every `cbp6_*` predictor, `perfect_branch`, and all the
   BTBs that reach into the core. `branch/cbp6_tagescl64/cbp6_tagescl64.cc:1-15`
-  explains it in full and is the pattern to copy.
+  explains it in full and is the pattern to copy. `inc/core_context.h`
+  (included at `ooo_cpu.h:37`) uses `msl/lru_table.h`, so it adds no second
+  `#error` and a module can include it; keep it free of `util/` headers that
+  refuse modules.
 - **`CHAMPSIM_TRACE_MEMORY_VALUES=1` changes `ooo_model_instr`'s size in every
   translation unit.** It is build-wide, not per-target: mixing objects across the two
   settings is an ODR violation that produces wrong stats rather than a link error.

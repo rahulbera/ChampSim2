@@ -2,7 +2,7 @@
 // cannot simply #include "ooo_cpu.h". ooo_cpu.h:20-23 sets the flag aside and
 // undefines CHAMPSIM_MODULE; the address.h it then includes finds the flag set
 // on its own way out (inc/address.h, final block) and re-defines
-// CHAMPSIM_MODULE -- so by the time ooo_cpu.h:45 reaches util/lru_table.h, the
+// CHAMPSIM_MODULE -- so by the time ooo_cpu.h:43 reaches util/lru_table.h, the
 // macro is back, and that header's #error fires because it sits outside its own
 // include guard. No shipped branch or BTB module includes ooo_cpu.h, which is
 // why the path is untested upstream.

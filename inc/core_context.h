@@ -12,8 +12,8 @@
 
 #include "core_stats.h"
 #include "instruction.h"
+#include "msl/lru_table.h"
 #include "register_allocator.h"
-#include "util/lru_table.h"
 
 // Per-hardware-context (per-thread) pipeline state.
 //
@@ -53,7 +53,7 @@ struct dib_shift {
   champsim::data::bits shamt;
   auto operator()(champsim::address val) const { return val.slice_upper(shamt); }
 };
-using dib_type = champsim::lru_table<champsim::address, dib_shift, dib_shift>;
+using dib_type = champsim::msl::lru_table<champsim::address, dib_shift, dib_shift>;
 
 struct core_context {
   using stats_type = cpu_stats;
