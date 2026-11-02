@@ -49,18 +49,18 @@ SCENARIO("An exhausted register file does not block scheduling behind in-flight 
     O3_CPU uut{core_with_registers(mock_L1I, mock_L1D, 32)};
 
     for (uint64_t id = 1; id <= 32; ++id)
-      uut.ROB.push_back(ready_instruction(id, {}, {10}));
+      uut.ctx().ROB.push_back(ready_instruction(id, {}, {10}));
     uut.schedule_instruction();
 
-    REQUIRE(std::all_of(std::begin(uut.ROB), std::end(uut.ROB), [](const auto& instr) { return instr.scheduled; }));
-    REQUIRE(uut.reg_allocator.count_free_registers() == 0);
+    REQUIRE(std::all_of(std::begin(uut.ctx().ROB), std::end(uut.ctx().ROB), [](const auto& instr) { return instr.scheduled; }));
+    REQUIRE(uut.ctx().reg_allocator->count_free_registers() == 0);
 
     WHEN("A ready instruction that needs no registers arrives behind them")
     {
-      uut.ROB.push_back(ready_instruction(1000, {}, {}));
+      uut.ctx().ROB.push_back(ready_instruction(1000, {}, {}));
       uut.schedule_instruction();
 
-      THEN("It is scheduled") { REQUIRE(uut.ROB.back().scheduled); }
+      THEN("It is scheduled") { REQUIRE(uut.ctx().ROB.back().scheduled); }
     }
   }
 }
@@ -75,22 +75,22 @@ SCENARIO("A scheduled instruction's physical registers are not looked up as arch
     // Its sources become physical registers 0 and 1. Architectural registers 0
     // and 1 are unmapped, so reading those IDs as architectural makes this
     // instruction look like it needs two more registers.
-    uut.ROB.push_back(ready_instruction(1, {10, 11}, {13}));
+    uut.ctx().ROB.push_back(ready_instruction(1, {10, 11}, {13}));
     uut.schedule_instruction();
 
-    REQUIRE(uut.ROB.front().scheduled);
-    REQUIRE(uut.ROB.front().source_registers == std::vector<int16_t>{0, 1});
-    REQUIRE(uut.reg_allocator.count_free_registers() == 1);
+    REQUIRE(uut.ctx().ROB.front().scheduled);
+    REQUIRE(uut.ctx().ROB.front().source_registers == std::vector<int16_t>{0, 1});
+    REQUIRE(uut.ctx().reg_allocator->count_free_registers() == 1);
 
     WHEN("An instruction that needs the last register arrives behind it")
     {
-      uut.ROB.push_back(ready_instruction(2, {}, {12}));
+      uut.ctx().ROB.push_back(ready_instruction(2, {}, {12}));
       uut.schedule_instruction();
 
       THEN("It is scheduled and takes that register")
       {
-        REQUIRE(uut.ROB.back().scheduled);
-        REQUIRE(uut.reg_allocator.count_free_registers() == 0);
+        REQUIRE(uut.ctx().ROB.back().scheduled);
+        REQUIRE(uut.ctx().reg_allocator->count_free_registers() == 0);
       }
     }
   }
@@ -104,20 +104,20 @@ SCENARIO("Physical register IDs of 256 and above are not used to index the archi
     O3_CPU uut{core_with_registers(mock_L1I, mock_L1D, 260, 1024)};
 
     for (uint64_t id = 1; id <= 256; ++id)
-      uut.ROB.push_back(ready_instruction(id, {}, {200}));
-    uut.ROB.push_back(ready_instruction(257, {10, 11}, {13}));
+      uut.ctx().ROB.push_back(ready_instruction(id, {}, {200}));
+    uut.ctx().ROB.push_back(ready_instruction(257, {10, 11}, {13}));
     uut.schedule_instruction();
 
-    REQUIRE(uut.ROB.back().scheduled);
-    REQUIRE(uut.ROB.back().source_registers == std::vector<int16_t>{256, 257});
-    REQUIRE(uut.reg_allocator.count_free_registers() == 1);
+    REQUIRE(uut.ctx().ROB.back().scheduled);
+    REQUIRE(uut.ctx().ROB.back().source_registers == std::vector<int16_t>{256, 257});
+    REQUIRE(uut.ctx().reg_allocator->count_free_registers() == 1);
 
     WHEN("An instruction that needs the last register arrives behind it")
     {
-      uut.ROB.push_back(ready_instruction(258, {}, {12}));
+      uut.ctx().ROB.push_back(ready_instruction(258, {}, {12}));
       uut.schedule_instruction();
 
-      THEN("It is scheduled") { REQUIRE(uut.ROB.back().scheduled); }
+      THEN("It is scheduled") { REQUIRE(uut.ctx().ROB.back().scheduled); }
     }
   }
 }
@@ -132,9 +132,9 @@ SCENARIO("Renaming stays in program order under register pressure")
     do_nothing_MRC mock_L1I, mock_L1D;
     O3_CPU uut{core_with_registers(mock_L1I, mock_L1D, 3)};
 
-    uut.ROB.push_back(ready_instruction(1, {}, {9}));
-    uut.ROB.push_back(ready_instruction(2, {}, {10, 11, 12}));
-    uut.ROB.push_back(ready_instruction(3, {}, {}));
+    uut.ctx().ROB.push_back(ready_instruction(1, {}, {9}));
+    uut.ctx().ROB.push_back(ready_instruction(2, {}, {10, 11, 12}));
+    uut.ctx().ROB.push_back(ready_instruction(3, {}, {}));
 
     WHEN("The scheduler runs")
     {
@@ -142,10 +142,10 @@ SCENARIO("Renaming stays in program order under register pressure")
 
       THEN("Only the writer is scheduled, because the youngest may not rename before the one waiting")
       {
-        REQUIRE(uut.ROB.at(0).scheduled);
-        REQUIRE_FALSE(uut.ROB.at(1).scheduled);
-        REQUIRE_FALSE(uut.ROB.at(2).scheduled);
-        REQUIRE(uut.reg_allocator.count_free_registers() == 2);
+        REQUIRE(uut.ctx().ROB.at(0).scheduled);
+        REQUIRE_FALSE(uut.ctx().ROB.at(1).scheduled);
+        REQUIRE_FALSE(uut.ctx().ROB.at(2).scheduled);
+        REQUIRE(uut.ctx().reg_allocator->count_free_registers() == 2);
       }
     }
   }
@@ -158,8 +158,8 @@ SCENARIO("An instruction's unmapped sources count against the free registers")
     do_nothing_MRC mock_L1I, mock_L1D;
     O3_CPU uut{core_with_registers(mock_L1I, mock_L1D, 3)};
 
-    uut.ROB.push_back(ready_instruction(1, {}, {9}));
-    uut.ROB.push_back(ready_instruction(2, {10, 11}, {12}));
+uut.ctx().ROB.push_back(ready_instruction(1, {}, {9}));
+    uut.ctx().ROB.push_back(ready_instruction(2, {10, 11}, {12}));
 
     WHEN("The scheduler runs")
     {
@@ -167,9 +167,9 @@ SCENARIO("An instruction's unmapped sources count against the free registers")
 
       THEN("It is not scheduled, and no register is taken for it")
       {
-        REQUIRE(uut.ROB.at(0).scheduled);
-        REQUIRE_FALSE(uut.ROB.at(1).scheduled);
-        REQUIRE(uut.reg_allocator.count_free_registers() == 2);
+        REQUIRE(uut.ctx().ROB.at(0).scheduled);
+        REQUIRE_FALSE(uut.ctx().ROB.at(1).scheduled);
+        REQUIRE(uut.ctx().reg_allocator->count_free_registers() == 2);
       }
     }
   }
@@ -184,7 +184,7 @@ SCENARIO("A repeated unmapped source is counted once")
 
     // Renaming maps the source on its first read, so the second read allocates
     // nothing: the instruction needs 2 registers, not 3.
-    uut.ROB.push_back(ready_instruction(1, {10, 10}, {11}));
+    uut.ctx().ROB.push_back(ready_instruction(1, {10, 10}, {11}));
 
     WHEN("The scheduler runs")
     {
@@ -192,8 +192,8 @@ SCENARIO("A repeated unmapped source is counted once")
 
       THEN("It is renamed, taking both registers")
       {
-        REQUIRE(uut.ROB.front().scheduled);
-        REQUIRE(uut.reg_allocator.count_free_registers() == 0);
+        REQUIRE(uut.ctx().ROB.front().scheduled);
+        REQUIRE(uut.ctx().reg_allocator->count_free_registers() == 0);
       }
     }
   }

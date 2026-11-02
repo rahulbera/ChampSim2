@@ -39,7 +39,7 @@ std::chrono::seconds elapsed_time() { return std::chrono::duration_cast<std::chr
 namespace champsim
 {
 long do_cycle(std::vector<std::reference_wrapper<operable>>& operables, const std::vector<std::reference_wrapper<O3_CPU>>& cpus,
-              std::vector<tracereader>& traces, const std::vector<std::size_t>& trace_index, champsim::chrono::clock& global_clock)
+              std::vector<tracereader>& traces, const std::vector<std::vector<std::size_t>>& trace_index, champsim::chrono::clock& global_clock)
 {
   std::sort(std::begin(operables), std::end(operables),
             [](const champsim::operable& lhs, const champsim::operable& rhs) { return lhs.current_time < rhs.current_time; });
@@ -50,11 +50,20 @@ long do_cycle(std::vector<std::reference_wrapper<operable>>& operables, const st
     progress += op.operate_on(global_clock);
   }
 
-  // Read from trace
+  // Read from trace: one trace per (core, context) pair. trace_index is keyed
+  // [core][context] and names the positional (command-line) index of the trace
+  // feeding that slot; the tracereader already stamped that trace's instructions
+  // with asid {position, position} (D-A: the global trace slot), so this slot's
+  // asid is {trace_index[cpu.cpu][c], trace_index[cpu.cpu][c]} by construction.
+  // do_cycle assigns nothing -- the asid lives in the trace. num_contexts == 1
+  // collapses this to the old single-context read.
   for (O3_CPU& cpu : cpus) {
-    auto& trace = traces.at(trace_index.at(cpu.cpu));
-    for (auto pkt_count = cpu.IN_QUEUE_SIZE - static_cast<long>(std::size(cpu.input_queue)); !trace.eof() && pkt_count > 0; --pkt_count) {
-      cpu.input_queue.push_back(trace());
+    for (std::size_t c = 0; c < std::size(cpu.contexts); ++c) {
+      auto& ctx = cpu.contexts[c];
+      auto& trace = traces.at(trace_index.at(cpu.cpu).at(c));
+      for (auto pkt_count = cpu.IN_QUEUE_SIZE - static_cast<long>(std::size(ctx.input_queue)); !trace.eof() && pkt_count > 0; --pkt_count) {
+        ctx.input_queue.push_back(trace());
+      }
     }
   }
 
@@ -87,6 +96,18 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
   std::vector<double> livelock_threshold{0.01, 0.02, 0.05};
   std::vector<uint64_t> livelock_instr(std::size(cpus), 0);
 
+  // Core-wide retirement progress for the livelock check. This is the SUM over
+  // the core's hardware contexts: it advances whenever ANY context retires, so
+  // two threads legitimately alternating "one stalled, one running" still counts
+  // as progress and is not misflagged as livelock. With one context this is
+  // exactly the old single-context cpu.sim_instr().
+  const auto core_total_instr = [](const O3_CPU& cpu) {
+    long long total = 0;
+    for (std::size_t c = 0; c < std::size(cpu.contexts); ++c)
+      total += cpu.sim_instr(c);
+    return total;
+  };
+
   // Perform phase
   int stalled_cycle{0};
   std::vector<bool> phase_complete(std::size(cpus), false);
@@ -113,7 +134,7 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
       for (O3_CPU& cpu : cpus) {
         // for each threshold
         for (auto thres = std::begin(livelock_threshold); thres != std::end(livelock_threshold); thres++) {
-          double livelock_ipc = std::ceil(cpu.sim_instr() - livelock_instr[cpu.cpu]) / std::ceil(livelock_period);
+          double livelock_ipc = std::ceil(core_total_instr(cpu) - livelock_instr[cpu.cpu]) / std::ceil(livelock_period);
           if (livelock_ipc <= *thres) {
             if (std::distance(std::begin(livelock_threshold), thres) == 0) {
               livelock_trigger = true;
@@ -126,7 +147,7 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
             break;
           }
         }
-        livelock_instr[cpu.cpu] = cpu.sim_instr();
+        livelock_instr[cpu.cpu] = core_total_instr(cpu);
       }
       livelock_timer = 0;
     }
@@ -141,15 +162,23 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
       abort();
     }
 
-    // If any trace reaches EOF, terminate all phases
-    if (std::any_of(std::begin(traces), std::end(traces), [](const auto& tr) { return tr.eof(); })) {
-      std::fill(std::begin(next_phase_complete), std::end(next_phase_complete), true);
-    }
-
-    // Check for phase finish
+    // Check for phase finish. A core is complete when every hardware context has
+    // either retired its share of the phase or exhausted its trace (EOF). An
+    // EOF'd context stops receiving input (do_cycle gates on !trace.eof()) and no
+    // longer participates in the retirement check, but its in-flight instructions
+    // still drain while its sibling keeps running. This merges the old two rules
+    // -- "retire length" and "any trace EOF ends everything" -- into one
+    // per-context predicate, so a short trace no longer cuts its sibling off
+    // mid-phase. contexts.size() == 1 collapses it to the old single-context
+    // union (retire length || trace EOF), byte-identical.
     for (O3_CPU& cpu : cpus) {
-      // Phase complete
-      next_phase_complete[cpu.cpu] = next_phase_complete[cpu.cpu] || (cpu.sim_instr() >= length);
+      bool core_complete = true;
+      for (std::size_t c = 0; c < std::size(cpu.contexts); ++c) {
+        const bool retired = cpu.sim_instr(c) >= length;
+        const bool eof = traces.at(trace_index.at(cpu.cpu).at(c)).eof();
+        core_complete = core_complete && (retired || eof);
+      }
+      next_phase_complete[cpu.cpu] = next_phase_complete[cpu.cpu] || core_complete;
     }
 
     for (O3_CPU& cpu : cpus) {
@@ -158,8 +187,10 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
           op.end_phase(cpu.cpu);
         }
 
-        fmt::print("{} finished CPU {} instructions: {} cycles: {} cumulative IPC: {:.4g} (Simulation time: {:%H hr %M min %S sec})\n", phase_name, cpu.cpu,
-                   cpu.sim_instr(), cpu.sim_cycle(), std::ceil(cpu.sim_instr()) / std::ceil(cpu.sim_cycle()), elapsed_time());
+        for (std::size_t c = 0; c < std::size(cpu.contexts); ++c) {
+          fmt::print("{} finished CPU {} instructions: {} cycles: {} cumulative IPC: {:.4g} (Simulation time: {:%H hr %M min %S sec})\n", phase_name, cpu.cpu,
+                     cpu.sim_instr(c), cpu.sim_cycle(c), std::ceil(cpu.sim_instr(c)) / std::ceil(cpu.sim_cycle(c)), elapsed_time());
+        }
       }
     }
 
@@ -167,19 +198,30 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
   }
 
   for (O3_CPU& cpu : cpus) {
-    fmt::print("{} complete CPU {} instructions: {} cycles: {} cumulative IPC: {:.4g} (Simulation time: {:%H hr %M min %S sec})\n", phase_name, cpu.cpu,
-               cpu.sim_instr(), cpu.sim_cycle(), std::ceil(cpu.sim_instr()) / std::ceil(cpu.sim_cycle()), elapsed_time());
+    for (std::size_t c = 0; c < std::size(cpu.contexts); ++c) {
+      fmt::print("{} complete CPU {} instructions: {} cycles: {} cumulative IPC: {:.4g} (Simulation time: {:%H hr %M min %S sec})\n", phase_name, cpu.cpu,
+                 cpu.sim_instr(c), cpu.sim_cycle(c), std::ceil(cpu.sim_instr(c)) / std::ceil(cpu.sim_cycle(c)), elapsed_time());
+    }
   }
 
   phase_stats stats;
   stats.name = phase.name;
 
-  for (std::size_t i = 0; i < std::size(trace_index); ++i) {
-    stats.trace_names.push_back(trace_names.at(trace_index.at(i)));
+  for (const auto& core_row : trace_index) {
+    for (std::size_t trace_idx : core_row) {
+      stats.trace_names.push_back(trace_names.at(trace_idx));
+    }
   }
 
-  std::transform(std::begin(cpus), std::end(cpus), std::back_inserter(stats.sim_cpu_stats), [](const O3_CPU& cpu) { return cpu.sim_stats; });
-  std::transform(std::begin(cpus), std::end(cpus), std::back_inserter(stats.roi_cpu_stats), [](const O3_CPU& cpu) { return cpu.roi_stats; });
+  // Per-context core statistics, flattened in [core][context] order. contexts
+  // with a single slot collapse this to one row per core, byte-identical to the
+  // previous ctx()-only transform.
+  for (const O3_CPU& cpu : cpus) {
+    for (const auto& c : cpu.contexts) {
+      stats.sim_cpu_stats.push_back(c.sim_stats);
+      stats.roi_cpu_stats.push_back(c.roi_stats);
+    }
+  }
 
   auto caches = env.cache_view();
   std::transform(std::begin(caches), std::end(caches), std::back_inserter(stats.sim_cache_stats), [](const CACHE& cache) { return cache.sim_stats; });

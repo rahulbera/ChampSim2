@@ -31,9 +31,9 @@ SCENARIO("A DIB lookup that finds nothing is counted as a miss")
 
     THEN("No lookup has been counted yet")
     {
-      REQUIRE(uut.sim_stats.dib_lookups() == 0);
-      REQUIRE(uut.sim_stats.dib_hits == 0);
-      REQUIRE(uut.sim_stats.dib_misses == 0);
+      REQUIRE(uut.ctx().sim_stats.dib_lookups() == 0);
+      REQUIRE(uut.ctx().sim_stats.dib_hits == 0);
+      REQUIRE(uut.ctx().sim_stats.dib_misses == 0);
     }
 
     WHEN("An instruction is checked against the DIB")
@@ -43,9 +43,9 @@ SCENARIO("A DIB lookup that finds nothing is counted as a miss")
 
       THEN("The lookup is counted, and counted as a miss")
       {
-        REQUIRE(uut.sim_stats.dib_lookups() == 1);
-        REQUIRE(uut.sim_stats.dib_hits == 0);
-        REQUIRE(uut.sim_stats.dib_misses == 1);
+        REQUIRE(uut.ctx().sim_stats.dib_lookups() == 1);
+        REQUIRE(uut.ctx().sim_stats.dib_hits == 0);
+        REQUIRE(uut.ctx().sim_stats.dib_misses == 1);
       }
     }
   }
@@ -73,9 +73,9 @@ SCENARIO("A lookup that finds the window already in the table is counted as a hi
 
       THEN("The second lookup is counted as a hit, and the first remains a miss")
       {
-        REQUIRE(uut.sim_stats.dib_lookups() == 2);
-        REQUIRE(uut.sim_stats.dib_hits == 1);
-        REQUIRE(uut.sim_stats.dib_misses == 1);
+        REQUIRE(uut.ctx().sim_stats.dib_lookups() == 2);
+        REQUIRE(uut.ctx().sim_stats.dib_hits == 1);
+        REQUIRE(uut.ctx().sim_stats.dib_misses == 1);
       }
     }
 
@@ -86,9 +86,9 @@ SCENARIO("A lookup that finds the window already in the table is counted as a hi
 
       THEN("It is a second lookup, and the table matches on the window")
       {
-        REQUIRE(uut.sim_stats.dib_lookups() == 2);
-        REQUIRE(uut.sim_stats.dib_hits == 1);
-        REQUIRE(uut.sim_stats.dib_misses == 1);
+        REQUIRE(uut.ctx().sim_stats.dib_lookups() == 2);
+        REQUIRE(uut.ctx().sim_stats.dib_hits == 1);
+        REQUIRE(uut.ctx().sim_stats.dib_misses == 1);
       }
     }
   }
@@ -126,7 +126,7 @@ SCENARIO("A cold fetch group misses on every one of its instructions")
     std::array<champsim::operable*, 3> elements{{&uut, &mock_L1I, &mock_L1D}};
 
     for (uint64_t ip : {0x1000ULL, 0x1004ULL, 0x1008ULL, 0x100cULL}) {
-      uut.IFETCH_BUFFER.push_back(champsim::test::instruction_with_ip(ip));
+      uut.ctx().IFETCH_BUFFER.push_back(champsim::test::instruction_with_ip(ip));
     }
 
     WHEN("They are fetched together")
@@ -139,9 +139,9 @@ SCENARIO("A cold fetch group misses on every one of its instructions")
 
       THEN("All four lookups miss -- the fill has not happened yet for any of them")
       {
-        REQUIRE(uut.sim_stats.dib_lookups() == 4);
-        REQUIRE(uut.sim_stats.dib_hits == 0);
-        REQUIRE(uut.sim_stats.dib_misses == 4);
+        REQUIRE(uut.ctx().sim_stats.dib_lookups() == 4);
+        REQUIRE(uut.ctx().sim_stats.dib_hits == 0);
+        REQUIRE(uut.ctx().sim_stats.dib_misses == 4);
       }
     }
   }
@@ -156,19 +156,19 @@ SCENARIO("A window that has already decoded hits when its code runs again")
     auto uut = make_pipelined_core(mock_L1I, mock_L1D);
     std::array<champsim::operable*, 3> elements{{&uut, &mock_L1I, &mock_L1D}};
 
-    uut.IFETCH_BUFFER.push_back(champsim::test::instruction_with_ip(0x1000ULL));
+    uut.ctx().IFETCH_BUFFER.push_back(champsim::test::instruction_with_ip(0x1000ULL));
     for (int i = 0; i < 40; ++i) {
       for (auto op : elements) {
         op->_operate();
       }
     }
 
-    REQUIRE(uut.sim_stats.dib_lookups() == 1);
-    REQUIRE(uut.sim_stats.dib_misses == 1);
+    REQUIRE(uut.ctx().sim_stats.dib_lookups() == 1);
+    REQUIRE(uut.ctx().sim_stats.dib_misses == 1);
 
     WHEN("A later instruction in the same window is fetched")
     {
-      uut.IFETCH_BUFFER.push_back(champsim::test::instruction_with_ip(0x1004ULL));
+      uut.ctx().IFETCH_BUFFER.push_back(champsim::test::instruction_with_ip(0x1004ULL));
       for (int i = 0; i < 40; ++i) {
         for (auto op : elements) {
           op->_operate();
@@ -177,9 +177,9 @@ SCENARIO("A window that has already decoded hits when its code runs again")
 
       THEN("It hits, because decode filled the window in the meantime")
       {
-        REQUIRE(uut.sim_stats.dib_lookups() == 2);
-        REQUIRE(uut.sim_stats.dib_hits == 1);
-        REQUIRE(uut.sim_stats.dib_misses == 1);
+        REQUIRE(uut.ctx().sim_stats.dib_lookups() == 2);
+        REQUIRE(uut.ctx().sim_stats.dib_hits == 1);
+        REQUIRE(uut.ctx().sim_stats.dib_misses == 1);
       }
     }
   }
@@ -199,7 +199,7 @@ SCENARIO("Warmup DIB lookups do not reach the region of interest")
     auto again = champsim::test::instruction_with_ip(0xdeadbeef);
     uut.do_check_dib(again);
 
-    REQUIRE(uut.sim_stats.dib_lookups() == 2);
+    REQUIRE(uut.ctx().sim_stats.dib_lookups() == 2);
 
     WHEN("The next phase begins")
     {
@@ -207,9 +207,9 @@ SCENARIO("Warmup DIB lookups do not reach the region of interest")
 
       THEN("The counters start from zero")
       {
-        REQUIRE(uut.sim_stats.dib_lookups() == 0);
-        REQUIRE(uut.sim_stats.dib_hits == 0);
-        REQUIRE(uut.sim_stats.dib_misses == 0);
+        REQUIRE(uut.ctx().sim_stats.dib_lookups() == 0);
+        REQUIRE(uut.ctx().sim_stats.dib_hits == 0);
+        REQUIRE(uut.ctx().sim_stats.dib_misses == 0);
       }
     }
   }
@@ -225,7 +225,7 @@ SCENARIO("The core counts a DIB lookup for every instruction it fetches")
     std::array<champsim::operable*, 3> elements{{&uut, &mock_L1I, &mock_L1D}};
 
     for (uint64_t ip : {0x1000ULL, 0x2000ULL, 0x3000ULL}) {
-      uut.IFETCH_BUFFER.push_back(champsim::test::instruction_with_ip(ip));
+      uut.ctx().IFETCH_BUFFER.push_back(champsim::test::instruction_with_ip(ip));
     }
 
     WHEN("The core operates")
@@ -238,9 +238,9 @@ SCENARIO("The core counts a DIB lookup for every instruction it fetches")
 
       THEN("Each instruction contributed exactly one lookup, and each missed")
       {
-        REQUIRE(uut.sim_stats.dib_lookups() == 3);
-        REQUIRE(uut.sim_stats.dib_hits == 0);
-        REQUIRE(uut.sim_stats.dib_misses == 3);
+        REQUIRE(uut.ctx().sim_stats.dib_lookups() == 3);
+        REQUIRE(uut.ctx().sim_stats.dib_hits == 0);
+        REQUIRE(uut.ctx().sim_stats.dib_misses == 3);
       }
     }
   }
@@ -295,8 +295,8 @@ SCENARIO("The region of interest freezes when this core finishes, not when anoth
 
       THEN("This core's region of interest has not been captured yet")
       {
-        REQUIRE(uut.sim_stats.dib_lookups() == 3);
-        REQUIRE(uut.roi_stats.dib_lookups() == 0);
+        REQUIRE(uut.ctx().sim_stats.dib_lookups() == 3);
+        REQUIRE(uut.ctx().roi_stats.dib_lookups() == 0);
       }
     }
 
@@ -312,14 +312,14 @@ SCENARIO("The region of interest freezes when this core finishes, not when anoth
 
       THEN("The region of interest holds the four lookups it had at the time")
       {
-        REQUIRE(uut.roi_stats.dib_lookups() == 4);
-        REQUIRE(uut.roi_stats.dib_misses == 4);
+        REQUIRE(uut.ctx().roi_stats.dib_lookups() == 4);
+        REQUIRE(uut.ctx().roi_stats.dib_misses == 4);
       }
 
       THEN("While the whole-phase counters keep running")
       {
-        REQUIRE(uut.sim_stats.dib_lookups() == 5);
-        REQUIRE(uut.sim_stats.dib_misses == 5);
+        REQUIRE(uut.ctx().sim_stats.dib_lookups() == 5);
+        REQUIRE(uut.ctx().sim_stats.dib_misses == 5);
       }
     }
   }
