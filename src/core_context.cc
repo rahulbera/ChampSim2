@@ -17,7 +17,7 @@ PHYSICAL_REGISTER_ID champsim::core_context::rename_dest_register(int16_t reg, c
   PHYSICAL_REGISTER_ID phys_reg = reg_allocator->free_registers.front();
   reg_allocator->free_registers.pop();
   frontend_RAT[reg] = phys_reg;
-  reg_allocator->physical_register_file.at(phys_reg) = {(uint16_t)reg, producer_id, false, true}; // arch_reg_index, valid, busy
+  reg_allocator->physical_register_file.at(phys_reg) = {(uint16_t)reg, producer_id, false, true}; // arch_reg_index, producing_inst_id, valid, busy
 
   return phys_reg;
 }

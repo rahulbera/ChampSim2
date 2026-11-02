@@ -16,12 +16,15 @@
 
 // Per-hardware-context (per-thread) pipeline state.
 //
-// A core_context holds everything a single hardware thread owns privately: its
-// own frontend buffers, its own reorder buffer, its own load/store queues, its
-// own register alias tables, and its own branch predictor state. A physical
-// core with N hardware contexts will hold N core_context objects. Everything
-// the threads share (L1 caches, the physical register file and its free list,
-// bandwidth and capacity constants) stays on the core.
+// A core_context holds the pipeline state a single hardware thread owns
+// privately: its own frontend buffers, its own reorder buffer, its own
+// load/store queues, its own register alias tables, and its fetch-stall
+// bookkeeping. A physical core with N hardware contexts will hold N
+// core_context objects. Everything the threads share (L1 caches, the physical
+// register file and its free list, bandwidth and capacity constants) stays on
+// the core. So do the branch predictor and BTB modules: they are constructed
+// from the O3_CPU and reach the instruction under prediction through
+// O3_CPU::ctx(), which is context 0.
 //
 // Stage 1 has exactly one context per core and does not change the order of
 // operations, so single-context results remain bit-identical.

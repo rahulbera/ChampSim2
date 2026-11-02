@@ -876,7 +876,7 @@ return std::tuple{entry.instr_id, entry.fetch_issued, entry.fetch_completed, ent
   champsim::range_print_deadlock(ctx().DISPATCH_BUFFER, "cpu" + std::to_string(cpu) + "_DISPATCH", instr_fmt, instr_pack);
   champsim::range_print_deadlock(ctx().ROB, "cpu" + std::to_string(cpu) + "_ROB", instr_fmt, instr_pack);
 
-  // print the RATs, then the occupied physical registers
+  // print the RATs, then every physical register
   ctx().print_deadlock();
   shared_prf->print_deadlock();
 
