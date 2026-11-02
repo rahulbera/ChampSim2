@@ -521,14 +521,19 @@ warns/dies on low IPC.
 ### Memory hierarchy & core
 
 `O3_CPU` (`inc/ooo_cpu.h`, `src/ooo_cpu.cc`) models the OoO pipeline
-(fetch→decode→dispatch→schedule→execute→retire, with ROB/LQ/SQ, a DIB decoded-instruction
-buffer, and register renaming via `register_allocator`). Instructions come from
-`tracereader` (`src/tracereader.cc`) filling `cpu.input_queue`. `CACHE` (`inc/cache.h`,
+(fetch→decode→dispatch→schedule→execute→retire). Per-thread state (input queue, pipeline
+buffers, ROB/LQ/SQ, the DIB decoded-instruction buffer, `frontend_RAT`/`backend_RAT` and
+renaming, fetch-stall state, `roi_stats`/`sim_stats`) is a `champsim::core_context`
+(`inc/core_context.h`). `O3_CPU` keeps the shared physical register file (`shared_prf`),
+sizes, widths, latencies, the L1I/L1D buses and the branch predictor and BTB modules, and
+reaches its context through `ctx()`, which is `contexts.front()`: every core currently
+builds one. Instructions come from `tracereader` (`src/tracereader.cc`), which `do_cycle`
+pushes into `cpu.ctx().input_queue`. `CACHE` (`inc/cache.h`,
 `src/cache.cc`) is the generic cache used for every level (L1I/L1D/L2C/LLC and TLBs);
 `PageTableWalker` (`ptw.cc`) + `VirtualMemory` (`vmem.cc`) handle address translation;
 `memory_backend` owns the selected legacy controller or native adapter;
 `DRAM_CONTROLLER`/`DRAM_CHANNEL` (`dram_controller.cc`) implement legacy memory. Stats are split
-into `sim_stats` (whole run) and `roi_stats` (region of interest / sim phase) per component.
+into `sim_stats` (whole run) and `roi_stats` (region of interest / sim phase) per component; the core's pair lives in its context.
 
 ### The module system (`inc/modules.h`)
 
@@ -545,7 +550,10 @@ A module is a C++ class inheriting the matching base and constructible from its 
 pointer (usually `using Base::Base;`). Hooks are **detected at compile time via SFINAE**
 (the `has_*` traits in `modules.h`), so you implement only the hooks you need and the
 simulator calls the first matching overload. The base pointer (`intern_`) gives access to
-the owning `CACHE`/`O3_CPU` (e.g. `NUM_WAY`, `prefetch_line(...)`). See
+the owning `CACHE`/`O3_CPU` (e.g. `NUM_WAY`, `prefetch_line(...)`). A branch predictor or
+BTB reaches per-thread core state through the context: `intern_->ctx().input_queue`,
+`intern_->ctx().roi_stats`, and likewise the ROB, LQ/SQ and DIB; a module written as
+`intern_->input_queue` no longer compiles. `roi_instr()`/`sim_instr()` stay on `O3_CPU`. See
 `docs/src/Modules.rst` for the full hook signatures; `branch/bimodal/` is the minimal
 reference example.
 
