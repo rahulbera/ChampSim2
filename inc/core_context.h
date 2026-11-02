@@ -121,6 +121,15 @@ struct core_context {
     frontend_RAT.fill(-1); // default value for no mapping
     backend_RAT.fill(-1);
   }
+
+  // Move-only. An SQ entry's lq_depend_on_me refers to slots of this context's
+  // LQ. A move takes the LQ's buffer along, so those references stay valid; a
+  // copy's SQ would still refer to the source's LQ.
+  core_context(const core_context&) = delete;
+  core_context& operator=(const core_context&) = delete;
+  core_context(core_context&&) = default;
+  core_context& operator=(core_context&&) = default;
+  ~core_context() = default;
 };
 
 } // namespace champsim
