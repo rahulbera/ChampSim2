@@ -32,10 +32,10 @@ TEST_CASE("Resuming fetch with no stall in progress charges nothing")
   do_nothing_MRC l1i, l1d;
   auto uut = make_core(l1i, l1d);
 
-  REQUIRE_FALSE(uut.fetch_stalled_on_mispredict);
+  REQUIRE_FALSE(uut.ctx().fetch_stalled_on_mispredict);
   uut.resume_fetch_after_mispredict();
 
-  REQUIRE(uut.sim_stats.cycles_on_wrong_path == 0);
+  REQUIRE(uut.ctx().sim_stats.cycles_on_wrong_path == 0);
 }
 
 TEST_CASE("Resuming fetch charges the frozen interval plus the penalty")
@@ -45,15 +45,15 @@ TEST_CASE("Resuming fetch charges the frozen interval plus the penalty")
 
   // Freeze fetch 40 cycles ago.
   constexpr long frozen_for = 40;
-  uut.fetch_stalled_on_mispredict = true;
-  uut.fetch_stall_begin = uut.current_time - (frozen_for * uut.clock_period);
+  uut.ctx().fetch_stalled_on_mispredict = true;
+  uut.ctx().fetch_stall_begin = uut.current_time - (frozen_for * uut.clock_period);
 
   uut.resume_fetch_after_mispredict();
 
   // The charge runs from the freeze until fetch actually restarts, which is
   // BRANCH_MISPREDICT_PENALTY after now.
-  const auto penalty = static_cast<uint64_t>((uut.fetch_resume_time - uut.current_time) / uut.clock_period);
-  REQUIRE(uut.sim_stats.cycles_on_wrong_path == static_cast<uint64_t>(frozen_for) + penalty);
+  const auto penalty = static_cast<uint64_t>((uut.ctx().fetch_resume_time - uut.current_time) / uut.clock_period);
+  REQUIRE(uut.ctx().sim_stats.cycles_on_wrong_path == static_cast<uint64_t>(frozen_for) + penalty);
 }
 
 TEST_CASE("A resumed stall is not charged twice")
@@ -62,16 +62,16 @@ TEST_CASE("A resumed stall is not charged twice")
   do_nothing_MRC l1i, l1d;
   auto uut = make_core(l1i, l1d);
 
-  uut.fetch_stalled_on_mispredict = true;
-  uut.fetch_stall_begin = uut.current_time - (40 * uut.clock_period);
+  uut.ctx().fetch_stalled_on_mispredict = true;
+  uut.ctx().fetch_stall_begin = uut.current_time - (40 * uut.clock_period);
 
   uut.resume_fetch_after_mispredict();
-  const auto after_first = uut.sim_stats.cycles_on_wrong_path;
+  const auto after_first = uut.ctx().sim_stats.cycles_on_wrong_path;
   REQUIRE(after_first > 0);
-  REQUIRE_FALSE(uut.fetch_stalled_on_mispredict);
+  REQUIRE_FALSE(uut.ctx().fetch_stalled_on_mispredict);
 
   uut.resume_fetch_after_mispredict();
-  REQUIRE(uut.sim_stats.cycles_on_wrong_path == after_first);
+  REQUIRE(uut.ctx().sim_stats.cycles_on_wrong_path == after_first);
 }
 
 TEST_CASE("Wrong-path cycles are carried through the stats subtraction")

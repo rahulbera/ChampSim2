@@ -51,19 +51,19 @@ long second_pass_cycles(unsigned dib_hit_latency, bool warmup)
   std::array<champsim::operable*, 3> elements{{&uut, &mock_L1I, &mock_L1D}};
 
   // First pass: misses the DIB, and fills it at decode.
-  uut.IFETCH_BUFFER.insert(std::end(uut.IFETCH_BUFFER), std::begin(test_instructions), std::end(test_instructions));
-  for (long i = 0; uut.num_retired < 1 && i < 500; ++i)
+  uut.ctx().IFETCH_BUFFER.insert(std::end(uut.ctx().IFETCH_BUFFER), std::begin(test_instructions), std::end(test_instructions));
+  for (long i = 0; uut.ctx().num_retired < 1 && i < 500; ++i)
     for (auto op : elements)
       op->_operate();
 
   // Second pass: hits the DIB.
   const auto begin = uut.current_time;
-  uut.IFETCH_BUFFER.insert(std::end(uut.IFETCH_BUFFER), std::begin(test_instructions), std::end(test_instructions));
-  for (long i = 0; uut.num_retired < 2 && i < 500; ++i)
+  uut.ctx().IFETCH_BUFFER.insert(std::end(uut.ctx().IFETCH_BUFFER), std::begin(test_instructions), std::end(test_instructions));
+  for (long i = 0; uut.ctx().num_retired < 2 && i < 500; ++i)
     for (auto op : elements)
       op->_operate();
 
-  REQUIRE(uut.num_retired == 2);
+  REQUIRE(uut.ctx().num_retired == 2);
   return (uut.current_time - begin) / uut.clock_period;
 }
 } // namespace

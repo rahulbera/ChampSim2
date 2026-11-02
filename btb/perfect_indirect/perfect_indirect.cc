@@ -35,8 +35,8 @@ std::pair<champsim::address, bool> perfect_indirect::btb_prediction(champsim::ad
     //
     // The instruction under prediction is input_queue.front() -- see
     // branch/perfect_branch/perfect_branch.h for why that holds.
-    if (intern_ != nullptr && !std::empty(intern_->input_queue)) {
-      const auto& instr = intern_->input_queue.front();
+    if (intern_ != nullptr && !std::empty(intern_->ctx().input_queue)) {
+      const auto& instr = intern_->ctx().input_queue.front();
       if (instr.branch == BRANCH_INDIRECT || instr.branch == BRANCH_INDIRECT_CALL) {
         return {instr.branch_target, true};
       }

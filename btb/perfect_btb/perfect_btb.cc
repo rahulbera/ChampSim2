@@ -10,7 +10,7 @@
 std::pair<champsim::address, bool> perfect_btb::btb_prediction(champsim::address /*ip*/)
 {
   // intern_ is null in unit tests, which construct the module without a core.
-  if (intern_ == nullptr || std::empty(intern_->input_queue)) {
+  if (intern_ == nullptr || std::empty(intern_->ctx().input_queue)) {
     return {champsim::address{}, false};
   }
 
@@ -21,5 +21,5 @@ std::pair<champsim::address, bool> perfect_btb::btb_prediction(champsim::address
   // always_taken is false by construction -- see the header: reporting true here
   // would override the direction predictor and turn every correctly-predicted
   // not-taken conditional into a misprediction.
-  return {intern_->input_queue.front().branch_target, false};
+  return {intern_->ctx().input_queue.front().branch_target, false};
 }

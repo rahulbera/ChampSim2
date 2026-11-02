@@ -36,6 +36,11 @@ One way to do this, if your module's constructor has an empty body, is to inheri
         using champsim::modules::prefetcher::prefetcher;
     };
 
+For branch predictors and BTBs, per-thread core state (input queue, instruction buffers, ROB, LQ/SQ, DIB, register alias tables, ``roi_stats``, ``sim_stats``) lives in a ``champsim::core_context`` (``inc/core_context.h``), reached as ``intern_->ctx()``, for example ``intern_->ctx().input_queue``.
+Each core currently has exactly one context.
+A module written as ``intern_->input_queue`` no longer compiles; insert ``ctx().``.
+The former ``reg_allocator`` is split into ``intern_->shared_prf`` (the physical register file) and the alias tables on ``intern_->ctx()``.
+
 A module may implement any of the listed member functions.
 If a member function has overloads listed, any of them may be implemented, and the simulator will select the first candidate overload in the list.
 

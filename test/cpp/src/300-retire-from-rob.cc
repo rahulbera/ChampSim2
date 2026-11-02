@@ -15,8 +15,8 @@ SCENARIO("An empty ROB does not retire any instructions")
                    .fetch_queues(&mock_L1I.queues)
                    .data_queues(&mock_L1D.queues)};
 
-    auto old_rob_occupancy = std::size(uut.ROB);
-    auto old_num_retired = uut.num_retired;
+    auto old_rob_occupancy = std::size(uut.ctx().ROB);
+    auto old_num_retired = uut.ctx().num_retired;
 
     WHEN("A cycle happens")
     {
@@ -25,8 +25,8 @@ SCENARIO("An empty ROB does not retire any instructions")
 
       THEN("The number of retired instructions stays the same")
       {
-        REQUIRE(std::size(uut.ROB) == old_rob_occupancy);
-        REQUIRE(uut.num_retired == old_num_retired);
+        REQUIRE(std::size(uut.ctx().ROB) == old_rob_occupancy);
+        REQUIRE(uut.ctx().num_retired == old_num_retired);
       }
     }
   }
@@ -43,34 +43,34 @@ SCENARIO("A completed instruction can be retired")
                    .fetch_queues(&mock_L1I.queues)
                    .data_queues(&mock_L1D.queues)};
 
-    uut.ROB.push_back(champsim::test::instruction_with_ip(1));
+    uut.ctx().ROB.push_back(champsim::test::instruction_with_ip(1));
 
-    auto old_rob_occupancy = std::size(uut.ROB);
-    auto old_num_retired = uut.num_retired;
+    auto old_rob_occupancy = std::size(uut.ctx().ROB);
+    auto old_num_retired = uut.ctx().num_retired;
 
     WHEN("The instruction is not completed")
     {
-      uut.ROB.front().completed = false;
+      uut.ctx().ROB.front().completed = false;
       for (auto op : std::array<champsim::operable*, 3>{{&uut, &mock_L1I, &mock_L1D}})
         op->_operate();
 
       THEN("The number of retired instructions stays the same")
       {
-        REQUIRE(std::size(uut.ROB) == old_rob_occupancy);
-        REQUIRE(uut.num_retired == old_num_retired);
+        REQUIRE(std::size(uut.ctx().ROB) == old_rob_occupancy);
+        REQUIRE(uut.ctx().num_retired == old_num_retired);
       }
     }
 
     WHEN("The instruction has been completed")
     {
-      uut.ROB.front().completed = true;
+      uut.ctx().ROB.front().completed = true;
       for (auto op : std::array<champsim::operable*, 3>{{&uut, &mock_L1I, &mock_L1D}})
         op->_operate();
 
       THEN("The instruction is retired")
       {
-        REQUIRE(std::size(uut.ROB) == 0);
-        REQUIRE(uut.num_retired == old_num_retired + 1);
+        REQUIRE(std::size(uut.ctx().ROB) == 0);
+        REQUIRE(uut.ctx().num_retired == old_num_retired + 1);
       }
     }
   }
@@ -89,38 +89,38 @@ SCENARIO("Completed instructions are retired in order")
 
     std::vector test_instructions(retire_bandwidth, champsim::test::instruction_with_ip(1));
 
-    uut.ROB.insert(std::end(uut.ROB), std::begin(test_instructions), std::end(test_instructions));
+    uut.ctx().ROB.insert(std::end(uut.ctx().ROB), std::begin(test_instructions), std::end(test_instructions));
 
-    auto old_rob_occupancy = std::size(uut.ROB);
-    auto old_num_retired = uut.num_retired;
+    auto old_rob_occupancy = std::size(uut.ctx().ROB);
+    auto old_num_retired = uut.ctx().num_retired;
 
     WHEN("The second instruction is completed")
     {
-      uut.ROB[0].completed = false;
-      uut.ROB[1].completed = true;
+      uut.ctx().ROB[0].completed = false;
+      uut.ctx().ROB[1].completed = true;
 
       for (auto op : std::array<champsim::operable*, 3>{{&uut, &mock_L1I, &mock_L1D}})
         op->_operate();
 
       THEN("No instructions are retired")
       {
-        REQUIRE(std::size(uut.ROB) == old_rob_occupancy);
-        REQUIRE(uut.num_retired == old_num_retired);
+        REQUIRE(std::size(uut.ctx().ROB) == old_rob_occupancy);
+        REQUIRE(uut.ctx().num_retired == old_num_retired);
       }
     }
 
     WHEN("Both instructions are completed")
     {
-      uut.ROB[0].completed = true;
-      uut.ROB[1].completed = true;
+      uut.ctx().ROB[0].completed = true;
+      uut.ctx().ROB[1].completed = true;
 
       for (auto op : std::array<champsim::operable*, 3>{{&uut, &mock_L1I, &mock_L1D}})
         op->_operate();
 
       THEN("Both instructions are retired")
       {
-        REQUIRE(std::size(uut.ROB) == 0);
-        REQUIRE(uut.num_retired == old_num_retired + retire_bandwidth);
+        REQUIRE(std::size(uut.ctx().ROB) == 0);
+        REQUIRE(uut.ctx().num_retired == old_num_retired + retire_bandwidth);
       }
     }
   }
@@ -140,23 +140,23 @@ SCENARIO("The retire bandwidth limits the number of retirements per cycle")
 
     std::vector test_instructions(num_instrs, champsim::test::instruction_with_ip(1));
 
-    uut.ROB.insert(std::end(uut.ROB), std::begin(test_instructions), std::end(test_instructions));
+    uut.ctx().ROB.insert(std::end(uut.ctx().ROB), std::begin(test_instructions), std::end(test_instructions));
 
-    auto old_rob_occupancy = std::size(uut.ROB);
-    auto old_num_retired = uut.num_retired;
+    auto old_rob_occupancy = std::size(uut.ctx().ROB);
+    auto old_num_retired = uut.ctx().num_retired;
 
     WHEN("All instructions are completed")
     {
-      uut.ROB[0].completed = true;
-      uut.ROB[1].completed = true;
+      uut.ctx().ROB[0].completed = true;
+      uut.ctx().ROB[1].completed = true;
 
       for (auto op : std::array<champsim::operable*, 3>{{&uut, &mock_L1I, &mock_L1D}})
         op->_operate();
 
       THEN("The bandwidth of instructions are retired")
       {
-        REQUIRE_THAT(uut.ROB, Catch::Matchers::SizeIs(old_rob_occupancy - retire_bandwidth));
-        REQUIRE(uut.num_retired == old_num_retired + retire_bandwidth);
+        REQUIRE_THAT(uut.ctx().ROB, Catch::Matchers::SizeIs(old_rob_occupancy - retire_bandwidth));
+        REQUIRE(uut.ctx().num_retired == old_num_retired + retire_bandwidth);
       }
 
       for (auto op : std::array<champsim::operable*, 3>{{&uut, &mock_L1I, &mock_L1D}})
@@ -164,8 +164,8 @@ SCENARIO("The retire bandwidth limits the number of retirements per cycle")
 
       AND_THEN("The remaining instructions are retired")
       {
-        REQUIRE(std::size(uut.ROB) == 0);
-        REQUIRE(uut.num_retired == old_num_retired + num_instrs);
+        REQUIRE(std::size(uut.ctx().ROB) == 0);
+        REQUIRE(uut.ctx().num_retired == old_num_retired + num_instrs);
       }
     }
   }

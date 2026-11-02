@@ -12,7 +12,7 @@ bool perfect_branch::predict_branch(champsim::address /*ip*/, champsim::address 
   // intern_ is null in unit tests, which construct the module without a core.
   // Predicting not-taken is the conventional fallback and keeps the module
   // constructible in isolation.
-  if (intern_ == nullptr || std::empty(intern_->input_queue)) {
+  if (intern_ == nullptr || std::empty(intern_->ctx().input_queue)) {
     return false;
   }
 
@@ -21,5 +21,5 @@ bool perfect_branch::predict_branch(champsim::address /*ip*/, champsim::address 
   // branches, because at this point it does not yet know which it has; for a
   // non-branch, branch_taken is false and the result is discarded, so returning
   // it unconditionally is correct.
-  return intern_->input_queue.front().branch_taken;
+  return intern_->ctx().input_queue.front().branch_taken;
 }

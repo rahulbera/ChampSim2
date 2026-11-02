@@ -23,9 +23,9 @@ SCENARIO("The core issues loads only after its registers are finished")
     consumer.source_registers.push_back(1);
     consumer.instr_id = 2;
 
-    uut.DISPATCH_BUFFER.push_back(producer);
-    uut.DISPATCH_BUFFER.push_back(consumer);
-    for (auto& instr : uut.DISPATCH_BUFFER)
+    uut.ctx().DISPATCH_BUFFER.push_back(producer);
+    uut.ctx().DISPATCH_BUFFER.push_back(consumer);
+    for (auto& instr : uut.ctx().DISPATCH_BUFFER)
       instr.ready_time = champsim::chrono::clock::time_point{};
 
     // auto old_cycle = uut.current_cycle();
@@ -37,18 +37,18 @@ SCENARIO("The core issues loads only after its registers are finished")
           op->_operate();
       }
 
-      THEN("The ROB has two entries") { REQUIRE(std::size(uut.ROB) == 2); }
+      THEN("The ROB has two entries") { REQUIRE(std::size(uut.ctx().ROB) == 2); }
 
       THEN("The load queue has one entry that has not been issued")
       {
-        REQUIRE(std::count_if(std::begin(uut.LQ), std::end(uut.LQ), [](auto x) { return x.has_value(); }) == 1);
-        REQUIRE(uut.LQ.at(0)->fetch_issued == false);
+        REQUIRE(std::count_if(std::begin(uut.ctx().LQ), std::end(uut.ctx().LQ), [](auto x) { return x.has_value(); }) == 1);
+        REQUIRE(uut.ctx().LQ.at(0)->fetch_issued == false);
         REQUIRE(mock_L1D.packet_count() == 0);
       }
 
       AND_WHEN("The consumer is executed")
       {
-        for (int i = 0; i < 10000 && !uut.ROB.back().executed; ++i) {
+        for (int i = 0; i < 10000 && !uut.ctx().ROB.back().executed; ++i) {
           for (auto op : std::array<champsim::operable*, 3>{{&uut, &mock_L1I, &mock_L1D}})
             op->_operate();
         }
@@ -57,8 +57,8 @@ SCENARIO("The core issues loads only after its registers are finished")
 
         THEN("The load queue entry is issued")
         {
-          auto found = std::find_if(std::begin(uut.LQ), std::end(uut.LQ), [](auto x) { return x.has_value(); });
-          REQUIRE(found != std::end(uut.LQ));
+          auto found = std::find_if(std::begin(uut.ctx().LQ), std::end(uut.ctx().LQ), [](auto x) { return x.has_value(); });
+          REQUIRE(found != std::end(uut.ctx().LQ));
           REQUIRE((*found)->fetch_issued == true);
           REQUIRE(mock_L1D.packet_count() == 1);
         }
