@@ -109,11 +109,11 @@ TEST_CASE("The core's store-queue diagnostics name the loads waiting on each sto
   do_nothing_MRC mock_L1I, mock_L1D;
   O3_CPU uut{champsim::core_builder{}.lq_size(4).sq_size(4).fetch_queues(&mock_L1I.queues).data_queues(&mock_L1D.queues)};
   const std::array<uint8_t, 2> asid{0, 0};
-  uut.SQ.emplace_back(champsim::address{0x1000}, 5, champsim::address{0x400}, asid);
+  uut.ctx().SQ.emplace_back(champsim::address{0x1000}, 5, champsim::address{0x400}, asid);
   for (auto [slot, load] : {std::pair{0, 7}, std::pair{1, 9}}) {
-    uut.LQ.at(slot).emplace(champsim::address{0x1000}, load, champsim::address{0x404}, asid);
-    uut.LQ.at(slot)->producer_id = 5;
-    uut.SQ.back().lq_depend_on_me.emplace_back(uut.LQ.at(slot));
+    uut.ctx().LQ.at(slot).emplace(champsim::address{0x1000}, load, champsim::address{0x404}, asid);
+    uut.ctx().LQ.at(slot)->producer_id = 5;
+    uut.ctx().SQ.back().lq_depend_on_me.emplace_back(uut.ctx().LQ.at(slot));
   }
 
   SECTION("While the store has not issued, both loads wait on it")
@@ -126,9 +126,9 @@ TEST_CASE("The core's store-queue diagnostics name the loads waiting on each sto
   {
     // do_finish_store releases each waiting load but leaves lq_depend_on_me
     // referring to the slots, and a younger load can take one.
-    uut.SQ.back().fetch_issued = true;
-    uut.LQ.at(0).reset();
-    uut.LQ.at(1).emplace(champsim::address{0x2000}, 11, champsim::address{0x408}, asid);
+    uut.ctx().SQ.back().fetch_issued = true;
+    uut.ctx().LQ.at(0).reset();
+    uut.ctx().LQ.at(1).emplace(champsim::address{0x2000}, 11, champsim::address{0x408}, asid);
     const auto printed = stdout_of([&] { uut.print_deadlock(); });
     REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("instr_id: 5 address: 0x1000") && Catch::Matchers::ContainsSubstring("LQ waiting: []"));
   }
@@ -148,15 +148,15 @@ TEST_CASE("The core's deadlock diagnostics count register dependencies only for 
     auto instr = champsim::test::instruction_with_ip(id);
     instr.instr_id = id;
     instr.ready_time = champsim::chrono::clock::time_point{};
-    uut.ROB.push_back(instr);
+    uut.ctx().ROB.push_back(instr);
   }
-  uut.ROB.at(0).destination_registers = {5};                                                // renamed: writes a register not yet valid
-  uut.ROB.at(1).source_registers = {5};                                                     // renamed: waits on that register
-  uut.ROB.at(2).source_registers = {3};                                                     // architectural 3; physical 3 is not valid
-  uut.ROB.at(2).ready_time = champsim::chrono::clock::time_point{} + std::chrono::hours{1}; // not ready, so not renamed
+  uut.ctx().ROB.at(0).destination_registers = {5};                                                // renamed: writes a register not yet valid
+  uut.ctx().ROB.at(1).source_registers = {5};                                                     // renamed: waits on that register
+  uut.ctx().ROB.at(2).source_registers = {3};                                                     // architectural 3; physical 3 is not valid
+  uut.ctx().ROB.at(2).ready_time = champsim::chrono::clock::time_point{} + std::chrono::hours{1}; // not ready, so not renamed
   uut.schedule_instruction();
-  REQUIRE(uut.ROB.at(1).scheduled);
-  REQUIRE_FALSE(uut.ROB.at(2).scheduled);
+  REQUIRE(uut.ctx().ROB.at(1).scheduled);
+  REQUIRE_FALSE(uut.ctx().ROB.at(2).scheduled);
 
   const auto printed = stdout_of([&] { uut.print_deadlock(); });
   const auto line_of = [&](uint64_t id) {

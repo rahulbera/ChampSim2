@@ -14,16 +14,17 @@ SCENARIO("The register allocation logic correctly reassigns physical register na
   {
     constexpr int PHYSICALREGS = 128;
     RegisterAllocator ra{PHYSICALREGS};
+    champsim::core_context ctx{&ra};
 
     WHEN("A write and then a read occurs to the same logical register")
     {
       auto write1 = champsim::test::instruction_with_ip(0);
       write1.destination_registers.push_back(5);
-      write1.destination_registers[0] = ra.rename_dest_register(write1.destination_registers[0], write1.instr_id);
+      write1.destination_registers[0] = ctx.rename_dest_register(write1.destination_registers[0], write1.instr_id);
 
       auto read1 = champsim::test::instruction_with_ip(1);
       read1.source_registers.push_back(5);
-      read1.source_registers[0] = ra.rename_src_register(read1.source_registers[0]);
+      read1.source_registers[0] = ctx.rename_src_register(read1.source_registers[0]);
 
       THEN("The dest. register of the first and the source register of the second instruction match.")
       {
@@ -36,7 +37,7 @@ SCENARIO("The register allocation logic correctly reassigns physical register na
       {
         auto write2 = champsim::test::instruction_with_ip(2);
         write2.destination_registers.push_back(5);
-        write2.destination_registers[0] = ra.rename_dest_register(write2.destination_registers[0], write2.instr_id);
+        write2.destination_registers[0] = ctx.rename_dest_register(write2.destination_registers[0], write2.instr_id);
 
         THEN("The destination physical register does not match the previously assigned physical register.")
         {
@@ -47,7 +48,7 @@ SCENARIO("The register allocation logic correctly reassigns physical register na
         {
           auto read2 = champsim::test::instruction_with_ip(3);
           read2.source_registers.push_back(5);
-          read2.source_registers[0] = ra.rename_src_register(read2.source_registers[0]);
+          read2.source_registers[0] = ctx.rename_src_register(read2.source_registers[0]);
 
           THEN("The physical register source matches the newly assigned register.")
           {
@@ -63,7 +64,7 @@ SCENARIO("The register allocation logic correctly reassigns physical register na
     {
       auto read1 = champsim::test::instruction_with_ip(0);
       read1.source_registers.push_back(2);
-      read1.source_registers[0] = ra.rename_src_register(read1.source_registers[0]);
+      read1.source_registers[0] = ctx.rename_src_register(read1.source_registers[0]);
 
       THEN("The read has no invalid (unready) register operands")
       {
@@ -78,10 +79,10 @@ SCENARIO("The register allocation logic correctly reassigns physical register na
       {
         auto write1 = champsim::test::instruction_with_ip(1);
         write1.destination_registers.push_back(2);
-        write1.destination_registers[0] = ra.rename_dest_register(write1.destination_registers[0], write1.instr_id);
+        write1.destination_registers[0] = ctx.rename_dest_register(write1.destination_registers[0], write1.instr_id);
         auto read2 = champsim::test::instruction_with_ip(0);
         read2.source_registers.push_back(2);
-        read2.source_registers[0] = ra.rename_src_register(read2.source_registers[0]);
+        read2.source_registers[0] = ctx.rename_src_register(read2.source_registers[0]);
 
         THEN("There are PHYSICALREGS-2 free physical registers.") { REQUIRE(ra.count_free_registers() == PHYSICALREGS - 2); }
 
@@ -94,7 +95,7 @@ SCENARIO("The register allocation logic correctly reassigns physical register na
         AND_WHEN("The write is completed and retires")
         {
           ra.complete_dest_register(write1.destination_registers[0]);
-          ra.retire_dest_register(write1.destination_registers[0]);
+          ctx.retire_dest_register(write1.destination_registers[0]);
           THEN("The read is no longer waiting on any registers to become valid.") { REQUIRE(ra.count_reg_dependencies(read2) == 0); }
           THEN("There are PHYSICALREGS-1 free physical registers.") { REQUIRE(ra.count_free_registers() == PHYSICALREGS - 1); }
         }
@@ -105,11 +106,11 @@ SCENARIO("The register allocation logic correctly reassigns physical register na
     {
       auto write1 = champsim::test::instruction_with_ip(0);
       write1.destination_registers.push_back(3);
-      write1.destination_registers[0] = ra.rename_dest_register(write1.destination_registers[0], write1.instr_id);
+      write1.destination_registers[0] = ctx.rename_dest_register(write1.destination_registers[0], write1.instr_id);
       for (int i = 0; i < 500; ++i) {
         auto read1 = champsim::test::instruction_with_ip(i + 1);
         read1.source_registers.push_back(3);
-        read1.source_registers[0] = ra.rename_src_register(read1.source_registers[0]);
+        read1.source_registers[0] = ctx.rename_src_register(read1.source_registers[0]);
         THEN("The source of the last read is physical register 0.") { REQUIRE(read1.source_registers[0] == 0); }
       }
       THEN("Physical Register 0 is not in the list of free registers.") { REQUIRE(ra.count_free_registers() == PHYSICALREGS - 1); }
@@ -117,7 +118,7 @@ SCENARIO("The register allocation logic correctly reassigns physical register na
       {
         auto write2 = champsim::test::instruction_with_ip(501);
         write2.destination_registers.push_back(3);
-        write2.destination_registers[0] = ra.rename_dest_register(write2.destination_registers[0], write2.instr_id);
+        write2.destination_registers[0] = ctx.rename_dest_register(write2.destination_registers[0], write2.instr_id);
         THEN("The destination of the new write is physical register 1") { REQUIRE(write2.destination_registers[0] == 1); }
       }
     }
@@ -128,8 +129,8 @@ SCENARIO("The register allocation logic correctly reassigns physical register na
         auto inst = champsim::test::instruction_with_ip(i);
         inst.destination_registers.push_back(3);
         inst.source_registers.push_back(3);
-        inst.source_registers[0] = ra.rename_src_register(inst.source_registers[0]);
-        inst.destination_registers[0] = ra.rename_dest_register(inst.destination_registers[0], inst.instr_id);
+        inst.source_registers[0] = ctx.rename_src_register(inst.source_registers[0]);
+        inst.destination_registers[0] = ctx.rename_dest_register(inst.destination_registers[0], inst.instr_id);
 
         THEN("The source of instruction n is physical register n") { REQUIRE(inst.source_registers[0] == i); }
       }
@@ -141,9 +142,9 @@ SCENARIO("The register allocation logic correctly reassigns physical register na
       inst.destination_registers.push_back(3);
       inst.source_registers.push_back(4);
       inst.source_registers.push_back(4);
-      inst.source_registers[0] = ra.rename_src_register(inst.source_registers[0]);
-      inst.source_registers[1] = ra.rename_src_register(inst.source_registers[1]);
-      inst.destination_registers[0] = ra.rename_dest_register(inst.destination_registers[0], inst.instr_id);
+      inst.source_registers[0] = ctx.rename_src_register(inst.source_registers[0]);
+      inst.source_registers[1] = ctx.rename_src_register(inst.source_registers[1]);
+      inst.destination_registers[0] = ctx.rename_dest_register(inst.destination_registers[0], inst.instr_id);
       THEN("The two sources of the instruction have the same physical register") { REQUIRE(inst.source_registers[0] == inst.source_registers[1]); }
       AND_WHEN("Ten repetitions of the instruction of the form X0 = X1 op X1")
       {
@@ -152,9 +153,9 @@ SCENARIO("The register allocation logic correctly reassigns physical register na
           inst.destination_registers.push_back(3);
           inst.source_registers.push_back(4);
           inst.source_registers.push_back(4);
-          inst.source_registers[0] = ra.rename_src_register(inst.source_registers[0]);
-          inst.source_registers[1] = ra.rename_src_register(inst.source_registers[1]);
-          inst.destination_registers[0] = ra.rename_dest_register(inst.destination_registers[0], inst.instr_id);
+          inst.source_registers[0] = ctx.rename_src_register(inst.source_registers[0]);
+          inst.source_registers[1] = ctx.rename_src_register(inst.source_registers[1]);
+          inst.destination_registers[0] = ctx.rename_dest_register(inst.destination_registers[0], inst.instr_id);
           THEN("The two sources of the instruction have the same physical register") { REQUIRE(inst.source_registers[0] == inst.source_registers[1]); }
           THEN("The destination physical register of the nth repetition is n+2") { REQUIRE(inst.destination_registers[0] == i + 2); }
           THEN("The source of the nth instruction is physical register 0") { REQUIRE(inst.source_registers[0] == 0); }
@@ -178,24 +179,25 @@ SCENARIO("The register allocator correctly recycles physical registers when no l
                    .fetch_queues(&mock_L1I.queues)
                    .data_queues(&mock_L1D.queues)};
 
-    uut.ROB.push_back(champsim::test::instruction_with_ip(1));
-    for (auto& instr : uut.ROB)
+    uut.ctx().ROB.push_back(champsim::test::instruction_with_ip(1));
+    for (auto& instr : uut.ctx().ROB)
       instr.ready_time = champsim::chrono::clock::time_point{};
 
     constexpr int PHYSICALREGS = 128;
     RegisterAllocator ra{PHYSICALREGS};
+    champsim::core_context ctx{&ra};
 
     WHEN("A write and then a read on the same logical register are scheduled, but only the write executes")
     {
       auto write1 = champsim::test::instruction_with_ip(1);
       write1.destination_registers.push_back(5);
       write1.instr_id = 1;
-      write1.destination_registers[0] = ra.rename_dest_register(write1.destination_registers[0], write1.instr_id);
+      write1.destination_registers[0] = ctx.rename_dest_register(write1.destination_registers[0], write1.instr_id);
 
       auto read1 = champsim::test::instruction_with_ip(2);
       read1.source_registers.push_back(5);
       read1.instr_id = 2;
-      read1.source_registers[0] = ra.rename_src_register(read1.source_registers[0]);
+      read1.source_registers[0] = ctx.rename_src_register(read1.source_registers[0]);
 
       ra.complete_dest_register(write1.destination_registers[0]);
 
@@ -203,7 +205,7 @@ SCENARIO("The register allocator correctly recycles physical registers when no l
       {
         write1.completed = true;
         ra.complete_dest_register(write1.destination_registers[0]);
-        ra.retire_dest_register(write1.destination_registers[0]);
+        ctx.retire_dest_register(write1.destination_registers[0]);
         THEN("No registers should have been recycled since no new writes to that arch reg") { REQUIRE(ra.count_free_registers() == PHYSICALREGS - 1); }
         AND_WHEN("the read instruction is retired")
         {
@@ -214,7 +216,7 @@ SCENARIO("The register allocator correctly recycles physical registers when no l
             auto write2 = champsim::test::instruction_with_ip(3);
             write2.destination_registers.push_back(5);
             write2.instr_id = 3;
-            write2.destination_registers[0] = ra.rename_dest_register(write2.destination_registers[0], write2.instr_id);
+            write2.destination_registers[0] = ctx.rename_dest_register(write2.destination_registers[0], write2.instr_id);
             THEN("there should be PHYSICALREGS-2 free registers") { REQUIRE(ra.count_free_registers() == PHYSICALREGS - 2); }
             AND_WHEN("The second write completes execution")
             {
@@ -226,7 +228,7 @@ SCENARIO("The register allocator correctly recycles physical registers when no l
               AND_WHEN("The second write has retired")
               {
                 write2.completed = true;
-                ra.retire_dest_register(write2.destination_registers[0]);
+                ctx.retire_dest_register(write2.destination_registers[0]);
                 THEN("Exactly one physical register should have been freed.") { REQUIRE(ra.count_free_registers() == PHYSICALREGS - 1); }
               }
             }
@@ -245,14 +247,14 @@ SCENARIO("The register allocator correctly recycles physical registers when no l
         writes.emplace_back(writeinst);
       }
       for (int i = 0; i < 10; i++) {
-        writes.at(i).destination_registers[0] = ra.rename_dest_register(writes.at(i).destination_registers[0], writes.at(i).instr_id);
+        writes.at(i).destination_registers[0] = ctx.rename_dest_register(writes.at(i).destination_registers[0], writes.at(i).instr_id);
       }
       THEN("10 physical registers should be occupied") { REQUIRE(ra.count_free_registers() == PHYSICALREGS - 10); }
 
       AND_WHEN("All ten writes complete and are then retired")
       {
         for (int i = 0; i < 10; i++) {
-          ra.retire_dest_register(writes.at(i).destination_registers[0]);
+          ctx.retire_dest_register(writes.at(i).destination_registers[0]);
         }
         for (int i = 0; i < 10; i++) {
           writes.at(i).completed = true;
@@ -272,7 +274,7 @@ SCENARIO("The register allocator correctly recycles physical registers when no l
         writes.emplace_back(writeinst);
       }
       for (int i = 0; i < 10; i++) {
-        writes.at(i).destination_registers[0] = ra.rename_dest_register(writes.at(i).destination_registers[0], writes.at(i).instr_id);
+        writes.at(i).destination_registers[0] = ctx.rename_dest_register(writes.at(i).destination_registers[0], writes.at(i).instr_id);
       }
       uut.operate();
       THEN("10 physical registers should be occupied") { REQUIRE(ra.count_free_registers() == PHYSICALREGS - 10); }
@@ -280,7 +282,7 @@ SCENARIO("The register allocator correctly recycles physical registers when no l
       AND_WHEN("All ten writes are retired")
       {
         for (int i = 0; i < 10; i++) {
-          ra.retire_dest_register(writes.at(i).destination_registers[0]);
+          ctx.retire_dest_register(writes.at(i).destination_registers[0]);
         }
         for (int i = 0; i < 10; i++) {
           writes.at(i).completed = true;
@@ -300,6 +302,7 @@ TEST_CASE("Counting register dependencies does not throw for an instruction that
   // Such an ID names no physical register, so the instruction waits on nothing.
   constexpr int PHYSICALREGS = 128;
   RegisterAllocator ra{PHYSICALREGS};
+  champsim::core_context ctx{&ra};
   auto unrenamed = champsim::test::instruction_with_ip(0);
   unrenamed.source_registers = {155, 255, PHYSICALREGS, 3};
   int dependencies = -1;
@@ -320,26 +323,27 @@ SCENARIO("The register allocator public queries preserve mapping and physical-fi
   GIVEN("A small physical register file")
   {
     RegisterAllocator registers{2};
+    champsim::core_context ctx{&registers};
     const auto& allocator = std::as_const(registers);
 
     THEN("physical-register queries reject the first index outside a nonempty file") { REQUIRE_THROWS_AS(allocator.isValid(2), std::out_of_range); }
 
     WHEN("an unallocated architectural source is renamed")
     {
-      const auto source = registers.rename_src_register(7);
+      const auto source = ctx.rename_src_register(7);
 
       THEN("the source is allocated once and is valid")
       {
-        REQUIRE(allocator.isAllocated(7));
+        REQUIRE(ctx.isAllocated(7));
         REQUIRE(allocator.isValid(source));
         REQUIRE(allocator.count_free_registers() == 1);
-        REQUIRE(registers.rename_src_register(7) == source);
+        REQUIRE(ctx.rename_src_register(7) == source);
         REQUIRE(allocator.count_free_registers() == 1);
       }
 
       AND_WHEN("a replacement destination is renamed, completed, and retired")
       {
-        const auto replacement = registers.rename_dest_register(7, 1);
+        const auto replacement = ctx.rename_dest_register(7, 1);
 
         THEN("the replacement begins invalid and consumes the final free register")
         {
@@ -355,7 +359,7 @@ SCENARIO("The register allocator public queries preserve mapping and physical-fi
 
           AND_WHEN("the replacement retires")
           {
-            registers.retire_dest_register(replacement);
+            ctx.retire_dest_register(replacement);
 
             THEN("retirement frees and invalidates the committed mapping it replaced")
             {
@@ -365,11 +369,11 @@ SCENARIO("The register allocator public queries preserve mapping and physical-fi
 
             AND_WHEN("the frontend mapping is reset")
             {
-              const auto speculative = registers.rename_dest_register(7, 2);
+              const auto speculative = ctx.rename_dest_register(7, 2);
               REQUIRE(speculative != replacement);
-              REQUIRE(registers.rename_src_register(7) == speculative);
-              registers.reset_frontend_RAT();
-              THEN("the frontend mapping returns to the committed replacement") { REQUIRE(registers.rename_src_register(7) == replacement); }
+              REQUIRE(ctx.rename_src_register(7) == speculative);
+              ctx.reset_frontend_RAT();
+              THEN("the frontend mapping returns to the committed replacement") { REQUIRE(ctx.rename_src_register(7) == replacement); }
             }
           }
         }
