@@ -2,8 +2,6 @@
 
 #include <stdexcept>
 
-#include "champsim_assert.h"
-
 RegisterAllocator::RegisterAllocator(size_t num_physical_registers)
 {
   constexpr auto maximum = static_cast<size_t>(std::numeric_limits<PHYSICAL_REGISTER_ID>::max());

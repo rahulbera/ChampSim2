@@ -2,11 +2,12 @@
 #define CORE_CONTEXT_H
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <limits>
 #include <optional>
-#include <queue>
 #include <vector>
 
 #include "core_stats.h"

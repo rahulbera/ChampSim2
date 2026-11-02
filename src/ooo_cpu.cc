@@ -510,7 +510,7 @@ long O3_CPU::execute_instruction()
   for (auto rob_it = std::begin(ctx().ROB); rob_it != std::end(ctx().ROB) && exec_bw.has_remaining(); ++rob_it) {
     if (rob_it->scheduled && !rob_it->executed && rob_it->ready_time <= current_time) {
       bool ready = std::all_of(std::begin(rob_it->source_registers), std::end(rob_it->source_registers),
-                               [this](auto srcreg) { return shared_prf->isValid(srcreg); });
+                               [&alloc = std::as_const(*shared_prf)](auto srcreg) { return alloc.isValid(srcreg); });
       if (ready) {
         do_execution(*rob_it);
         exec_bw.consume();

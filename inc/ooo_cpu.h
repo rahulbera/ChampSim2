@@ -22,12 +22,9 @@
 #undef CHAMPSIM_MODULE
 #endif
 
-#include <array>
 #include <bitset>
 #include <deque>
-#include <limits>
 #include <memory>
-#include <optional>
 #include <queue>
 #include <stdexcept>
 #include <type_traits>
@@ -38,7 +35,6 @@
 #include "channel.h"
 #include "core_builder.h"
 #include "core_context.h"
-#include "core_stats.h"
 #include "instruction.h"
 #include "modules.h"
 #include "operable.h"
