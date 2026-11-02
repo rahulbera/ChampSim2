@@ -33,7 +33,7 @@ PHYSICAL_REGISTER_ID champsim::core_context::rename_src_register(int16_t reg)
     phys = reg_allocator->free_registers.front();
     reg_allocator->free_registers.pop();
     frontend_RAT[reg] = phys;
-    backend_RAT[reg] = phys;                                              // we assume this register's last write has been committed
+    backend_RAT[reg] = phys;                                                         // we assume this register's last write has been committed
     reg_allocator->physical_register_file.at(phys) = {(uint16_t)reg, 0, true, true}; // arch_reg_index, producing_inst_id, valid, busy
   }
 
