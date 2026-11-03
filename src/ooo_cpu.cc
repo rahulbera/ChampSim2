@@ -561,7 +561,7 @@ void O3_CPU::do_memory_scheduling(ooo_model_instr& instr)
     auto q_entry = std::find_if_not(std::begin(ctx().LQ), std::end(ctx().LQ), [](const auto& lq_entry) { return lq_entry.has_value(); });
     CHAMPSIM_ASSERT(q_entry != std::end(ctx().LQ));
     auto& new_lq = q_entry->emplace(smem, instr.instr_id, instr.ip, instr.asid); // add it to the load queue
-    new_lq.load_waiter_id = ctx().next_load_waiter_id++;                        // name this entry as its own load waiter
+    new_lq.load_waiter_id = ctx().next_load_waiter_id++;                         // name this entry as its own load waiter
 
     // Check for forwarding
     auto sq_it = std::max_element(std::begin(ctx().SQ), std::end(ctx().SQ), [smem](const auto& lhs, const auto& rhs) {
@@ -797,9 +797,8 @@ long O3_CPU::handle_memory_return()
   auto l1d_it = std::begin(L1D_bus.lower_level->returned);
   for (champsim::bandwidth l1d_bw{L1D_BANDWIDTH}; l1d_bw.has_remaining() && l1d_it != std::end(L1D_bus.lower_level->returned); l1d_bw.consume(), ++l1d_it) {
     for (auto& lq_entry : ctx().LQ) {
-      if (lq_entry.has_value() && lq_entry->fetch_issued
-          && champsim::block_number{lq_entry->virtual_address} == champsim::block_number{l1d_it->v_address} && lq_entry->asid[0] == l1d_it->asid[0]
-          && lq_entry->asid[1] == l1d_it->asid[1]) {
+      if (lq_entry.has_value() && lq_entry->fetch_issued && champsim::block_number{lq_entry->virtual_address} == champsim::block_number{l1d_it->v_address}
+          && lq_entry->asid[0] == l1d_it->asid[0] && lq_entry->asid[1] == l1d_it->asid[1]) {
         lq_entry->finish(std::begin(ctx().ROB), std::end(ctx().ROB));
         lq_entry.reset();
         ++progress;

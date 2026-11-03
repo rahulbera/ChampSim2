@@ -1,6 +1,5 @@
-#include <catch.hpp>
-
 #include <array>
+#include <catch.hpp>
 
 #include "dram_controller.h"
 #include "vmem.h"
@@ -120,7 +119,8 @@ SCENARIO("The virtual memory keeps distinct address spaces apart by ASID")
       auto [pa_a, delay_a] = vmem.va_to_pa(asid_a, same_page);
       auto [pa_b, delay_b] = vmem.va_to_pa(asid_b, same_page);
 
-      THEN("Both first accesses fault") {
+      THEN("Both first accesses fault")
+      {
         REQUIRE(delay_a > champsim::chrono::clock::duration::zero());
         REQUIRE(delay_b > champsim::chrono::clock::duration::zero());
       }
@@ -134,12 +134,14 @@ SCENARIO("The virtual memory keeps distinct address spaces apart by ASID")
         auto [pa_a2, delay_a2] = vmem.va_to_pa(asid_a, same_page);
         auto [pa_b2, delay_b2] = vmem.va_to_pa(asid_b, same_page);
 
-        THEN("The re-accesses hit their own mapping") {
+        THEN("The re-accesses hit their own mapping")
+        {
           REQUIRE(delay_a2 == champsim::chrono::clock::duration::zero());
           REQUIRE(delay_b2 == champsim::chrono::clock::duration::zero());
         }
 
-        THEN("The mappings stay with their address space") {
+        THEN("The mappings stay with their address space")
+        {
           REQUIRE(pa_a2 == pa_a);
           REQUIRE(pa_b2 == pa_b);
         }
@@ -163,7 +165,8 @@ SCENARIO("The virtual memory keeps distinct address spaces apart by ASID")
         (void)d_a2;
         (void)d_b2;
 
-        THEN("Each hit returns its own page-table page") {
+        THEN("Each hit returns its own page-table page")
+        {
           REQUIRE(pte_a2 == pte_a);
           REQUIRE(pte_b2 == pte_b);
         }

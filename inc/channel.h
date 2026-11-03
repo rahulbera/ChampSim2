@@ -77,8 +77,7 @@ class channel
 
     response(champsim::address addr, champsim::address v_addr, champsim::address data_, uint32_t pf_meta, uint32_t cpu_, uint8_t asid_0, uint8_t asid_1,
              std::vector<uint64_t> deps, std::vector<uint64_t> waiters = {})
-        : address(addr), v_address(v_addr), data(data_), pf_metadata(pf_meta), cpu(cpu_), asid{asid_0, asid_1}, instr_depend_on_me(deps),
-          load_waiters(waiters)
+        : address(addr), v_address(v_addr), data(data_), pf_metadata(pf_meta), cpu(cpu_), asid{asid_0, asid_1}, instr_depend_on_me(deps), load_waiters(waiters)
     {
     }
     explicit response(request req)

@@ -249,8 +249,8 @@ bool CACHE::handle_fill(const fill_type& fill)
     sim_stats.total_miss_latency_cycles += (current_time - (fill.time_enqueued + clock_period)) / clock_period;
   sim_stats.fill.increment(std::pair{fill.type, fill.cpu});
 
-  response_type response{fill.address, fill.v_address, fill.data_promise->data, metadata_thru, fill.cpu, fill.asid[0], fill.asid[1],
-                         fill.instr_depend_on_me, fill.load_waiters};
+  response_type response{fill.address, fill.v_address, fill.data_promise->data, metadata_thru,    fill.cpu,
+                         fill.asid[0], fill.asid[1],   fill.instr_depend_on_me, fill.load_waiters};
   for (auto* ret : fill.to_return) {
     ret->push_back(response);
   }
@@ -295,8 +295,15 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
       // for the same reason.
       data = champsim::address{vmem->va_to_pa({handle_pkt.asid[0], handle_pkt.asid[1]}, champsim::page_number{handle_pkt.address}).first};
     }
-    response_type response{handle_pkt.address, handle_pkt.v_address, data, handle_pkt.pf_metadata, handle_pkt.cpu, handle_pkt.asid[0], handle_pkt.asid[1],
-                           handle_pkt.instr_depend_on_me, handle_pkt.load_waiters};
+    response_type response{handle_pkt.address,
+                           handle_pkt.v_address,
+                           data,
+                           handle_pkt.pf_metadata,
+                           handle_pkt.cpu,
+                           handle_pkt.asid[0],
+                           handle_pkt.asid[1],
+                           handle_pkt.instr_depend_on_me,
+                           handle_pkt.load_waiters};
     for (auto* ret : handle_pkt.to_return) {
       ret->push_back(response);
     }
@@ -329,8 +336,9 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
   if (hit) {
     sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
 
-    response_type response{handle_pkt.address, handle_pkt.v_address, way->data, metadata_thru, handle_pkt.cpu, handle_pkt.asid[0], handle_pkt.asid[1],
-                           handle_pkt.instr_depend_on_me, handle_pkt.load_waiters};
+    response_type response{handle_pkt.address,     handle_pkt.v_address, way->data,          metadata_thru,
+                           handle_pkt.cpu,         handle_pkt.asid[0],   handle_pkt.asid[1], handle_pkt.instr_depend_on_me,
+                           handle_pkt.load_waiters};
     for (auto* ret : handle_pkt.to_return) {
       ret->push_back(response);
     }

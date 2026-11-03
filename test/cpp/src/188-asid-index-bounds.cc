@@ -1,10 +1,10 @@
 #include <catch.hpp>
 
-#include "../../../btb/basic_btb/basic_btb.h"
 #include "../../../branch/bimodal/bimodal.h"
 #include "../../../branch/gshare/gshare.h"
 #include "../../../branch/hashed_perceptron/hashed_perceptron.h"
 #include "../../../branch/perceptron/perceptron.h"
+#include "../../../btb/basic_btb/basic_btb.h"
 #include "instr.h"
 #include "instruction.h"
 #include "mocks.hpp"

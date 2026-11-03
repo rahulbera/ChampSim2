@@ -149,11 +149,12 @@ std::pair<champsim::page_number, champsim::chrono::clock::duration> VirtualMemor
   return std::pair{ppage->second, penalty};
 }
 
-std::pair<champsim::address, champsim::chrono::clock::duration> VirtualMemory::get_pte_pa(champsim::address_space_id asid, champsim::page_number vaddr, std::size_t level)
+std::pair<champsim::address, champsim::chrono::clock::duration> VirtualMemory::get_pte_pa(champsim::address_space_id asid, champsim::page_number vaddr,
+                                                                                          std::size_t level)
 {
   champsim::dynamic_extent pte_table_entry_extent{champsim::address::bits, shamt(level + 1)};
-  auto [ppage, fault] =
-      page_table.try_emplace({asid, static_cast<uint32_t>(level), champsim::address_slice{pte_table_entry_extent, vaddr}}, champsim::splice(active_pte_page, next_pte_page));
+  auto [ppage, fault] = page_table.try_emplace({asid, static_cast<uint32_t>(level), champsim::address_slice{pte_table_entry_extent, vaddr}},
+                                               champsim::splice(active_pte_page, next_pte_page));
 
   // this PTE doesn't yet have a mapping
   if (fault) {
