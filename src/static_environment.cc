@@ -14,6 +14,7 @@
 
 #include "access_type.h"
 #include "champsim.h"
+#include "champsim_assert.h"
 #include "defaults.hpp"
 #include "msl/bits.h"
 
@@ -259,6 +260,9 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                           .upper_levels({&channels.at(chan(cpu, stlb_to_ptw))})
                           .virtual_memory(&vmem)
                           .cpu(static_cast<uint32_t>(cpu))
+                          // The asid this core's trace stamps on its requests (ooo_model_instr), so
+                          // each core walks from its own page-table root, as master keys it by cpu.
+                          .asid({static_cast<uint8_t>(cpu), static_cast<uint8_t>(cpu)})
                           .lower_level(&channels.at(chan(cpu, ptw_to_l1d)))
                           .mshr_size(cfg.value<uint32_t>(key + ".mshr_size", 5))
                           .tag_bandwidth(configured_bandwidth(cfg, key + ".max_read", 2))
@@ -532,5 +536,16 @@ std::vector<std::reference_wrapper<champsim::operable>> champsim::static_environ
   std::transform(std::begin(caches), std::end(caches), std::back_inserter(retval), make_ref);
   std::transform(std::begin(ptws), std::end(ptws), std::back_inserter(retval), make_ref);
   retval.push_back(std::ref(memory->clocked_component()));
+
+  // Pin the topology formula: one core + (1 + 6 per core) caches + one PTW per
+  // core + one DRAM controller = 8 * num_cpus + 2 operables, independent of the
+  // number of hardware contexts. do_cycle() orders operables by current_time with
+  // std::sort, whose equivalence stability libstdc++ only guarantees up to 16
+  // elements; one core is 10 operables (safe) and a two-core machine is 18, so
+  // multi-core already exceeds that bound today. The formula is keyed on
+  // num_cpus, not num_contexts, so a per-context TLB/PTW/cache replication would
+  // grow this size while num_cpus stayed fixed -- the assert then fails, which
+  // is exactly the anti-pattern to reject.
+  CHAMPSIM_ASSERT(retval.size() == 8 * champsim::defs::num_cpus + 2);
   return retval;
 }

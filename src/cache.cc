@@ -97,23 +97,32 @@ auto CACHE::operator=(CACHE&& other) -> CACHE&
 
 CACHE::tag_lookup_type::tag_lookup_type(const request_type& req, bool local_pref, bool skip)
     : address(req.address), v_address(req.v_address), data(req.data), ip(req.ip), instr_id(req.instr_id), pf_metadata(req.pf_metadata), cpu(req.cpu),
-      type(req.type), prefetch_from_this(local_pref), skip_fill(skip), is_translated(req.is_translated), instr_depend_on_me(req.instr_depend_on_me)
+      type(req.type), prefetch_from_this(local_pref), skip_fill(skip), is_translated(req.is_translated), instr_depend_on_me(req.instr_depend_on_me),
+      load_waiters(req.load_waiters)
 {
+  asid[0] = req.asid[0];
+  asid[1] = req.asid[1];
 }
 
 CACHE::fill_type::fill_type(const tag_lookup_type& req, champsim::chrono::clock::time_point _time_enqueued)
     : address(req.address), v_address(req.v_address), ip(req.ip), instr_id(req.instr_id), cpu(req.cpu), type(req.type),
-      prefetch_from_this(req.prefetch_from_this), time_enqueued(_time_enqueued), instr_depend_on_me(req.instr_depend_on_me), to_return(req.to_return)
+      prefetch_from_this(req.prefetch_from_this), time_enqueued(_time_enqueued), instr_depend_on_me(req.instr_depend_on_me), load_waiters(req.load_waiters),
+      to_return(req.to_return)
 {
+  asid[0] = req.asid[0];
+  asid[1] = req.asid[1];
 }
 
 CACHE::fill_type CACHE::fill_type::merge(fill_type predecessor, fill_type successor)
 {
   std::vector<uint64_t> merged_instr{};
+  std::vector<uint64_t> merged_waiters{};
   std::vector<std::deque<response_type>*> merged_return{};
 
   std::set_union(std::begin(predecessor.instr_depend_on_me), std::end(predecessor.instr_depend_on_me), std::begin(successor.instr_depend_on_me),
                  std::end(successor.instr_depend_on_me), std::back_inserter(merged_instr));
+  std::set_union(std::begin(predecessor.load_waiters), std::end(predecessor.load_waiters), std::begin(successor.load_waiters), std::end(successor.load_waiters),
+                 std::back_inserter(merged_waiters));
   std::set_union(std::begin(predecessor.to_return), std::end(predecessor.to_return), std::begin(successor.to_return), std::end(successor.to_return),
                  std::back_inserter(merged_return));
 
@@ -123,6 +132,7 @@ CACHE::fill_type CACHE::fill_type::merge(fill_type predecessor, fill_type succes
   retval.time_enqueued =
       ((successor.type != access_type::PREFETCH && predecessor.type == access_type::PREFETCH)) ? successor.time_enqueued : predecessor.time_enqueued;
   retval.instr_depend_on_me = merged_instr;
+  retval.load_waiters = merged_waiters;
   retval.to_return = merged_return;
   retval.data_promise = predecessor.data_promise;
 
@@ -239,7 +249,8 @@ bool CACHE::handle_fill(const fill_type& fill)
     sim_stats.total_miss_latency_cycles += (current_time - (fill.time_enqueued + clock_period)) / clock_period;
   sim_stats.fill.increment(std::pair{fill.type, fill.cpu});
 
-  response_type response{fill.address, fill.v_address, fill.data_promise->data, metadata_thru, fill.instr_depend_on_me};
+  response_type response{fill.address, fill.v_address, fill.data_promise->data, metadata_thru,    fill.cpu,
+                         fill.asid[0], fill.asid[1],   fill.instr_depend_on_me, fill.load_waiters};
   for (auto* ret : fill.to_return) {
     ret->push_back(response);
   }
@@ -282,9 +293,17 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
       // A TLB lookup's address is the virtual address. v_address is not: a
       // TLB's own prefetch leaves it empty, and the walker translates address
       // for the same reason.
-      data = champsim::address{vmem->va_to_pa(handle_pkt.cpu, champsim::page_number{handle_pkt.address}).first};
+      data = champsim::address{vmem->va_to_pa({handle_pkt.asid[0], handle_pkt.asid[1]}, champsim::page_number{handle_pkt.address}).first};
     }
-    response_type response{handle_pkt.address, handle_pkt.v_address, data, handle_pkt.pf_metadata, handle_pkt.instr_depend_on_me};
+    response_type response{handle_pkt.address,
+                           handle_pkt.v_address,
+                           data,
+                           handle_pkt.pf_metadata,
+                           handle_pkt.cpu,
+                           handle_pkt.asid[0],
+                           handle_pkt.asid[1],
+                           handle_pkt.instr_depend_on_me,
+                           handle_pkt.load_waiters};
     for (auto* ret : handle_pkt.to_return) {
       ret->push_back(response);
     }
@@ -317,7 +336,9 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
   if (hit) {
     sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
 
-    response_type response{handle_pkt.address, handle_pkt.v_address, way->data, metadata_thru, handle_pkt.instr_depend_on_me};
+    response_type response{handle_pkt.address,     handle_pkt.v_address, way->data,          metadata_thru,
+                           handle_pkt.cpu,         handle_pkt.asid[0],   handle_pkt.asid[1], handle_pkt.instr_depend_on_me,
+                           handle_pkt.load_waiters};
     for (auto* ret : handle_pkt.to_return) {
       ret->push_back(response);
     }
@@ -353,6 +374,7 @@ auto CACHE::mshr_and_forward_packet(const tag_lookup_type& handle_pkt) -> std::p
   fwd_pkt.ip = handle_pkt.ip;
 
   fwd_pkt.instr_depend_on_me = handle_pkt.instr_depend_on_me;
+  fwd_pkt.load_waiters = handle_pkt.load_waiters;
   fwd_pkt.response_requested = (!handle_pkt.prefetch_from_this || !handle_pkt.skip_fill);
 
   return std::pair{std::move(to_allocate), std::move(fwd_pkt)};
@@ -647,6 +669,12 @@ bool CACHE::prefetch_line(champsim::address pf_addr, bool fill_this_level, uint3
   pf_packet.type = access_type::PREFETCH;
   pf_packet.pf_metadata = prefetch_metadata;
   pf_packet.cpu = cpu;
+  // A prefetch is translated in the address space of the core it is issued for,
+  // {cpu, cpu}, the asid the trace reader gives that core's demand instructions.
+  // Left at the {255,255} default, a virtual prefetch would be walked in a page
+  // table of its own.
+  pf_packet.asid[0] = static_cast<uint8_t>(cpu);
+  pf_packet.asid[1] = static_cast<uint8_t>(cpu);
   pf_packet.address = pf_addr;
   pf_packet.v_address = virtual_prefetch ? pf_addr : champsim::address{};
   pf_packet.is_translated = !virtual_prefetch;
@@ -695,8 +723,8 @@ void CACHE::finish_packet(const response_type& packet)
 
 void CACHE::finish_translation(const response_type& packet)
 {
-  auto matches_vpage = [page_num = champsim::page_number{packet.v_address}](const auto& entry) {
-    return (champsim::page_number{entry.v_address} == page_num) && !entry.is_translated;
+  auto matches_vpage = [page_num = champsim::page_number{packet.v_address}, asid_0 = packet.asid[0], asid_1 = packet.asid[1]](const auto& entry) {
+    return (champsim::page_number{entry.v_address} == page_num) && entry.asid[0] == asid_0 && entry.asid[1] == asid_1 && !entry.is_translated;
   };
   auto mark_translated = [p_page = champsim::page_number{packet.data}, this](auto& entry) {
     [[maybe_unused]] auto old_address = entry.address;
@@ -738,6 +766,7 @@ void CACHE::issue_translation(tag_lookup_type& q_entry) const
     fwd_pkt.ip = q_entry.ip;
 
     fwd_pkt.instr_depend_on_me = q_entry.instr_depend_on_me;
+    fwd_pkt.load_waiters = q_entry.load_waiters;
     fwd_pkt.is_translated = true;
 
     q_entry.translate_issued = lower_translate->add_rq(fwd_pkt);

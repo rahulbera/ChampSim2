@@ -102,6 +102,7 @@ struct DRAM_CHANNEL final : public champsim::operable {
     uint8_t asid[2] = {std::numeric_limits<uint8_t>::max(), std::numeric_limits<uint8_t>::max()};
 
     uint32_t pf_metadata = 0;
+    uint32_t cpu = std::numeric_limits<uint32_t>::max();
 
     champsim::address address{};
     champsim::address v_address{};
@@ -109,6 +110,7 @@ struct DRAM_CHANNEL final : public champsim::operable {
     champsim::chrono::clock::time_point ready_time = champsim::chrono::clock::time_point::max();
 
     std::vector<uint64_t> instr_depend_on_me{};
+    std::vector<uint64_t> load_waiters{};
     std::vector<std::deque<response_type>*> to_return{};
 
     explicit request_type(const typename champsim::channel::request_type& req);

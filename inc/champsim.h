@@ -17,6 +17,7 @@
 #ifndef CHAMPSIM_H
 #define CHAMPSIM_H
 
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
@@ -83,6 +84,15 @@ using block_number = address_slice<block_number_extent>;
 using block_offset = address_slice<block_offset_extent>;
 using page_number = address_slice<page_number_extent>;
 using page_offset = address_slice<page_offset_extent>;
+
+// An address space is identified by its ASID, not by a physical-core number.
+using address_space_id = std::array<uint8_t, 2>;
+
+// The ASID word is mixed into predictor and DIB indexes. The fold is a hash, not
+// an identity: x ^ asid_word(a) can equal y ^ asid_word(b) for a != b, so tagged
+// structures (the DIB and the direct BTBs) compare the asid itself.
+// In the N=1 milestone asid is constant {0,0}, so every fold is a numeric no-op.
+inline constexpr uint64_t asid_word(address_space_id asid) { return static_cast<uint64_t>(asid[0]) | (static_cast<uint64_t>(asid[1]) << 8); }
 
 /**
  * Get the lowest possible address for which the space between it and zero is the given size.

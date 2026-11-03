@@ -53,8 +53,8 @@ long do_cycle(std::vector<std::reference_wrapper<operable>>& operables, const st
   // Read from trace
   for (O3_CPU& cpu : cpus) {
     auto& trace = traces.at(trace_index.at(cpu.cpu));
-    for (auto pkt_count = cpu.IN_QUEUE_SIZE - static_cast<long>(std::size(cpu.input_queue)); !trace.eof() && pkt_count > 0; --pkt_count) {
-      cpu.input_queue.push_back(trace());
+    for (auto pkt_count = cpu.IN_QUEUE_SIZE - static_cast<long>(std::size(cpu.ctx().input_queue)); !trace.eof() && pkt_count > 0; --pkt_count) {
+      cpu.ctx().input_queue.push_back(trace());
     }
   }
 
@@ -178,8 +178,8 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
     stats.trace_names.push_back(trace_names.at(trace_index.at(i)));
   }
 
-  std::transform(std::begin(cpus), std::end(cpus), std::back_inserter(stats.sim_cpu_stats), [](const O3_CPU& cpu) { return cpu.sim_stats; });
-  std::transform(std::begin(cpus), std::end(cpus), std::back_inserter(stats.roi_cpu_stats), [](const O3_CPU& cpu) { return cpu.roi_stats; });
+  std::transform(std::begin(cpus), std::end(cpus), std::back_inserter(stats.sim_cpu_stats), [](const O3_CPU& cpu) { return cpu.ctx().sim_stats; });
+  std::transform(std::begin(cpus), std::end(cpus), std::back_inserter(stats.roi_cpu_stats), [](const O3_CPU& cpu) { return cpu.ctx().roi_stats; });
 
   auto caches = env.cache_view();
   std::transform(std::begin(caches), std::end(caches), std::back_inserter(stats.sim_cache_stats), [](const CACHE& cache) { return cache.sim_stats; });

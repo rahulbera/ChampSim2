@@ -41,13 +41,16 @@ void blbp_64kb_tuned::configure(const champsim::runtime_config& cfg, std::string
 void blbp_64kb_tuned::initialize_btb()
 {
   if (intern_ != nullptr) {
-    champsim::cbp6::require_single_core(intern_->cpu, "blbp_64kb_tuned");
+    champsim::cbp6::require_single_core(intern_->cpu, intern_->contexts.size(), "blbp_64kb_tuned");
   }
 }
 
-std::pair<champsim::address, bool> blbp_64kb_tuned::btb_prediction(champsim::address ip) { return shared().prediction(ip); }
-
-void blbp_64kb_tuned::update_btb(champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type)
+std::pair<champsim::address, bool> blbp_64kb_tuned::btb_prediction(champsim::address ip, champsim::address_space_id asid)
 {
-  shared().update(ip, branch_target, taken, branch_type);
+  return shared().prediction(ip, asid);
+}
+
+void blbp_64kb_tuned::update_btb(champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type, champsim::address_space_id asid)
+{
+  shared().update(ip, branch_target, taken, branch_type, asid);
 }
