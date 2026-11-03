@@ -299,9 +299,11 @@ long O3_CPU::promote_to_decode()
       std::min(FETCH_WIDTH, std::min(champsim::bandwidth::maximum_type{static_cast<long>(DIB_HIT_BUFFER_SIZE - std::size(ctx().DIB_HIT_BUFFER))},
                                      champsim::bandwidth::maximum_type{static_cast<long>(DECODE_BUFFER_SIZE - std::size(ctx().DECODE_BUFFER))}))};
 
-  auto fetched_check_end = std::find_if(std::begin(ctx().IFETCH_BUFFER), std::end(ctx().IFETCH_BUFFER), [](const ooo_model_instr& x) { return !x.fetch_completed; });
+  auto fetched_check_end =
+      std::find_if(std::begin(ctx().IFETCH_BUFFER), std::end(ctx().IFETCH_BUFFER), [](const ooo_model_instr& x) { return !x.fetch_completed; });
   // find the first not fetch completed
-  auto [window_begin, window_end] = champsim::get_span_p(std::begin(ctx().IFETCH_BUFFER), fetched_check_end, available_fetch_bandwidth, fetch_complete_and_ready);
+  auto [window_begin, window_end] =
+      champsim::get_span_p(std::begin(ctx().IFETCH_BUFFER), fetched_check_end, available_fetch_bandwidth, fetch_complete_and_ready);
   auto decoded_window_end = std::stable_partition(window_begin, window_end, is_decoded); // reorder instructions
   auto mark_for_decode = [time = current_time, lat = DECODE_LATENCY, warmup = warmup](auto& x) {
     return x.ready_time = time + (warmup ? champsim::chrono::clock::duration{} : lat);
@@ -343,8 +345,9 @@ long O3_CPU::decode_instruction()
       std::min(DIB_INORDER_WIDTH, champsim::bandwidth::maximum_type{static_cast<long>(DISPATCH_BUFFER_SIZE - std::size(ctx().DISPATCH_BUFFER))})};
 
   // conditions choose how many instructions sent to dispatch_buffer
-  while (dib_hit_buffer_end != std::end(ctx().DIB_HIT_BUFFER) && decode_buffer_end != std::end(ctx().DECODE_BUFFER) && available_dib_inorder_bandwidth.has_remaining()
-         && available_decode_bandwidth.has_remaining() && is_ready(std::min(*dib_hit_buffer_end, *decode_buffer_end, ooo_model_instr::program_order))) {
+  while (dib_hit_buffer_end != std::end(ctx().DIB_HIT_BUFFER) && decode_buffer_end != std::end(ctx().DECODE_BUFFER)
+         && available_dib_inorder_bandwidth.has_remaining() && available_decode_bandwidth.has_remaining()
+         && is_ready(std::min(*dib_hit_buffer_end, *decode_buffer_end, ooo_model_instr::program_order))) {
     if (ooo_model_instr::program_order(*dib_hit_buffer_end, *decode_buffer_end)) {
       dib_hit_buffer_end++;
       available_dib_inorder_bandwidth.consume();
@@ -462,7 +465,7 @@ long O3_CPU::schedule_instruction()
       // renamed this cycle. An already-scheduled instruction has claimed its
       // registers, so evaluating the gate against it (and breaking when free
       // registers fall below its destination count) wrongly blocks scheduling.
-// Renaming maps an unmapped source on its first read, so a repeat of it
+      // Renaming maps an unmapped source on its first read, so a repeat of it
       // allocates nothing: count each unmapped source register once.
       const auto& sources = rob_it->source_registers;
       unsigned long sources_to_allocate = 0;
@@ -512,7 +515,7 @@ long O3_CPU::execute_instruction()
   for (auto rob_it = std::begin(ctx().ROB); rob_it != std::end(ctx().ROB) && exec_bw.has_remaining(); ++rob_it) {
     if (rob_it->scheduled && !rob_it->executed && rob_it->ready_time <= current_time) {
       bool ready = std::all_of(std::begin(rob_it->source_registers), std::end(rob_it->source_registers),
-                               [this](auto srcreg) { return shared_prf->isValid(srcreg); });
+                               [&alloc = std::as_const(*shared_prf)](auto srcreg) { return alloc.isValid(srcreg); });
       if (ready) {
         do_execution(*rob_it);
         exec_bw.consume();
@@ -602,8 +605,8 @@ long O3_CPU::operate_lsq()
   };
 
   auto unfetched_begin = std::partition_point(std::begin(ctx().SQ), std::end(ctx().SQ), [](const auto& x) { return x.fetch_issued; });
-  auto [fetch_begin, fetch_end] =
-      champsim::get_span_p(unfetched_begin, std::end(ctx().SQ), store_bw, [time = current_time](const auto& x) { return !x.fetch_issued && x.ready_time <= time; });
+  auto [fetch_begin, fetch_end] = champsim::get_span_p(unfetched_begin, std::end(ctx().SQ), store_bw,
+                                                       [time = current_time](const auto& x) { return !x.fetch_issued && x.ready_time <= time; });
   store_bw.consume(std::distance(fetch_begin, fetch_end));
   std::for_each(fetch_begin, fetch_end, [time = current_time, this](auto& sq_entry) {
     this->do_finish_store(sq_entry);
@@ -765,8 +768,10 @@ long O3_CPU::handle_memory_return()
     auto& l1i_entry = L1I_bus.lower_level->returned.front();
 
     while (fetch_bw.has_remaining() && !l1i_entry.instr_depend_on_me.empty()) {
-      auto fetched = std::find_if(std::begin(ctx().IFETCH_BUFFER), std::end(ctx().IFETCH_BUFFER), ooo_model_instr::matches_id(l1i_entry.instr_depend_on_me.front()));
-      if (fetched != std::end(ctx().IFETCH_BUFFER) && champsim::block_number{fetched->ip} == champsim::block_number{l1i_entry.v_address} && fetched->fetch_issued) {
+      auto fetched =
+          std::find_if(std::begin(ctx().IFETCH_BUFFER), std::end(ctx().IFETCH_BUFFER), ooo_model_instr::matches_id(l1i_entry.instr_depend_on_me.front()));
+      if (fetched != std::end(ctx().IFETCH_BUFFER) && champsim::block_number{fetched->ip} == champsim::block_number{l1i_entry.v_address}
+          && fetched->fetch_issued) {
         fetched->fetch_completed = true;
         fetch_bw.consume();
         ++progress;
@@ -882,7 +887,7 @@ void O3_CPU::print_deadlock()
   fmt::print("DEADLOCK! CPU {} cycle {}\n", cpu, current_time.time_since_epoch() / clock_period);
 
   auto instr_pack = [period = clock_period, this](const auto& entry) {
-return std::tuple{entry.instr_id, entry.fetch_issued, entry.fetch_completed, entry.scheduled, entry.executed, entry.completed,
+    return std::tuple{entry.instr_id, entry.fetch_issued, entry.fetch_completed, entry.scheduled, entry.executed, entry.completed,
                       // Until do_scheduling renames an entry its operands are architectural IDs.
                       entry.scheduled ? std::to_string(shared_prf->count_reg_dependencies(entry)) : std::string{"-"},
                       entry.num_mem_ops() - entry.completed_mem_ops, entry.ready_time.time_since_epoch() / period};
@@ -894,7 +899,7 @@ return std::tuple{entry.instr_id, entry.fetch_issued, entry.fetch_completed, ent
   champsim::range_print_deadlock(ctx().DISPATCH_BUFFER, "cpu" + std::to_string(cpu) + "_DISPATCH", instr_fmt, instr_pack);
   champsim::range_print_deadlock(ctx().ROB, "cpu" + std::to_string(cpu) + "_ROB", instr_fmt, instr_pack);
 
-  // print the RATs, then the occupied physical registers
+  // print the RATs, then every physical register
   ctx().print_deadlock();
   shared_prf->print_deadlock();
 

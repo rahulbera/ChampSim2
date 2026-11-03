@@ -9,7 +9,8 @@
 
 #include "instruction.h"
 
-namespace champsim {
+namespace champsim
+{
 struct core_context;
 }
 

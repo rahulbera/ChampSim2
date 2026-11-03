@@ -22,12 +22,9 @@
 #undef CHAMPSIM_MODULE
 #endif
 
-#include <array>
 #include <bitset>
 #include <deque>
-#include <limits>
 #include <memory>
-#include <optional>
 #include <queue>
 #include <stdexcept>
 #include <type_traits>
@@ -38,7 +35,6 @@
 #include "channel.h"
 #include "core_builder.h"
 #include "core_context.h"
-#include "core_stats.h"
 #include "instruction.h"
 #include "modules.h"
 #include "operable.h"
@@ -81,9 +77,11 @@ public:
   // hold raw pointers to it and must never dangle.
   std::unique_ptr<RegisterAllocator> shared_prf;
 
-  // Per-hardware-context pipeline state. Stage 1 builds exactly one. ctx()
-  // computes the reference on every call and never caches it, so a later
-  // vector growth cannot leave a stale reference behind.
+  // Per-hardware-context pipeline state. Stage 1 builds exactly one, with
+  // make_contexts(), and nothing resizes the vector afterwards. core_context is
+  // move-only, so a reallocation would move each context: the references inside
+  // a context (SQ entries to LQ slots) survive that, but a reference to a
+  // context itself does not.
   std::vector<champsim::core_context> contexts;
 
   // Constants
@@ -147,13 +145,11 @@ public:
   [[nodiscard]] auto sim_instr() const { return ctx().num_retired - ctx().begin_phase_instr; }
   [[nodiscard]] auto sim_cycle() const { return (current_time.time_since_epoch() / clock_period) - ctx().sim_stats.begin_cycles; }
 
-  // The hardware context this core's frontend and backend operate on.
-  //
-  // Stage 2 severs the inheritance: the core now owns a vector of contexts and
-  // a shared physical register file, and ctx() returns the (single) context.
-  // The reference is computed on every call and never cached in a member:
-  // `contexts` lives in a std::vector that reallocates, so a cached reference
-  // would dangle after any growth.
+  // The hardware context this core's frontend and backend operate on: context
+  // 0, the only one in Stage 1. Every caller, including the branch predictor
+  // and BTB modules, sees context 0. It is looked up on every call and never
+  // cached in a member, because a reallocation of `contexts` would leave a
+  // cached reference dangling.
   champsim::core_context& ctx() { return contexts.front(); }
   const champsim::core_context& ctx() const { return contexts.front(); }
 
@@ -244,16 +240,25 @@ public:
   [[nodiscard]] std::pair<champsim::address, bool> impl_btb_prediction(champsim::address ip, uint8_t branch_type, champsim::address_space_id asid) const;
   // NOLINTEND(readability-make-member-function-const)
 
+  // Builds the contexts in place. std::vector's initializer_list constructor
+  // copies its elements, and core_context cannot be copied.
+  static std::vector<champsim::core_context> make_contexts(RegisterAllocator* shared_prf, std::size_t lq_size, std::size_t dib_set, std::size_t dib_way,
+                                                           unsigned long dib_window)
+  {
+    std::vector<champsim::core_context> result;
+    result.reserve(1);
+    result.emplace_back(shared_prf, lq_size, dib_set, dib_way, dib_window);
+    return result;
+  }
+
   template <typename... Bs, typename... Ts>
   explicit O3_CPU(champsim::core_builder<champsim::core_builder_module_type_holder<Bs...>, champsim::core_builder_module_type_holder<Ts...>> b)
-      : champsim::operable(b.m_clock_period),
-        cpu(b.m_cpu),
-        shared_prf(std::make_unique<RegisterAllocator>(b.m_register_file_size)),
-        contexts{champsim::core_context{shared_prf.get(), b.m_lq_size, b.m_dib_set, b.m_dib_way, b.m_dib_window}},
-        IFETCH_BUFFER_SIZE(b.m_ifetch_buffer_size), DISPATCH_BUFFER_SIZE(b.m_dispatch_buffer_size), DECODE_BUFFER_SIZE(b.m_decode_buffer_size),
-        REGISTER_FILE_SIZE(b.m_register_file_size), ROB_SIZE(b.m_rob_size), SQ_SIZE(b.m_sq_size), DIB_HIT_BUFFER_SIZE(b.m_dib_hit_buffer_size),
-        FETCH_WIDTH(b.m_fetch_width), DECODE_WIDTH(b.m_decode_width), DISPATCH_WIDTH(b.m_dispatch_width), SCHEDULER_SIZE(b.m_schedule_width),
-        EXEC_WIDTH(b.m_execute_width), DIB_INORDER_WIDTH(b.m_dib_inorder_width), LQ_WIDTH(b.m_lq_width), SQ_WIDTH(b.m_sq_width), RETIRE_WIDTH(b.m_retire_width),
+      : champsim::operable(b.m_clock_period), cpu(b.m_cpu), shared_prf(std::make_unique<RegisterAllocator>(b.m_register_file_size)),
+        contexts(make_contexts(shared_prf.get(), b.m_lq_size, b.m_dib_set, b.m_dib_way, b.m_dib_window)), IFETCH_BUFFER_SIZE(b.m_ifetch_buffer_size),
+        DISPATCH_BUFFER_SIZE(b.m_dispatch_buffer_size), DECODE_BUFFER_SIZE(b.m_decode_buffer_size), REGISTER_FILE_SIZE(b.m_register_file_size),
+        ROB_SIZE(b.m_rob_size), SQ_SIZE(b.m_sq_size), DIB_HIT_BUFFER_SIZE(b.m_dib_hit_buffer_size), FETCH_WIDTH(b.m_fetch_width),
+        DECODE_WIDTH(b.m_decode_width), DISPATCH_WIDTH(b.m_dispatch_width), SCHEDULER_SIZE(b.m_schedule_width), EXEC_WIDTH(b.m_execute_width),
+        DIB_INORDER_WIDTH(b.m_dib_inorder_width), LQ_WIDTH(b.m_lq_width), SQ_WIDTH(b.m_sq_width), RETIRE_WIDTH(b.m_retire_width),
         BRANCH_MISPREDICT_PENALTY(b.m_mispredict_penalty * b.m_clock_period), DISPATCH_LATENCY(b.m_dispatch_latency * b.m_clock_period),
         DECODE_LATENCY(b.m_decode_latency * b.m_clock_period), SCHEDULING_LATENCY(b.m_schedule_latency * b.m_clock_period),
         EXEC_LATENCY(b.m_execute_latency * b.m_clock_period), DIB_HIT_LATENCY(b.m_dib_hit_latency * b.m_clock_period), L1I_BANDWIDTH(b.m_l1i_bw),

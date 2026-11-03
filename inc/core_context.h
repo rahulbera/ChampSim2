@@ -2,26 +2,30 @@
 #define CORE_CONTEXT_H
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <limits>
 #include <optional>
-#include <queue>
 #include <vector>
 
 #include "core_stats.h"
 #include "instruction.h"
+#include "msl/lru_table.h"
 #include "register_allocator.h"
-#include "util/lru_table.h"
 
 // Per-hardware-context (per-thread) pipeline state.
 //
-// A core_context holds everything a single hardware thread owns privately: its
-// own frontend buffers, its own reorder buffer, its own load/store queues, its
-// own register alias tables, and its own branch predictor state. A physical
-// core with N hardware contexts will hold N core_context objects. Everything
-// the threads share (L1 caches, the physical register file and its free list,
-// bandwidth and capacity constants) stays on the core.
+// A core_context holds the pipeline state a single hardware thread owns
+// privately: its own frontend buffers, its own reorder buffer, its own
+// load/store queues, its own register alias tables, and its fetch-stall
+// bookkeeping. A physical core with N hardware contexts will hold N
+// core_context objects. Everything the threads share (L1 caches, the physical
+// register file and its free list, bandwidth and capacity constants) stays on
+// the core. So do the branch predictor and BTB modules: they are constructed
+// from the O3_CPU and reach the instruction under prediction through
+// O3_CPU::ctx(), which is context 0.
 //
 // Stage 1 has exactly one context per core and does not change the order of
 // operations, so single-context results remain bit-identical.
@@ -75,7 +79,7 @@ struct dib_tag {
   auto operator()(const dib_entry& entry) const { return entry.ip.slice_upper(shamt).to<uint64_t>() ^ champsim::asid_word(entry.asid); }
 };
 
-using dib_type = champsim::lru_table<dib_entry, dib_index, dib_tag>;
+using dib_type = champsim::msl::lru_table<dib_entry, dib_index, dib_tag>;
 
 struct core_context {
   using stats_type = cpu_stats;
@@ -150,6 +154,15 @@ struct core_context {
     frontend_RAT.fill(-1); // default value for no mapping
     backend_RAT.fill(-1);
   }
+
+  // Move-only. An SQ entry's lq_depend_on_me refers to slots of this context's
+  // LQ. A move takes the LQ's buffer along, so those references stay valid; a
+  // copy's SQ would still refer to the source's LQ.
+  core_context(const core_context&) = delete;
+  core_context& operator=(const core_context&) = delete;
+  core_context(core_context&&) = default;
+  core_context& operator=(core_context&&) = default;
+  ~core_context() = default;
 };
 
 } // namespace champsim

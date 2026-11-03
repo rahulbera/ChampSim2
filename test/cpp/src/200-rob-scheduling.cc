@@ -122,7 +122,8 @@ SCENARIO("The scheduler can detect RAW hazards")
         REQUIRE(uut.ctx().reg_allocator->count_reg_dependencies(uut.ctx().ROB[2]) >= 1);
         REQUIRE(uut.ctx().reg_allocator->count_reg_dependencies(uut.ctx().ROB[3]) >= 1);
         REQUIRE(uut.ctx().reg_allocator->count_reg_dependencies(uut.ctx().ROB[4]) >= 0);
-        // REQUIRE(std::all_of(std::next(std::begin(uut.ctx().ROB)), std::next(std::begin(uut.ctx().ROB), schedule_width), [](ooo_model_instr x){ return x.num_reg_dependent
+        // REQUIRE(std::all_of(std::next(std::begin(uut.ctx().ROB)), std::next(std::begin(uut.ctx().ROB), schedule_width), [](ooo_model_instr x){ return
+        // x.num_reg_dependent
         // >= 1; })); REQUIRE(uut.ctx().ROB.back().num_reg_dependent == 0);
 
         REQUIRE(uut.ctx().ROB.at(0).scheduled);
@@ -130,12 +131,12 @@ SCENARIO("The scheduler can detect RAW hazards")
         REQUIRE(uut.ctx().ROB.at(2).scheduled);
         REQUIRE(uut.ctx().ROB.at(3).scheduled);
         REQUIRE_FALSE(uut.ctx().ROB.at(4).scheduled);
-        // REQUIRE(std::all_of(std::next(std::begin(uut.ctx().ROB)), std::next(std::begin(uut.ctx().ROB), schedule_width), [](ooo_model_instr x){ return x.scheduled; }));
-        // REQUIRE_FALSE(uut.ctx().ROB.back().scheduled);
+        // REQUIRE(std::all_of(std::next(std::begin(uut.ctx().ROB)), std::next(std::begin(uut.ctx().ROB), schedule_width), [](ooo_model_instr x){ return
+        // x.scheduled; })); REQUIRE_FALSE(uut.ctx().ROB.back().scheduled);
 
         // REQUIRE(uut.ctx().ROB[0].event_cycle == old_cycle + schedule_latency);
-        // REQUIRE(std::all_of(std::next(std::begin(uut.ctx().ROB)), std::next(std::begin(uut.ctx().ROB), schedule_width), [old_cycle](ooo_model_instr x){ return
-        // x.event_cycle == old_cycle + schedule_latency; })); REQUIRE(uut.ctx().ROB.back().event_cycle == old_cycle);
+        // REQUIRE(std::all_of(std::next(std::begin(uut.ctx().ROB)), std::next(std::begin(uut.ctx().ROB), schedule_width), [old_cycle](ooo_model_instr x){
+        // return x.event_cycle == old_cycle + schedule_latency; })); REQUIRE(uut.ctx().ROB.back().event_cycle == old_cycle);
       }
     }
   }
@@ -310,37 +311,47 @@ TEST_CASE("ooo_cpu Benchmarks") {
       .data_queues(&mock_L1D.queues)
     };
 
-      uut.ctx().ROB.push_back(champsim::test::instruction_with_ip(1));
-      uut.ctx().ROB.at(0).instr_id = 1;
-      uut.ctx().ROB.at(0).destination_registers.push_back(5);
-      uut.ctx().ROB.at(0).source_memory.push_back(champsim::address{0xDEADBEEF});
-      uut.ctx().ROB.at(0).ready_time = champsim::chrono::clock::time_point{};
-      uut.ctx().ROB.at(0).scheduled = false;
+    uut.ctx().ROB.push_back(champsim::test::instruction_with_ip(1));
+    uut.ctx().ROB.at(0).instr_id = 1;
+    uut.ctx().ROB.at(0).destination_registers.push_back(5);
+    uut.ctx().ROB.at(0).source_memory.push_back(champsim::address{0xDEADBEEF});
+    uut.ctx().ROB.at(0).ready_time = champsim::chrono::clock::time_point{};
+    uut.ctx().ROB.at(0).scheduled = false;
 
-      meter.measure([&] { for (auto op : std::array<champsim::operable*,3>{{&uut, &mock_L1I, &mock_L1D}})
-                          op->_operate();});
-      meter.measure([&] {for (auto op : std::array<champsim::operable*,3>{{&uut, &mock_L1I, &mock_L1D}})
-                          op->_operate();});
+    meter.measure([&] {
+      for (auto op : std::array<champsim::operable*, 3>{{&uut, &mock_L1I, &mock_L1D}})
+        op->_operate();
+    });
+    meter.measure([&] {
+      for (auto op : std::array<champsim::operable*, 3>{{&uut, &mock_L1I, &mock_L1D}})
+        op->_operate();
+    });
 
-        uut.ctx().ROB.push_back(champsim::test::instruction_with_ip(2));
-        uut.ctx().ROB.at(1).instr_id = 2;
-        uut.ctx().ROB.at(1).destination_registers.push_back(5);
-        uut.ctx().ROB.push_back(champsim::test::instruction_with_ip(3));
-        uut.ctx().ROB.at(2).instr_id = 3;
-        uut.ctx().ROB.at(2).source_registers.push_back(5);
-        for (auto &instr : uut.ctx().ROB)
-          instr.ready_time = champsim::chrono::clock::time_point{};
-        uut.ctx().ROB.at(1).scheduled = false;
-        uut.ctx().ROB.at(2).scheduled = false;
-        // Schedule 1,2
+    uut.ctx().ROB.push_back(champsim::test::instruction_with_ip(2));
+    uut.ctx().ROB.at(1).instr_id = 2;
+    uut.ctx().ROB.at(1).destination_registers.push_back(5);
+    uut.ctx().ROB.push_back(champsim::test::instruction_with_ip(3));
+    uut.ctx().ROB.at(2).instr_id = 3;
+    uut.ctx().ROB.at(2).source_registers.push_back(5);
+    for (auto& instr : uut.ctx().ROB)
+      instr.ready_time = champsim::chrono::clock::time_point{};
+    uut.ctx().ROB.at(1).scheduled = false;
+    uut.ctx().ROB.at(2).scheduled = false;
+    // Schedule 1,2
 
-        meter.measure([&] { for (auto op : std::array<champsim::operable*,3>{{&uut, &mock_L1I, &mock_L1D}})
-          op->_operate();});
-        // Execute 1,2
-        meter.measure([&] { for (auto op : std::array<champsim::operable*,3>{{&uut, &mock_L1I, &mock_L1D}})
-          op->_operate();});
-        meter.measure([&] { for (auto op : std::array<champsim::operable*,3>{{&uut, &mock_L1I, &mock_L1D}})
-          op->_operate();});
+    meter.measure([&] {
+      for (auto op : std::array<champsim::operable*, 3>{{&uut, &mock_L1I, &mock_L1D}})
+        op->_operate();
+    });
+    // Execute 1,2
+    meter.measure([&] {
+      for (auto op : std::array<champsim::operable*, 3>{{&uut, &mock_L1I, &mock_L1D}})
+        op->_operate();
+    });
+    meter.measure([&] {
+      for (auto op : std::array<champsim::operable*, 3>{{&uut, &mock_L1I, &mock_L1D}})
+        op->_operate();
+    });
   };
   SUCCEED();
 }

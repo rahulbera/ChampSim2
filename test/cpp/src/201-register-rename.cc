@@ -302,7 +302,6 @@ TEST_CASE("Counting register dependencies does not throw for an instruction that
   // Such an ID names no physical register, so the instruction waits on nothing.
   constexpr int PHYSICALREGS = 128;
   RegisterAllocator ra{PHYSICALREGS};
-  champsim::core_context ctx{&ra};
   auto unrenamed = champsim::test::instruction_with_ip(0);
   unrenamed.source_registers = {155, 255, PHYSICALREGS, 3};
   int dependencies = -1;
