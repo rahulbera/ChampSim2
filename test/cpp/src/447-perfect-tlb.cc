@@ -30,7 +30,7 @@ VirtualMemory unrandomized_vmem()
 
 // Issue one untranslated load, as the core's CacheBus does, and let it drain.
 template <typename Elements>
-void load(to_rq_MRP& core, Elements& elements, champsim::address va, VirtualMemory::address_space_id asid)
+void load(to_rq_MRP& core, Elements& elements, champsim::address va, champsim::address_space_id asid)
 {
   static uint64_t id = 1;
   to_rq_MRP::request_type pkt;

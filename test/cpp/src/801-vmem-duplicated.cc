@@ -109,8 +109,8 @@ SCENARIO("The virtual memory keeps distinct address spaces apart by ASID")
   GIVEN("Two address spaces and the same virtual page")
   {
     const auto same_page = GENERATE(as<champsim::page_number>{}, 0xdeadbeef, 0x12345678, 0x55555555);
-    const VirtualMemory::address_space_id asid_a{250, 250}; // disjoint from core/context indices, per recon §5.4
-    const VirtualMemory::address_space_id asid_b{251, 251};
+    const champsim::address_space_id asid_a{250, 250}; // disjoint from core/context indices, per recon §5.4
+    const champsim::address_space_id asid_b{251, 251};
 
     WHEN("Each address space translates its own copy of the page")
     {
