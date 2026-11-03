@@ -293,7 +293,9 @@ public:
   // A v2 record names every field the shared constructor reads, so classification
   // and operand extraction are identical to v1 by construction.
   ooo_model_instr(uint8_t cpu, const input_instr_v2& instr) : ooo_model_instr(instr, {cpu, cpu}) {}
-  ooo_model_instr(uint8_t /*cpu*/, const cloudsuite_instr& instr) : ooo_model_instr(instr, {instr.asid[0], instr.asid[1]}) {}
+  // A CloudSuite record's own asid is not an address-space identity here: the
+  // trace runs in its core's single address space, as v1 and v2 traces do.
+  ooo_model_instr(uint8_t cpu, const cloudsuite_instr& instr) : ooo_model_instr(instr, {cpu, cpu}) {}
 
   [[nodiscard]] std::size_t num_mem_ops() const { return std::size(destination_memory) + std::size(source_memory); }
 };
