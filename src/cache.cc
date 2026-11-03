@@ -661,6 +661,12 @@ bool CACHE::prefetch_line(champsim::address pf_addr, bool fill_this_level, uint3
   pf_packet.type = access_type::PREFETCH;
   pf_packet.pf_metadata = prefetch_metadata;
   pf_packet.cpu = cpu;
+  // A prefetch is translated in the address space of the core it is issued for,
+  // {cpu, cpu}, the asid the trace reader gives that core's demand instructions.
+  // Left at the {255,255} default, a virtual prefetch would be walked in a page
+  // table of its own.
+  pf_packet.asid[0] = static_cast<uint8_t>(cpu);
+  pf_packet.asid[1] = static_cast<uint8_t>(cpu);
   pf_packet.address = pf_addr;
   pf_packet.v_address = virtual_prefetch ? pf_addr : champsim::address{};
   pf_packet.is_translated = !virtual_prefetch;
