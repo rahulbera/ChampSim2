@@ -47,13 +47,13 @@ void blbp_64kb::initialize_btb()
 {
   // intern_ is null in unit tests, which construct the module without a core.
   if (intern_ != nullptr) {
-    champsim::cbp6::require_single_core(intern_->cpu, "blbp_64kb");
+    champsim::cbp6::require_single_core(intern_->cpu, intern_->contexts.size(), "blbp_64kb");
   }
 }
 
-std::pair<champsim::address, bool> blbp_64kb::btb_prediction(champsim::address ip) { return shared().prediction(ip); }
+std::pair<champsim::address, bool> blbp_64kb::btb_prediction(champsim::address ip, champsim::address_space_id asid) { return shared().prediction(ip, asid); }
 
-void blbp_64kb::update_btb(champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type)
+void blbp_64kb::update_btb(champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type, champsim::address_space_id asid)
 {
-  shared().update(ip, branch_target, taken, branch_type);
+  shared().update(ip, branch_target, taken, branch_type, asid);
 }

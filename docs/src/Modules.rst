@@ -44,6 +44,8 @@ The former ``reg_allocator`` is split into ``intern_->shared_prf`` (the physical
 A module may implement any of the listed member functions.
 If a member function has overloads listed, any of them may be implemented, and the simulator will select the first candidate overload in the list.
 
+Several branch predictor and BTB hooks have overloads ending in a ``champsim::address_space_id asid`` parameter, which names the branch's address space so a module can keep address spaces apart. Each such hook also lists the overloads without it, which earlier ChampSim versions called. A module implementing none of a hook's ``asid`` overloads is called through one without it and does not see which address space a branch belongs to.
+
 ----------------------------
 Branch Predictors
 ----------------------------
@@ -54,6 +56,8 @@ A branch predictor module may implement three functions.
 
    This function is called when the core is initialized. You can use it to initialize elements of dynamic structures, such as ``std::vector`` or ``std::map``.
 
+.. cpp:function:: bool predict_branch(champsim::address ip, champsim::address predicted_target, bool always_taken, uint8_t branch_type, champsim::address_space_id asid)
+.. cpp:function:: bool predict_branch(uint64_t ip, uint64_t predicted_target, bool always_taken, uint8_t branch_type, champsim::address_space_id asid)
 .. cpp:function:: bool predict_branch(champsim::address ip, champsim::address predicted_target, bool always_taken, uint8_t branch_type)
 .. cpp:function:: bool predict_branch(uint64_t ip, uint64_t predicted_target, bool always_taken, uint8_t branch_type)
 .. cpp:function:: bool predict_branch(champsim::address ip)
@@ -76,13 +80,17 @@ A branch predictor module may implement three functions.
      * ``BRANCH_RETURN``: A return to a calling procedure
      * ``BRANCH_OTHER``: If the branch type cannot be determined
 
+   :param asid: The address space of the branch
    :return: This function must return true if the branch is predicted taken, and false otherwise.
 
+.. cpp:function:: void last_branch_result(champsim::address ip, champsim::address branch_target, uint8_t taken, uint8_t branch_type, champsim::address_space_id asid)
+.. cpp:function:: void last_branch_result(uint64_t ip, uint64_t branch_target, uint8_t taken, uint8_t branch_type, champsim::address_space_id asid)
 .. cpp:function:: void last_branch_result(champsim::address ip, champsim::address branch_target, uint8_t taken, uint8_t branch_type)
 .. cpp:function:: void last_branch_result(uint64_t ip, uint64_t branch_target, uint8_t taken, uint8_t branch_type)
 
-   This function is called when a branch is resolved. The parameters are the same as in the previous hook, except that the last three are guaranteed to be correct.
+   This function is called when a branch is resolved. The parameters are the same as in the previous hook, except that ``branch_target``, ``taken`` and ``branch_type`` are guaranteed to be correct.
 
+.. cpp:function:: void branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type, champsim::address_space_id asid)
 .. cpp:function:: void branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type)
 
    This function is called when a branch completes execution, which happens out of program order and later than ``last_branch_result``.
@@ -94,6 +102,7 @@ A branch predictor module may implement three functions.
    :param branch_target: The correct target of the branch, or a default-constructed address if the branch was not taken
    :param taken: A boolean value. This parameter will be nonzero if the branch was taken.
    :param branch_type: One of the branch types listed above
+   :param asid: The address space of the branch
 
 .. cpp:function:: void branch_predictor_final_stats()
 
@@ -109,8 +118,12 @@ A BTB module may implement three functions.
 
    This function is called when the core is initialized. You can use it to initialize elements of dynamic structures, such as ``std::vector`` or ``std::map``.
 
+.. cpp:function:: std::pair<champsim::address, bool> btb_prediction(champsim::address ip, champsim::address_space_id asid)
+.. cpp:function:: std::pair<champsim::address, bool> btb_prediction(champsim::address ip, uint8_t branch_type, champsim::address_space_id asid)
 .. cpp:function:: std::pair<champsim::address, bool> btb_prediction(champsim::address ip, uint8_t branch_type)
 .. cpp:function:: std::pair<champsim::address, bool> btb_prediction(champsim::address ip)
+.. cpp:function:: std::pair<champsim::address, bool> btb_prediction(uint64_t ip, champsim::address_space_id asid)
+.. cpp:function:: std::pair<champsim::address, bool> btb_prediction(uint64_t ip, uint8_t branch_type, champsim::address_space_id asid)
 .. cpp:function:: std::pair<champsim::address, bool> btb_prediction(uint64_t ip, uint8_t branch_type)
 .. cpp:function:: std::pair<champsim::address, bool> btb_prediction(uint64_t ip)
 
@@ -127,9 +140,12 @@ A BTB module may implement three functions.
      * ``BRANCH_RETURN``: A return to a calling procedure
      * ``BRANCH_OTHER``: If the branch type cannot be determined
 
+   :param asid: The address space of the branch
    :return: The function should return a pair containing the predicted address and a boolean that describes if the branch is known to be always taken.
        If the prediction fails, the function should return a default-initialized address, e.g. ``champsim::address{}``.
 
+.. cpp:function:: void update_btb(champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type, champsim::address_space_id asid)
+.. cpp:function:: void update_btb(uint64_t ip, uint64_t branch_target, bool taken, uint8_t branch_type, champsim::address_space_id asid)
 .. cpp:function:: void update_btb(champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type)
 .. cpp:function:: void update_btb(uint64_t ip, uint64_t branch_target, bool taken, uint8_t branch_type)
 
@@ -147,6 +163,8 @@ A BTB module may implement three functions.
      * ``BRANCH_INDIRECT_CALL``: A call to a procedure whose target is stored in a register
      * ``BRANCH_RETURN``: A return to a calling procedure
      * ``BRANCH_OTHER``: If the branch type cannot be determined
+
+   :param asid: The address space of the branch
 
 -----------------------------------
 Memory Prefetchers

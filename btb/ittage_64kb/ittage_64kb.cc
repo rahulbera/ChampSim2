@@ -51,14 +51,14 @@ void ittage_64kb::initialize_btb()
   // predictor where basic_btb gives each core its own. intern_ is null in unit
   // tests, which construct the module without a core.
   if (intern_ != nullptr) {
-    champsim::cbp6::require_single_core(intern_->cpu, "ittage_64kb");
+    champsim::cbp6::require_single_core(intern_->cpu, intern_->contexts.size(), "ittage_64kb");
   }
   shared().initialize();
 }
 
-std::pair<champsim::address, bool> ittage_64kb::btb_prediction(champsim::address ip) { return shared().prediction(ip); }
+std::pair<champsim::address, bool> ittage_64kb::btb_prediction(champsim::address ip, champsim::address_space_id asid) { return shared().prediction(ip, asid); }
 
-void ittage_64kb::update_btb(champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type)
+void ittage_64kb::update_btb(champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type, champsim::address_space_id asid)
 {
   // The architectural next PC: the target when taken, the fall-through when not.
   // ChampSim's branch_target is zero for a not-taken branch, and feeding zero
@@ -71,5 +71,5 @@ void ittage_64kb::update_btb(champsim::address ip, champsim::address branch_targ
     next_pc = std::next(std::begin(intern_->ctx().input_queue))->ip;
   }
 
-  shared().update(ip, branch_target, branch_type, next_pc);
+  shared().update(ip, branch_target, branch_type, next_pc, asid);
 }

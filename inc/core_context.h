@@ -8,6 +8,7 @@
 #include <functional>
 #include <limits>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include "core_stats.h"
@@ -41,6 +42,14 @@ struct LSQ_ENTRY : champsim::program_ordered<LSQ_ENTRY> {
   uint64_t producer_id = std::numeric_limits<uint64_t>::max();
   std::vector<std::reference_wrapper<std::optional<LSQ_ENTRY>>> lq_depend_on_me{};
 
+  // Token naming this LQ entry as a load waiter. instr_id is one-to-many
+  // with LQ entries (an instruction with several source-memory operands allocates
+  // one entry each), so it cannot name a single waiter. The core assigns this
+  // monotonically at allocation and echoes it through the memory system in
+  // channel::request/response.load_waiters. It is unique only within one
+  // context, and load completion does not read it yet.
+  uint64_t load_waiter_id = std::numeric_limits<uint64_t>::max();
+
   LSQ_ENTRY(champsim::address addr, champsim::program_ordered<LSQ_ENTRY>::id_type id, champsim::address ip, std::array<uint8_t, 2> asid);
   void finish(ooo_model_instr& rob_entry) const;
   void finish(std::deque<ooo_model_instr>::iterator begin, std::deque<ooo_model_instr>::iterator end) const;
@@ -53,7 +62,28 @@ struct dib_shift {
   champsim::data::bits shamt;
   auto operator()(champsim::address val) const { return val.slice_upper(shamt); }
 };
-using dib_type = champsim::msl::lru_table<champsim::address, dib_shift, dib_shift>;
+
+// The DIB key is (asid, ip): two address spaces never share a decoded window.
+// The set index stays ip>>shamt; the tag is the pair (ip>>shamt, asid), so a hit
+// needs the same window and address space. An XOR fold would let a different
+// window compare equal. In N=1 asid is {0,0}, so the pair compares equal exactly
+// when the original tag did.
+struct dib_entry {
+  champsim::address ip{};
+  champsim::address_space_id asid{};
+};
+
+struct dib_index {
+  champsim::data::bits shamt;
+  auto operator()(const dib_entry& entry) const { return entry.ip.slice_upper(shamt); }
+};
+
+struct dib_tag {
+  champsim::data::bits shamt;
+  auto operator()(const dib_entry& entry) const { return std::pair{entry.ip.slice_upper(shamt), entry.asid}; }
+};
+
+using dib_type = champsim::msl::lru_table<dib_entry, dib_index, dib_tag>;
 
 struct core_context {
   using stats_type = cpu_stats;
@@ -68,6 +98,10 @@ struct core_context {
 
   std::vector<std::optional<LSQ_ENTRY>> LQ;
   std::deque<LSQ_ENTRY> SQ;
+
+  // Monotonic source of the per-LQ-entry load_waiter_id token. Each context
+  // counts from zero, so ids repeat across contexts and across cores.
+  uint64_t next_load_waiter_id = 0;
 
   dib_type DIB;
 

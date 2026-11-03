@@ -49,9 +49,15 @@ sources for you to plagiarize.
 
 #include <numeric>
 
-bool hashed_perceptron::predict_branch(champsim::address pc)
+bool hashed_perceptron::predict_branch(champsim::address pc, champsim::address /*predicted_target*/, bool /*always_taken*/, uint8_t /*branch_type*/,
+                                       champsim::address_space_id asid)
 {
-  auto get_index = [pc_slice = pc.slice_lower<TABLE_INDEX_BITS>().to<uint64_t>()](const auto& hist) {
+  // The ASID word is 16 bits wide and a table index only TABLE_INDEX_BITS, so
+  // fold it to that width first; XOR-ing it in whole indexes past TABLE_SIZE once
+  // asid[1] >= 16. asid {0,0} folds to 0, leaving the index unchanged.
+  const auto asid_word = champsim::asid_word(asid);
+  const auto asid_fold = (asid_word ^ (asid_word >> champsim::to_underlying(TABLE_INDEX_BITS))) & champsim::msl::bitmask(TABLE_INDEX_BITS);
+  auto get_index = [pc_slice = pc.slice_lower<TABLE_INDEX_BITS>().to<uint64_t>() ^ asid_fold](const auto& hist) {
     return hist.value() ^ pc_slice; // seed in the PC to spread accesses around (like gshare) XOR in the last word
   };
   perceptron_result result;
@@ -64,7 +70,8 @@ bool hashed_perceptron::predict_branch(champsim::address pc)
   return result.yout >= THRESHOLD;
 }
 
-void hashed_perceptron::last_branch_result(champsim::address pc, champsim::address branch_target, bool taken, uint8_t branch_type)
+void hashed_perceptron::last_branch_result(champsim::address pc, champsim::address /*branch_target*/, bool taken, uint8_t /*branch_type*/,
+                                           champsim::address_space_id asid)
 {
   for (auto& hist : ghist_words) {
     hist.push_back(taken);
@@ -78,6 +85,7 @@ void hashed_perceptron::last_branch_result(champsim::address pc, champsim::addre
       tables[i][last_result.indices[i]] += taken ? 1 : -1; // update weights
     adjust_threshold(prediction_correct);
   }
+  (void)asid; // the ASID folds into the ghist table index, never the history shift
 }
 
 // dynamic threshold setting from Seznec's O-GEHL paper
