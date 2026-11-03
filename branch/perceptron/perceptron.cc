@@ -44,7 +44,10 @@ bool perceptron::predict_branch(champsim::address ip, champsim::address /*predic
                                 champsim::address_space_id asid)
 {
   // hash the address to get an index into the table of perceptrons
-  const auto index = (ip.to<uint64_t>() ^ champsim::asid_word(asid)) % NUM_PERCEPTRONS;
+  // NUM_PERCEPTRONS is not a power of two, so XOR-ing the asid in first would
+  // change which addresses share a perceptron; adding it after the modulus only
+  // rotates the table, and asid {0,0} leaves the index unchanged.
+  const auto index = (ip.to<uint64_t>() % NUM_PERCEPTRONS + champsim::asid_word(asid)) % NUM_PERCEPTRONS;
   const auto output = perceptrons[index].predict(spec_global_history);
 
   bool prediction = (output >= 0);
@@ -84,7 +87,7 @@ void perceptron::last_branch_result(champsim::address ip, champsim::address /*br
   // adjust the weights
   const auto THETA = std::lround(1.93 * PERCEPTRON_HISTORY + 14); // threshold for training
   if ((output <= THETA && output >= -THETA) || (prediction != taken)) {
-    const auto index = (ip.to<uint64_t>() ^ champsim::asid_word(asid)) % NUM_PERCEPTRONS;
+    const auto index = (ip.to<uint64_t>() % NUM_PERCEPTRONS + champsim::asid_word(asid)) % NUM_PERCEPTRONS;
     perceptrons[index].update(taken, history);
   }
 }

@@ -11,7 +11,10 @@ class bimodal : champsim::modules::branch_predictor
 {
   [[nodiscard]] static constexpr auto hash(champsim::address ip, champsim::address_space_id asid)
   {
-    return (ip.to<unsigned long>() ^ champsim::asid_word(asid)) % PRIME;
+    // PRIME is not a power of two, so XOR-ing the asid in first would change
+    // which addresses share a counter; adding it after the modulus only rotates
+    // the table, and asid {0,0} leaves the index unchanged.
+    return (ip.to<unsigned long>() % PRIME + champsim::asid_word(asid)) % PRIME;
   }
 
   static constexpr std::size_t TABLE_SIZE = 16384;
