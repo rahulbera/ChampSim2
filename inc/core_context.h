@@ -8,6 +8,7 @@
 #include <functional>
 #include <limits>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include "core_stats.h"
@@ -62,8 +63,10 @@ struct dib_shift {
 };
 
 // The DIB key is (asid, ip): two address spaces never share a decoded window.
-// The set index stays ip>>shamt; the tag is that window XORed with the ASID.
-// In N=1 asid is {0,0}, so the folded tag is numerically the original tag.
+// The set index stays ip>>shamt; the tag is the pair (ip>>shamt, asid), so a hit
+// needs the same window and address space. An XOR fold would let a different
+// window compare equal. In N=1 asid is {0,0}, so the pair compares equal exactly
+// when the original tag did.
 struct dib_entry {
   champsim::address ip{};
   champsim::address_space_id asid{};
@@ -76,7 +79,7 @@ struct dib_index {
 
 struct dib_tag {
   champsim::data::bits shamt;
-  auto operator()(const dib_entry& entry) const { return entry.ip.slice_upper(shamt).to<uint64_t>() ^ champsim::asid_word(entry.asid); }
+  auto operator()(const dib_entry& entry) const { return std::pair{entry.ip.slice_upper(shamt), entry.asid}; }
 };
 
 using dib_type = champsim::msl::lru_table<dib_entry, dib_index, dib_tag>;
