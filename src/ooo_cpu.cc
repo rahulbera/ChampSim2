@@ -676,11 +676,14 @@ bool O3_CPU::execute_load(const LSQ_ENTRY& lq_entry)
   data_packet.ip = lq_entry.ip;
   data_packet.asid[0] = lq_entry.asid[0];
   data_packet.asid[1] = lq_entry.asid[1];
-  // The load names itself as the only waiter on this request. The returned block
-  // echoes this token end-to-end, so handle_memory_return can complete exactly
-  // this LQ entry, even when another address space's load shares the same
-  // virtual block. This is independent of instr_depend_on_me, which stays the
-  // instruction-fetch dependency set.
+  // The load names itself as the only waiter on this request, and the memory
+  // system echoes the token end-to-end. Nothing reads it yet:
+  // handle_memory_return completes every issued ctx().LQ entry whose virtual
+  // block and asid match (master's same-block broadcast), and completing only
+  // the named waiter would change one-context results. The id comes from a
+  // per-context counter, so it is unique only within this context. This is
+  // independent of instr_depend_on_me, which stays the instruction-fetch
+  // dependency set.
   data_packet.load_waiters = {lq_entry.load_waiter_id};
 
   if constexpr (champsim::debug_print) {
