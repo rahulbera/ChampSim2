@@ -19,8 +19,15 @@
 namespace champsim::defs
 {
 // One binary per core count: multi-core development follows single-core
-// iteration, so this is deliberately not a runtime knob.
+// iteration, so this is deliberately not a runtime knob. A build selects another
+// count with CPPFLAGS=-DCHAMPSIM_NUM_CPUS=<n>; the flag joins the build
+// fingerprint, so each count gets its own object and binary directories.
+#ifdef CHAMPSIM_NUM_CPUS
+inline constexpr std::size_t num_cpus = CHAMPSIM_NUM_CPUS;
+static_assert(num_cpus > 0, "CHAMPSIM_NUM_CPUS must be positive");
+#else
 inline constexpr std::size_t num_cpus = 1;
+#endif
 
 inline constexpr std::size_t block_size = 64;
 inline constexpr std::size_t page_size = 4096;
