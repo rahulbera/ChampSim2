@@ -39,6 +39,10 @@ public:
   std::vector<std::reference_wrapper<PageTableWalker>> ptw_view() final;
   memory_backend& memory_view() final;
   std::vector<std::reference_wrapper<operable>> operable_view() final;
+  // Each core, its six caches and nothing else are its lane. The LLC, the PTWs (they share
+  // the virtual memory's page allocator), the memory backend and a perfect TLB (it calls
+  // the virtual memory itself) are in no lane.
+  std::vector<std::size_t> operable_lanes() final;
 
   // The per-core component names, which are also the runtime-configuration
   // key prefixes: cache.cpu0_l1d.sets, ooo_cpu.cpu0.rob_size, ...

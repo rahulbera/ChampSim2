@@ -71,6 +71,29 @@ public:
     return retval;
   }
 
+  // Reads the next instruction with an ID from reserve_ids(). Instructions are numbered across
+  // all cores in the order the serial loop refills them, so a multi-threaded refill reserves
+  // each core's block in core order and reads with these.
+  auto operator()(uint64_t id)
+  {
+    auto retval = (*pimpl_)();
+    retval.instr_id = id;
+    return retval;
+  }
+
+  // Reserves count consecutive IDs and returns the first.
+  static uint64_t reserve_ids(uint64_t count)
+  {
+    const auto first = instr_unique_id;
+    instr_unique_id += count;
+    return first;
+  }
+
+  // The ID the next instruction read without one would get. Setting it returns IDs that were
+  // reserved but never read.
+  static uint64_t next_id() { return instr_unique_id; }
+  static void set_next_id(uint64_t id) { instr_unique_id = id; }
+
   [[nodiscard]] auto eof() const { return pimpl_->eof(); }
 };
 

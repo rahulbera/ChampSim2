@@ -4,6 +4,7 @@
 #include <chrono>
 #include <deque>
 #include <iostream>
+#include <string>
 #include <vector>
 #include <fmt/chrono.h>
 
@@ -23,26 +24,47 @@ public:
   // the old name said. Settable from the command line with
   // --heartbeat-frequency; 10M is the historical default.
   uint64_t instructions_between_printouts = 10000000;
-  std::vector<uint64_t> num_retired_last_printout;
-  std::vector<uint64_t> cycles_last_printout;
-  std::vector<uint64_t> num_retired;
 
-  std::vector<uint64_t> num_retired_start_phase;
-  std::vector<uint64_t> cycles_start_phase;
-  std::vector<bool> switched_phase; // true if there has been a begin_phase event since the last time RETIRE occurred
+  // One cache line or more per core. Every core updates its own state on every retire, and with
+  // simulation threads, cores packed into shared lines would bounce those lines between them.
+  struct alignas(64) core_state {
+    uint64_t retired = 0;
+    uint64_t retired_last_printout = 0;
+    uint64_t cycles_last_printout = 0;
+    uint64_t retired_start_phase = 0;
+    uint64_t cycles_start_phase = 0;
+    bool switched_phase = false; // a begin_phase event since this core's last RETIRE
+    std::string deferred;        // lines held while simulation threads run
+  };
+  std::vector<core_state> cores;
+
+  // While simulation threads run, each core's lines are held in its state and written by
+  // flush_deferred(), in core order, instead of from inside O3_CPU::operate().
+  bool defer = false;
+
+  void flush_deferred()
+  {
+    bool wrote = false;
+    for (auto& core : cores) {
+      if (!core.deferred.empty()) {
+        std_out->write(core.deferred.data(), static_cast<std::streamsize>(core.deferred.size()));
+        core.deferred.clear();
+        wrote = true;
+      }
+    }
+    if (wrote) {
+      std_out->flush();
+    }
+  }
 
   template <Event e, typename... Args>
   void handle_event(Args&&... args);
 
+  // Grows the per-core state to cover cpu. Simulation threads require it sized beforehand.
   void add_cpu(uint32_t cpu)
   {
-    while (cpu >= switched_phase.size()) {
-      num_retired_last_printout.push_back(0);
-      cycles_last_printout.push_back(0);
-      num_retired.push_back(0);
-      num_retired_start_phase.push_back(0);
-      cycles_start_phase.push_back(0);
-      switched_phase.push_back(false);
+    if (cpu >= cores.size()) {
+      cores.resize(cpu + 1);
     }
   }
 };
@@ -61,8 +83,8 @@ inline void handle_event(Heartbeat* hb, Args&... args)
 template <>
 inline void handle_event<Event::BEGIN_PHASE>(Heartbeat* hb, [[maybe_unused]] bool& is_warmup)
 {
-  for (size_t i = 0; i < hb->switched_phase.size(); i++) {
-    hb->switched_phase[i] = true;
+  for (auto& core : hb->cores) {
+    core.switched_phase = true;
   }
 }
 
@@ -71,34 +93,40 @@ inline void handle_event<Event::RETIRE>(Heartbeat* hb, uint32_t& cpu, std::deque
                                         std::deque<ooo_model_instr>::const_iterator& end, uint64_t& current_cycles)
 {
   hb->add_cpu(cpu);
-  hb->num_retired[cpu] += std::distance(begin, end);
+  auto& core = hb->cores[cpu];
+  core.retired += static_cast<uint64_t>(std::distance(begin, end));
 
-  if (hb->switched_phase[cpu]) {
-    hb->switched_phase[cpu] = false;
-    hb->num_retired_start_phase[cpu] = hb->num_retired[cpu];
-    hb->cycles_start_phase[cpu] = current_cycles;
+  if (core.switched_phase) {
+    core.switched_phase = false;
+    core.retired_start_phase = core.retired;
+    core.cycles_start_phase = current_cycles;
   }
 
-  if (hb->num_retired[cpu] >= hb->num_retired_last_printout[cpu] + hb->instructions_between_printouts) {
+  if (core.retired >= core.retired_last_printout + hb->instructions_between_printouts) {
 
-    auto heartbeat_instr = static_cast<double>(hb->num_retired[cpu] - hb->num_retired_last_printout[cpu]);
-    auto heartbeat_cycle = static_cast<double>(current_cycles - hb->cycles_last_printout[cpu]);
+    auto heartbeat_instr = static_cast<double>(core.retired - core.retired_last_printout);
+    auto heartbeat_cycle = static_cast<double>(current_cycles - core.cycles_last_printout);
 
-    auto phase_instr = static_cast<double>(hb->num_retired[cpu] - hb->num_retired_start_phase[cpu]);
-    auto phase_cycle = static_cast<double>(current_cycles - hb->cycles_start_phase[cpu]);
+    auto phase_instr = static_cast<double>(core.retired - core.retired_start_phase);
+    auto phase_cycle = static_cast<double>(current_cycles - core.cycles_start_phase);
 
-    fmt::print(*(hb->std_out),
-               "Heartbeat CPU {} instructions: {} cycles: {} heartbeat IPC: {:.4} cumulative IPC: {:.4} (Simulation time: {:%H hr %M min %S sec})\n", cpu,
-               hb->num_retired[cpu], current_cycles, heartbeat_instr / heartbeat_cycle, phase_instr / phase_cycle, elapsed_time());
+    auto line =
+        fmt::format("Heartbeat CPU {} instructions: {} cycles: {} heartbeat IPC: {:.4} cumulative IPC: {:.4} (Simulation time: {:%H hr %M min %S sec})\n", cpu,
+                    core.retired, current_cycles, heartbeat_instr / heartbeat_cycle, phase_instr / phase_cycle, elapsed_time());
+    if (hb->defer) {
+      core.deferred += line;
+    } else {
+      hb->std_out->write(line.data(), static_cast<std::streamsize>(line.size()));
 
-    // Flush explicitly. A heartbeat exists to show the run is alive, and stdout
-    // is block-buffered when redirected to a file -- which is how long runs are
-    // actually launched -- so without this the lines appear only in 4 KiB
-    // batches, or not at all until the run ends.
-    hb->std_out->flush();
+      // Flush explicitly. A heartbeat exists to show the run is alive, and stdout
+      // is block-buffered when redirected to a file -- which is how long runs are
+      // actually launched -- so without this the lines appear only in 4 KiB
+      // batches, or not at all until the run ends.
+      hb->std_out->flush();
+    }
 
-    hb->num_retired_last_printout[cpu] = hb->num_retired[cpu];
-    hb->cycles_last_printout[cpu] = current_cycles;
+    core.retired_last_printout = core.retired;
+    core.cycles_last_printout = current_cycles;
   }
 }
 

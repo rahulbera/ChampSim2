@@ -18,6 +18,7 @@
 #define ENVIRONMENT_H
 
 #include <functional>
+#include <limits>
 #include <string_view>
 #include <vector>
 
@@ -35,6 +36,16 @@ struct environment {
   virtual std::vector<std::reference_wrapper<PageTableWalker>> ptw_view() = 0;
   virtual memory_backend& memory_view() = 0;
   virtual std::vector<std::reference_wrapper<operable>> operable_view() = 0;
+
+  // For each operable_view() entry, the core whose private state it reads and writes, or
+  // no_lane if it touches state other cores share. A multi-threaded tick runs neighbouring
+  // operables of different lanes at once, so two operables in different lanes must never
+  // touch the same state; operables in no lane run alone. The default, no lane for anything,
+  // keeps a machine serial at every thread count.
+  static constexpr std::size_t no_lane = std::numeric_limits<std::size_t>::max();
+  virtual std::vector<std::size_t> operable_lanes() { return std::vector<std::size_t>(std::size(operable_view()), no_lane); }
+
+  virtual ~environment() = default;
 };
 
 namespace configured

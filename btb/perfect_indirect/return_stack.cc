@@ -1,5 +1,7 @@
 #include "return_stack.h"
 
+#include <atomic>
+
 namespace perfect_indirect_impl
 {
 
@@ -29,9 +31,10 @@ void return_stack::calibrate_call_size(champsim::address branch_target)
     auto call_ip = stack.back();
     stack.pop_back();
 
-    static int num_times_returned_backwards = 0;
-    if (call_ip > branch_target && num_times_returned_backwards < 10) {
-      ++num_times_returned_backwards;
+    // At most ten warnings per process, whichever cores (and simulation threads) hit them.
+    static std::atomic<int> num_times_returned_backwards{0};
+    if (call_ip > branch_target && num_times_returned_backwards.load(std::memory_order_relaxed) < 10
+        && num_times_returned_backwards.fetch_add(1, std::memory_order_relaxed) < 10) {
       fmt::print("[BTB] WARNING: target of return is a lower address than the corresponding call. This is usually a problem with your trace.\n");
     }
 

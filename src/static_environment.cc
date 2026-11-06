@@ -534,3 +534,19 @@ std::vector<std::reference_wrapper<champsim::operable>> champsim::static_environ
   retval.push_back(std::ref(memory->clocked_component()));
   return retval;
 }
+
+std::vector<std::size_t> champsim::static_environment::operable_lanes()
+{
+  // Matches operable_view(): cores, caches (the LLC, then six per core), PTWs, memory.
+  std::vector<std::size_t> retval{};
+  for (const auto& core : cores) {
+    retval.push_back(core.cpu);
+  }
+  retval.push_back(no_lane); // LLC
+  for (auto it = std::next(std::begin(caches)); it != std::end(caches); ++it) {
+    const auto cpu = static_cast<std::size_t>(std::distance(std::next(std::begin(caches)), it)) / 6;
+    retval.push_back((it->perfect && it->vmem != nullptr) ? no_lane : cpu);
+  }
+  retval.insert(std::end(retval), std::size(ptws) + 1, no_lane);
+  return retval;
+}
