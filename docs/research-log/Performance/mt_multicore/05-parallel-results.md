@@ -74,6 +74,39 @@ trace also has its own decoder thread, which mostly sleeps.
 > `taskset -c 0-7,16-23 champsim --threads 8`. Never run more simulation threads than
 > physical cores.
 
+## Why 16 threads do not beat 8
+
+The table below is the instrumented copy of `dd0ea3a2` (`mtprobe/crit16b.sh`, results in
+`mtprobe/d16-t*.err`). Each run is the 16-core mix at `-w 200000 -i 500000`, unconfined, with
+TSC cycles per tick over the region of interest. "Total work" is the per-tick work summed over
+all threads.
+
+| Threads | Wall | Tick | Serial | Critical path | Dispatch latency | Per-worker work | Total work |
+|---|---|---|---|---|---|---|---|
+| 8 | 12.2 s | 25,709 | 1,900 | 23,203 | 370–420 | 11.7k–13.3k | 101k |
+| 12 | 14.0 s | 29,641 | 2,835 | 25,957 | 1,340–1,670 | 8.6k–13.6k | 134k |
+| 16 | 13.5 s | 29,540 | 3,144 | 25,491 | 1,570–1,850 | 4.9k–14.2k | 144k |
+
+There are three causes:
+- **One lane per thread leaves nothing to balance.** At 16 threads each worker runs one
+  core, and those cores' costs differ threefold (4.9k to 14.2k cycles per tick). The busiest
+  core alone costs more than a balanced pair of cores does at 8 threads.
+- **The second CCD.** Starting a run costs four times as much (about 1,600 cycles against 400).
+  The serial LLC, PTW and DRAM work also grows by 65%, because the main thread reads channels
+  that the other CCD wrote.
+- **Every operation costs more.** The same simulation does 42% more work per tick. The
+  candidate causes are cache-line transfers between CCDs, SMT siblings shared with the 16
+  decoder threads, and a lower all-core clock: TSC cycles count at a fixed rate, so a slower
+  core shows up as more of them. These runs do not separate the three.
+
+Twelve threads are the worst of both: they still cross the CCD boundary, and four workers
+carry two cores each.
+
+On a host whose 16 cores share one L3, the second and third causes would mostly go. The first
+would remain, so the run could still go no faster than its busiest core. Beating 8 threads by
+much needs runs that span more than one tick, which needs a minimum latency between a core's
+private hierarchy and the shared one. That would be a model change.
+
 ## What it means for a championship
 
 - **Speedup at the target sizes.** An 8- or 16-core run with 8 threads takes about a quarter
