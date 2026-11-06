@@ -1,4 +1,6 @@
 #include <catch.hpp>
+#include <deque>
+#include <optional>
 #include <tuple>
 
 #include "environment.h"
@@ -76,6 +78,86 @@ TEST_CASE("Phase scheduling preserves canonical ties and completes each CPU once
   CHECK(env.first.sim_instr() == 6);
   CHECK(env.second.sim_instr() == 3);
   CHECK(stats.trace_names == std::vector<std::string>{"synthetic", "synthetic"});
+}
+
+namespace
+{
+// Twenty operables on one clock and one slower one, canonically first: more than the 16 elements
+// libstdc++'s std::sort insertion-sorts, which is where a multi-core machine's tick order used to
+// be scrambled.
+struct wide_environment : champsim::environment {
+  O3_CPU cpu{champsim::core_builder{}.index(0)};
+  std::vector<std::pair<int, long long>> operations;
+
+  struct component : champsim::operable {
+    wide_environment& env;
+    int id;
+    component(wide_environment& e, int i, long long period) : operable(champsim::chrono::picoseconds{period}), env(e), id(i) {}
+    long operate() override
+    {
+      env.operations.emplace_back(id, current_time.time_since_epoch().count());
+      if (id == 1) {
+        ++env.cpu.num_retired;
+        env.cpu.current_time = current_time;
+      }
+      return 1;
+    }
+  };
+  std::deque<component> components;
+
+  struct memory : champsim::memory_backend {
+    component& op;
+    explicit memory(component& c) : op(c) {}
+    champsim::operable& clocked_component() override { return op; }
+    champsim::data::bytes size() const override { return champsim::data::bytes{64}; }
+    champsim::memory_statistics statistics() const override { return {}; }
+    std::string_view name() const override { return "legacy"; }
+  };
+  std::optional<memory> mem;
+
+  wide_environment()
+  {
+    components.emplace_back(*this, 0, 3);
+    for (int i = 1; i <= 20; ++i) {
+      components.emplace_back(*this, i, 2);
+    }
+    mem.emplace(components.front());
+  }
+
+  std::vector<std::reference_wrapper<O3_CPU>> cpu_view() override { return {cpu}; }
+  std::vector<std::reference_wrapper<CACHE>> cache_view() override { return {}; }
+  std::vector<std::reference_wrapper<PageTableWalker>> ptw_view() override { return {}; }
+  champsim::memory_backend& memory_view() override { return *mem; }
+  std::vector<std::reference_wrapper<champsim::operable>> operable_view() override { return {std::begin(components), std::end(components)}; }
+};
+} // namespace
+
+TEST_CASE("Operables due at the same time keep canonical order beyond sixteen operables")
+{
+  wide_environment env;
+  env.cpu.begin_phase();
+  std::vector<champsim::tracereader> traces;
+  traces.emplace_back([] { return ooo_model_instr{0, input_instr{}}; });
+  champsim::chrono::clock clock;
+  champsim::phase_info phase{"Simulation", false, 3, {0}, {"synthetic"}};
+  champsim::do_phase(phase, env, traces, clock, {});
+
+  // The clock ticks by 2. Tick 1 (time 2): every operable is at 0, so all run in canonical order.
+  // Tick 2 (time 4): the slow operable, now at 3, is later than the twenty at 2 and runs last.
+  // Tick 3 (time 6): it is not due.
+  std::vector<std::pair<int, long long>> expected;
+  expected.emplace_back(0, 3);
+  for (int i = 1; i <= 20; ++i) {
+    expected.emplace_back(i, 2);
+  }
+  for (int i = 1; i <= 20; ++i) {
+    expected.emplace_back(i, 4);
+  }
+  expected.emplace_back(0, 6);
+  for (int i = 1; i <= 20; ++i) {
+    expected.emplace_back(i, 6);
+  }
+  CHECK(env.operations == expected);
 }
 
 TEST_CASE("A trace reaching EOF completes every remaining CPU on that tick")

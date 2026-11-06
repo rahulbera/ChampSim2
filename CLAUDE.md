@@ -493,9 +493,12 @@ Construction order is load-bearing and fixed by member declaration order: channe
 DRAM → vmem → PTWs → caches → cores, with every vector fully `reserve`d and filled
 before a pointer into it is handed out. Cache order is the per-cycle `operate()` order:
 `LLC` first, then each core's caches alphabetically (`DTLB, ITLB, L1D, L1I, L2C, STLB`).
-That holds among operables due at the same time only while there are at most 16:
-`do_cycle` orders them with `std::sort`, which libstdc++ does not keep stable above
-16 elements, and a machine with two or more cores has at least 18.
+`do_cycle` keeps operables due at the same time in that order with a stable insertion
+sort. It used to be `std::sort`, which libstdc++ keeps stable only up to 16 elements, so
+at two or more cores (18 or more operables) the cores ticked in a scrambled,
+core-dependent order. Multi-core results from before the change ("sim: tick operables
+in a stable order") carry that bias;
+`docs/research-log/Performance/mt_multicore/03-tick-order.md` measures it.
 
 `config.sh` → `config/` package (`modules.py`, `module_registry.py`, `makefile.py`,
 `filewrite.py`, `util.py`) walks the four module directories and emits only what a
