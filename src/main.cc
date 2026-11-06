@@ -132,6 +132,11 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   app.add_option("--trace-version", trace_version, "The trace record format version: 1 (64-byte, default) or 2 (512-byte, with memory values)")
       ->check(CLI::IsMember({1U, 2U}));
   app.add_flag("--hide-heartbeat", hide_heartbeat, "Hide the heartbeat output");
+  // A command-line flag, not a runtime key: the thread count is not part of the simulated
+  // machine, so it must not enter [config] or the build_id, and statistics do not depend on it.
+  std::size_t simulation_threads{1};
+  app.add_option("--threads", simulation_threads, "Simulation threads, counting the main one; statistics are identical at every count (default 1)")
+      ->check(CLI::Range(std::size_t{1}, std::size_t{1024}));
   auto* heartbeat_option = app.add_option("--heartbeat-frequency", heartbeat_frequency,
                                           "Instructions retired between heartbeat lines (default: the configuration's heartbeat_frequency)")
                                ->check(CLI::PositiveNumber);
@@ -224,6 +229,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
       runtime_cfg.override_effective("sim.heartbeat_frequency", heartbeat_frequency);
     }
     sim_knobs.livelock_period = runtime_cfg.positive_value<uint64_t>("sim.livelock_period", sim_knobs.livelock_period);
+    sim_knobs.threads = simulation_threads;
 
     built_environment.emplace(runtime_cfg);
     auto deadlock_default = sim_knobs.deadlock_cycle;

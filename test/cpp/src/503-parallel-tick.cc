@@ -1,0 +1,245 @@
+#include <catch.hpp>
+#include <algorithm>
+#include <deque>
+#include <optional>
+#include <stdexcept>
+
+#include "environment.h"
+#include "instr.h"
+#include "mocks.hpp"
+#include "phase_info.h"
+#include "tracereader.h"
+
+namespace champsim
+{
+phase_stats do_phase(const phase_info&, environment&, std::vector<tracereader>&, chrono::clock&, const simulation_knobs&);
+}
+
+namespace
+{
+// Three cores, each with its own mock L1I and L1D in its lane, and a no-lane probe between the
+// cores and the caches, where a real machine's LLC sits. The probe sees every core, so it fixes
+// what each tick must have done before it, and after it, at any thread count. Everything runs on
+// a 2 ps clock unless the probe is given another period. One that is not a multiple of 2 is due on
+// some ticks while later than the rest, which moves it after the caches.
+struct lane_environment : champsim::environment {
+  static constexpr std::size_t num_cores = 3;
+  std::deque<do_nothing_MRC> l1i, l1d;
+  std::deque<O3_CPU> cores;
+
+  struct probe_type : champsim::operable {
+    lane_environment& env;
+    std::vector<std::vector<long long>> retired; // per tick, each core's retired count, then each mock cache's accepted requests
+    std::vector<std::vector<uint64_t>> queued;   // per tick, every queued instruction ID, core by core
+    explicit probe_type(lane_environment& e) : env(e) {}
+    long operate() override
+    {
+      auto& counts = retired.emplace_back();
+      auto& ids = queued.emplace_back();
+      for (auto& core : env.cores) {
+        counts.push_back(core.num_retired);
+        for (const auto& instr : core.input_queue) {
+          ids.push_back(instr.instr_id);
+        }
+      }
+      for (std::size_t c = 0; c < num_cores; ++c) {
+        counts.push_back(static_cast<long long>(std::size(env.l1i[c].addresses)));
+        counts.push_back(static_cast<long long>(std::size(env.l1d[c].addresses)));
+      }
+      return 0;
+    }
+  } probe{*this};
+
+  // Throws from inside a lane, on a worker thread when there is more than one.
+  struct thrower_type : champsim::operable {
+    long throw_at = 0;
+    long calls = 0;
+    long operate() override
+    {
+      if (++calls == throw_at) {
+        throw std::runtime_error{"thrown from a lane"};
+      }
+      return 0;
+    }
+  } thrower;
+
+  explicit lane_environment(long probe_period)
+  {
+    probe.clock_period = champsim::chrono::picoseconds{probe_period};
+    thrower.clock_period = champsim::chrono::picoseconds{2};
+    for (std::size_t c = 0; c < num_cores; ++c) {
+      l1i.emplace_back(static_cast<int>(c));     // a different latency per core, so cores
+      l1d.emplace_back(static_cast<int>(2 * c)); // drain their input queues at different rates
+      l1i.back().clock_period = l1d.back().clock_period = champsim::chrono::picoseconds{2};
+    }
+    for (std::size_t c = 0; c < num_cores; ++c) {
+      cores.emplace_back(champsim::core_builder{}
+                             .index(static_cast<uint32_t>(c))
+                             .ifetch_buffer_size(16)
+                             .decode_buffer_size(16)
+                             .dispatch_buffer_size(16)
+                             .register_file_size(128)
+                             .rob_size(16)
+                             .lq_size(8)
+                             .sq_size(8)
+                             .clock_period(champsim::chrono::picoseconds{2})
+                             .fetch_width(champsim::bandwidth::maximum_type{static_cast<long>(num_cores - c)})
+                             .fetch_queues(&l1i[c].queues)
+                             .data_queues(&l1d[c].queues));
+    }
+  }
+
+  std::vector<std::reference_wrapper<O3_CPU>> cpu_view() override { return {std::begin(cores), std::end(cores)}; }
+  std::vector<std::reference_wrapper<CACHE>> cache_view() override { return {}; }
+  std::vector<std::reference_wrapper<PageTableWalker>> ptw_view() override { return {}; }
+
+  struct memory : champsim::memory_backend {
+    champsim::operable& op;
+    explicit memory(champsim::operable& o) : op(o) {}
+    champsim::operable& clocked_component() override { return op; }
+    champsim::data::bytes size() const override { return champsim::data::bytes{64}; }
+    champsim::memory_statistics statistics() const override { return {}; }
+    std::string_view name() const override { return "legacy"; }
+  } mem{probe};
+  champsim::memory_backend& memory_view() override { return mem; }
+
+  // Cores, the probe, then each core's caches (the thrower among core 2's).
+  std::vector<std::reference_wrapper<champsim::operable>> operable_view() override
+  {
+    std::vector<std::reference_wrapper<champsim::operable>> view{std::begin(cores), std::end(cores)};
+    view.emplace_back(probe);
+    for (std::size_t c = 0; c < num_cores; ++c) {
+      view.emplace_back(l1i[c]);
+      view.emplace_back(l1d[c]);
+    }
+    view.emplace_back(thrower);
+    return view;
+  }
+  std::vector<std::size_t> operable_lanes() override
+  {
+    std::vector<std::size_t> lanes{0, 1, 2, no_lane};
+    for (std::size_t c = 0; c < num_cores; ++c) {
+      lanes.insert(std::end(lanes), 2, c);
+    }
+    lanes.push_back(2);
+    return lanes;
+  }
+};
+
+struct outcome {
+  std::vector<std::vector<long long>> seen_retired;
+  std::vector<std::vector<uint64_t>> seen_queued; // relative to the run's first ID
+  std::vector<std::vector<uint64_t>> final_queues;
+  std::vector<long long> retired;
+};
+
+// Instructions with a load every third one, so the L1D lanes have work too. A finite reader
+// ends after `length` instructions.
+struct reader {
+  uint64_t ip;
+  long remaining;
+  long count = 0;
+  ooo_model_instr operator()()
+  {
+    --remaining;
+    ip += 4;
+    if (++count % 3 == 0) {
+      return champsim::test::instruction_with_ip_and_source_memory(champsim::address{ip}, champsim::address{0x100000 + 64 * ip});
+    }
+    return champsim::test::instruction_with_ip(ip);
+  }
+  bool eof() const { return remaining <= 0; }
+};
+
+// Reports the first tick that differs, not the whole history.
+void check_same(const outcome& threaded, const outcome& serial)
+{
+  CHECK(threaded.retired == serial.retired);
+  CHECK(threaded.final_queues == serial.final_queues);
+  REQUIRE(std::size(threaded.seen_retired) == std::size(serial.seen_retired));
+  for (std::size_t tick = 0; tick < std::size(serial.seen_retired); ++tick) {
+    INFO("tick " << tick);
+    REQUIRE(threaded.seen_retired[tick] == serial.seen_retired[tick]);
+    REQUIRE(threaded.seen_queued[tick] == serial.seen_queued[tick]);
+  }
+}
+
+outcome run(std::size_t threads, long trace_length, long throw_at = 0, long probe_period = 2)
+{
+  lane_environment env{probe_period};
+  env.thrower.throw_at = throw_at;
+  std::vector<champsim::tracereader> traces;
+  for (std::size_t c = 0; c < lane_environment::num_cores; ++c) {
+    traces.emplace_back(reader{0x1000 * (c + 1), trace_length + static_cast<long>(7 * c)});
+  }
+  champsim::chrono::clock clock;
+  champsim::phase_info phase{"Simulation", false, 120, {0, 1, 2}, {"a", "b", "c"}};
+  champsim::simulation_knobs knobs;
+  knobs.threads = threads;
+
+  // Instruction IDs are global, so compare them relative to the first one this run hands out.
+  const auto first = champsim::tracereader::next_id();
+  champsim::do_phase(phase, env, traces, clock, knobs);
+
+  outcome result;
+  result.seen_retired = env.probe.retired;
+  for (auto ids : env.probe.queued) {
+    for (auto& id : ids) {
+      id -= first;
+    }
+    result.seen_queued.push_back(ids);
+  }
+  for (auto& core : env.cores) {
+    std::vector<uint64_t> queue;
+    for (const auto& instr : core.input_queue) {
+      queue.push_back(instr.instr_id - first);
+    }
+    result.final_queues.push_back(queue);
+    result.retired.push_back(core.num_retired);
+  }
+  return result;
+}
+} // namespace
+
+TEST_CASE("A multi-threaded tick gives the serial result at every thread count")
+{
+  const auto serial = run(1, 1000000);
+  REQUIRE(std::size(serial.seen_retired) > 50);
+  // Every core reaches the phase length; the faster ones keep retiring until the slowest does.
+  REQUIRE(std::all_of(std::begin(serial.retired), std::end(serial.retired), [](auto retired) { return retired >= 120; }));
+  for (std::size_t threads : {std::size_t{2}, std::size_t{3}, std::size_t{8}}) {
+    INFO(threads << " threads");
+    check_same(run(threads, 1000000), serial);
+  }
+}
+
+TEST_CASE("A multi-threaded tick follows the serial order when a slower operable falls behind")
+{
+  // A 3 ps probe on a 2 ps clock is due on two ticks of three, and on one of them it is later than
+  // the rest, so the serial loop runs it after the caches and the schedule has to move it there.
+  const auto serial = run(1, 1000000, 0, 3);
+  REQUIRE(std::size(serial.seen_retired) > 20);
+  for (std::size_t threads : {std::size_t{2}, std::size_t{3}}) {
+    INFO(threads << " threads");
+    check_same(run(threads, 1000000, 0, 3), serial);
+  }
+}
+
+TEST_CASE("A multi-threaded tick numbers instructions as the serial loop does when a trace ends")
+{
+  // Core 0's three-instruction trace ends inside the first refill, which asks it for six: the
+  // instructions read after it, cores 1 and 2's, must not be numbered across the gap. (In steady
+  // state a core asks for about one instruction a tick, so a longer trace ends without a gap.)
+  const auto serial = run(1, 3);
+  REQUIRE(serial.final_queues.at(0).size() == 3);
+  for (std::size_t threads : {std::size_t{2}, std::size_t{3}}) {
+    INFO(threads << " threads");
+    check_same(run(threads, 3), serial);
+  }
+}
+
+TEST_CASE("An exception thrown inside a lane reaches the caller")
+{
+  CHECK_THROWS_WITH(run(3, 1000000, 5), "thrown from a lane");
+  CHECK_THROWS_WITH(run(1, 1000000, 5), "thrown from a lane");
+}
