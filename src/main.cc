@@ -58,8 +58,12 @@ const std::size_t NUM_CPUS = champsim::defs::num_cpus;
 const unsigned BLOCK_SIZE = champsim::defs::block_size;
 const unsigned PAGE_SIZE = champsim::defs::page_size;
 #endif
-const unsigned LOG2_BLOCK_SIZE = champsim::lg2(BLOCK_SIZE);
-const unsigned LOG2_PAGE_SIZE = champsim::lg2(PAGE_SIZE);
+// From the compile-time constants, not from BLOCK_SIZE/PAGE_SIZE: a test build defines those in
+// 000-test-main.cc, which made these dynamically initialized, and defaults.hpp's namespace-scope
+// builders in other translation units read them as 0 whenever their initializers ran first (as
+// under -flto, which gave every default-built cache OFFSET_BITS 0).
+const unsigned LOG2_BLOCK_SIZE = champsim::lg2(static_cast<unsigned>(champsim::defs::block_size));
+const unsigned LOG2_PAGE_SIZE = champsim::lg2(static_cast<unsigned>(champsim::defs::page_size));
 
 #ifndef CHAMPSIM_TEST_BUILD
 int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
@@ -128,6 +132,11 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   app.add_option("--trace-version", trace_version, "The trace record format version: 1 (64-byte, default) or 2 (512-byte, with memory values)")
       ->check(CLI::IsMember({1U, 2U}));
   app.add_flag("--hide-heartbeat", hide_heartbeat, "Hide the heartbeat output");
+  // A command-line flag, not a runtime key: the thread count is not part of the simulated
+  // machine, so it must not enter [config] or the build_id, and statistics do not depend on it.
+  std::size_t simulation_threads{1};
+  app.add_option("--threads", simulation_threads, "Simulation threads, counting the main one; statistics are identical at every count (default 1)")
+      ->check(CLI::Range(std::size_t{1}, std::size_t{1024}));
   auto* heartbeat_option = app.add_option("--heartbeat-frequency", heartbeat_frequency,
                                           "Instructions retired between heartbeat lines (default: the configuration's heartbeat_frequency)")
                                ->check(CLI::PositiveNumber);
@@ -220,6 +229,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
       runtime_cfg.override_effective("sim.heartbeat_frequency", heartbeat_frequency);
     }
     sim_knobs.livelock_period = runtime_cfg.positive_value<uint64_t>("sim.livelock_period", sim_knobs.livelock_period);
+    sim_knobs.threads = simulation_threads;
 
     built_environment.emplace(runtime_cfg);
     auto deadlock_default = sim_knobs.deadlock_cycle;
@@ -365,6 +375,13 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
                    [knob_cloudsuite, trace_version, repeat = simulation_given, i = uint8_t(0)](auto name) mutable {
                      return get_tracereader(name, i++, knob_cloudsuite, repeat, trace_version);
                    });
+
+    // With simulation threads, each trace also decodes on a thread of its own.
+    if (sim_knobs.threads > 1) {
+      for (auto& trace : traces) {
+        trace.decode_ahead();
+      }
+    }
 
     std::vector<champsim::phase_info> phases{
         {champsim::phase_info{"Warmup", true, warmup_instructions, std::vector<std::size_t>(std::size(trace_names), 0), trace_names},

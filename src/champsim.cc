@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cstdio>
 #include <iostream>
+#include <memory>
 #include <numeric>
 #include <vector>
 #include <fmt/chrono.h>
@@ -29,6 +30,7 @@
 #include "event_listeners.h"
 #include "ooo_cpu.h"
 #include "operable.h"
+#include "parallel_tick.h"
 #include "phase_info.h"
 #include "tracereader.h"
 
@@ -41,8 +43,19 @@ namespace champsim
 long do_cycle(std::vector<std::reference_wrapper<operable>>& operables, const std::vector<std::reference_wrapper<O3_CPU>>& cpus,
               std::vector<tracereader>& traces, const std::vector<std::size_t>& trace_index, champsim::chrono::clock& global_clock)
 {
-  std::sort(std::begin(operables), std::end(operables),
-            [](const champsim::operable& lhs, const champsim::operable& rhs) { return lhs.current_time < rhs.current_time; });
+  // Earliest time first, and operables due at the same time in canonical order. That needs a
+  // stable sort: libstdc++'s std::sort insertion-sorts only up to 16 elements and partitions
+  // above that, which scrambled the order of tied operables at two or more cores. The
+  // canonical copy is almost sorted already (only components on other clocks move), so
+  // insertion sort is linear here.
+  for (auto it = std::begin(operables); it != std::end(operables); ++it) {
+    const auto value = *it;
+    auto hole = it;
+    for (; hole != std::begin(operables) && value.get().current_time < std::prev(hole)->get().current_time; --hole) {
+      *hole = *std::prev(hole);
+    }
+    *hole = value;
+  }
 
   // Operate
   long progress{0};
@@ -76,6 +89,10 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
   // The environment owns a fixed component set throughout a phase.
   const auto cpus = env.cpu_view();
   auto cycle_operables = operables;
+  std::unique_ptr<parallel_tick> threaded;
+  if (knobs.threads > 1) {
+    threaded = std::make_unique<parallel_tick>(env, knobs.threads);
+  }
 
   const auto time_quantum = std::accumulate(std::cbegin(operables), std::cend(operables), champsim::chrono::clock::duration::max(),
                                             [](const auto acc, const operable& y) { return std::min(acc, y.clock_period); });
@@ -97,8 +114,13 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
 
     // Restore canonical order before sorting: retaining last cycle's sorted
     // order changes how equal-time operables are visited.
-    std::copy(std::begin(operables), std::end(operables), std::begin(cycle_operables));
-    auto progress = do_cycle(cycle_operables, cpus, traces, trace_index, global_clock);
+    long progress{0};
+    if (threaded) {
+      progress = (*threaded)(traces, trace_index, global_clock);
+    } else {
+      std::copy(std::begin(operables), std::end(operables), std::begin(cycle_operables));
+      progress = do_cycle(cycle_operables, cpus, traces, trace_index, global_clock);
+    }
 
     if (progress == 0) {
       ++stalled_cycle;
@@ -132,6 +154,9 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
     }
 
     if (stalled_cycle >= knobs.deadlock_cycle || livelock_trigger) {
+      if (threaded) {
+        threaded->settle();
+      }
       print_deadlock_diagnostics(operables);
       // abort() flushes nothing. With stdout a pipe or a file, as in a batch
       // job, the buffered tail of these diagnostics -- the memory backend's,

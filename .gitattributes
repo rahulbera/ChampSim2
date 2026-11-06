@@ -1,0 +1,2 @@
+# PGO profiles are compiler-generated binary data.
+pgo/**/*.gcda binary

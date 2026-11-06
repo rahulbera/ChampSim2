@@ -47,6 +47,8 @@ struct simulation_knobs {
   int deadlock_cycle{500};
   // Cycles between livelock IPC checks.
   uint64_t livelock_period{10000000};
+  // Simulation threads, counting the main thread. Results do not depend on it.
+  std::size_t threads{1};
 };
 
 #ifdef DEBUG_PRINT

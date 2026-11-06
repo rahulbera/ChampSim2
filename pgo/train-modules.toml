@@ -1,0 +1,16 @@
+# PGO training only: the default machine (no lnc.toml) with non-default modules on every hook, so
+# the profile also covers code that lnc.toml's module selection never runs. Overlay A of the
+# 2026-09-27 LTO/PGO campaign stayed untrained and measured how the profile generalizes.
+[ooo_cpu.cpu0]
+branch_predictor = "cbp6_ddtage"
+btb = "ittage_32kb"
+
+[cache.cpu0_l1d]
+prefetcher = "next_line"
+
+[cache.cpu0_l2c]
+prefetcher = "va_ampm_lite"
+replacement = "srrip"
+
+[cache.llc]
+replacement = "random"

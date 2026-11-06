@@ -45,7 +45,11 @@ public:
   constexpr static val_type minimum = MINVAL;
   constexpr static val_type maximum = MAXVAL;
 
-  base_fwcounter() {}
+  // Defaulted, not user-provided: GCC 11 expands the value-initialization of a large array of
+  // counters with a user-provided constructor into one constructor call per element.
+  // hashed_perceptron's 65,536 counters became a 788 KB constructor that kept variable tracking
+  // busy for half an hour at -O3 -g3, and at -O2 one element was left uninitialized.
+  base_fwcounter() = default;
   explicit base_fwcounter(val_type value) : _value(std::move(value)) {}
 
   template <typename Numeric>

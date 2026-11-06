@@ -64,7 +64,7 @@ def command(args, variant, trace, run_dir):
         argv += ["--config", str(config)]
     for setting in getattr(args, "settings", []):
         argv += ["--set", setting]
-    argv += ["--set", "dram-model=legacy"]
+    argv += ["--set", f"dram-model={getattr(args, 'dram_model', 'legacy')}"]
     if variant != "baseline":
         argv += ["--set", f"ptw.cpu0_ptw.model={'fixed' if variant == 'fixed' else 'detailed'}"]
     if variant == "fixed":
@@ -118,8 +118,9 @@ def measure(args, variant, trace, repetition):
     if variant != "hermes":
         with (run_dir / "stats.toml").open("rb") as stream:
             stats = tomllib.load(stream)
-        if stats["config"]["dram-model"] != "legacy":
-            raise RuntimeError("This campaign must use legacy DRAM")
+        expected_model = getattr(args, "dram_model", "legacy")
+        if stats["config"]["dram-model"] != expected_model:
+            raise RuntimeError(f"Run used dram-model={stats['config']['dram-model']}, expected {expected_model}")
         if variant == "fixed":
             translation_events = 0
             for phase in stats["phase"].values():

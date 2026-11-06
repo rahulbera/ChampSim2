@@ -6,6 +6,7 @@
     "catch2",
     "cli11",
     "fmt",
+    "gperftools",
     "liblzma",
     "nlohmann-json",
     "tomlplusplus",

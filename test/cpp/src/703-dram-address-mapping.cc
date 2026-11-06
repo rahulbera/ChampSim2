@@ -214,3 +214,67 @@ TEST_CASE("Direct DRAM mapping rejects overflowing transfer geometry")
     CHECK_THROWS_WITH(overflowing_transfer(), "invalid DRAM address mapping geometry");
   }
 }
+
+TEST_CASE("DRAM getters match the slice-based swizzle across geometries")
+{
+  // The getters decode with integer shifts and masks; swizzle_bits() and address_slicer keep
+  // the slice-based definition the getters used to call. Compare the two directly, including
+  // rows too short for one segment, partial final segments and rows ending at bit 63 or 64.
+  if constexpr (std::numeric_limits<unsigned long>::digits == 64) {
+    using mapping_type = DRAM_ADDRESS_MAPPING;
+    const std::array<std::array<unsigned long, 2>, 3> layouts{{{8, 8}, {4, 16}, {16, 4}}};
+    std::mt19937_64 random{7030};
+    for (const auto& [channel_bytes, prefetch] : layouts) {
+      for (auto channels : {1ul, 2ul, 8ul}) {
+        for (auto groups : {1ul, 2ul, 4ul, 8ul}) {
+          for (auto banks : {1ul, 2ul, 4ul, 8ul}) {
+            if (groups == 1 && banks == 1) {
+              continue; // swizzle_bits() does not terminate for one bank in one group
+            }
+            for (auto columns : {prefetch, prefetch * 128}) {
+              for (auto ranks : {1ul, 2ul, 4ul}) {
+                const auto row_start = log2_power_of_two(channel_bytes * prefetch) + log2_power_of_two(channels) + log2_power_of_two(groups)
+                                       + log2_power_of_two(banks) + log2_power_of_two(columns / prefetch) + log2_power_of_two(ranks);
+                for (auto row_bits : {0u, 2u, 10u, 16u, 63u - row_start, 64u - row_start}) {
+                  const mapping_type mapping{
+                      champsim::data::bytes{static_cast<long long>(channel_bytes)}, prefetch, channels, groups, banks, columns, ranks, 1ul << row_bits};
+                  const auto& slicer = mapping.address_slicer;
+                  const auto c_bits = champsim::size(slicer.get<mapping_type::SLICER_CHANNEL_IDX>());
+                  const auto bg_bits = champsim::size(slicer.get<mapping_type::SLICER_BANKGROUP_IDX>());
+                  const auto bk_bits = champsim::size(slicer.get<mapping_type::SLICER_BANK_IDX>());
+
+                  std::vector<uint64_t> addresses{0, ~uint64_t{0}};
+                  for (unsigned bit = 0; bit < 64; ++bit) {
+                    addresses.push_back(uint64_t{1} << bit);
+                  }
+                  for (unsigned sample = 0; sample < 24; ++sample) {
+                    addresses.push_back(random());
+                  }
+                  std::vector<std::array<unsigned long, 6>> expected;
+                  std::vector<std::array<unsigned long, 6>> actual;
+                  for (auto raw : addresses) {
+                    const champsim::address address{raw};
+                    const auto fields = slicer(address);
+                    expected.push_back({mapping.swizzle_bits(address, 1, champsim::data::bits{0},
+                                                             std::get<mapping_type::SLICER_CHANNEL_IDX>(fields).to<unsigned long>(), c_bits),
+                                        std::get<mapping_type::SLICER_RANK_IDX>(fields).to<unsigned long>(),
+                                        mapping.swizzle_bits(address, bg_bits + bk_bits, champsim::data::bits{0},
+                                                             std::get<mapping_type::SLICER_BANKGROUP_IDX>(fields).to<unsigned long>(), bg_bits),
+                                        mapping.swizzle_bits(address, bg_bits + bk_bits, champsim::data::bits{bg_bits},
+                                                             std::get<mapping_type::SLICER_BANK_IDX>(fields).to<unsigned long>(), bk_bits),
+                                        std::get<mapping_type::SLICER_ROW_IDX>(fields).to<unsigned long>(),
+                                        std::get<mapping_type::SLICER_COLUMN_IDX>(fields).to<unsigned long>()});
+                    actual.push_back({mapping.get_channel(address), mapping.get_rank(address), mapping.get_bankgroup(address), mapping.get_bank(address),
+                                      mapping.get_row(address), mapping.get_column(address)});
+                  }
+                  CAPTURE(channel_bytes, prefetch, channels, groups, banks, columns, ranks, row_bits);
+                  REQUIRE(actual == expected);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

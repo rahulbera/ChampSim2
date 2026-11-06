@@ -35,6 +35,9 @@ def main():
                 source = Path('src/main.cc')
         if source == Path('src/ramulator2_driver.cc') and policy['native']['enabled']:
             options += ['-isystem', policy['native']['root'] + '/src', '-std=c++20']
+        if policy.get('pgo', {}).get('mode') in ('use', 'generate'):
+            # The compile rule's portable-profile option (config/build_rules.mk, pgo_object_options).
+            options += ['-dumpdir', str(Path('obj') / relative.parent) + '/' if relative.parent != Path('.') else 'obj/']
         result.append({'directory': str(Path.cwd()), 'file': str(source), 'output': output,
                        'arguments': command + options + ['-c', '-o', output, str(source)]})
     write_changed(root / 'compile_commands.json', json.dumps(result, indent=2) + '\n')

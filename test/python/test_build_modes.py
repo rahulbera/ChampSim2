@@ -1,5 +1,6 @@
 """Execute the real Make rules with small actual compiler fixtures."""
 import concurrent.futures
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -31,6 +32,8 @@ class BuildModeTests(unittest.TestCase):
         shutil.copytree(REPO / 'inc/util', self.root / 'inc/util')
         (self.root / '_configuration.mk').write_text('configured_bindir := bin\nregistry_dir := .csconfig\nexecutable_name += $(BIN_ROOT)/champsim\n')
         (self.root / '.csconfig/registry.inc').write_text('// configured discovery input\n')
+        # fast links tcmalloc from the dependency tree; an empty archive stands in for it.
+        (self.root / 'vcpkg_installed/x64-linux/lib/libtcmalloc_minimal.a').write_bytes(b'!<arch>\n')
         probe = '''#include "champsim_assert.h"
 #include "registry.inc"
 #include <cstdio>
@@ -58,7 +61,8 @@ int main() {
             (self.root / name).write_text(f'int {function}() {{\n#ifdef CHAMPSIM_TEST_BUILD\nreturn 1;\n#else\nreturn 0;\n#endif\n}}\n')
         self.env = {k: v for k, v in os.environ.items() if k not in (
             'CFLAGS', 'CXXFLAGS', 'CPPFLAGS', 'LDFLAGS', 'LDLIBS', 'LOADLIBES', 'MAKEFLAGS', 'MFLAGS', 'BUILD_MODE', 'X86_ISA',
-            'WITH_RAMULATOR2', 'RAMULATOR2_ROOT', 'RAMULATOR2_SANITIZE', 'OBJ_ROOT', 'DEP_ROOT', 'BIN_ROOT')}
+            'WITH_RAMULATOR2', 'RAMULATOR2_ROOT', 'RAMULATOR2_SANITIZE', 'OBJ_ROOT', 'DEP_ROOT', 'BIN_ROOT', 'LTO', 'TCMALLOC',
+            'PGO', 'PGO_PROFILE', 'TRACE_ROOT', 'PGO_TRAIN', 'PGO_CHECK')}
 
     def make(self, *args, ok=True):
         result = subprocess.run(['make', '--no-print-directory', f'CXX={self.compiler}',
@@ -96,6 +100,147 @@ int main() {
             self.make(mode)
             self.assertEqual(binary.stat().st_mtime_ns, before)
         self.assertFalse((self.root / 'bin/champsim').exists())
+
+    def policy(self, *args):
+        return json.loads((Path(self.paths(*args)['obj']) / 'build-policy.json').read_text())
+
+    def test_fast_uses_gcc_lto_by_default(self):
+        self.make('-j4', 'fast', 'release')
+        self.make('fast', 'LTO=0')
+        fast, release, plain = self.policy('BUILD_MODE=fast'), self.policy('BUILD_MODE=release'), self.policy('BUILD_MODE=fast', 'LTO=0')
+        self.assertTrue(fast['lto'])
+        self.assertIn('-flto=auto', fast['compile_options'])
+        # Link-time optimization sees none of the compile options, so the link repeats them.
+        self.assertEqual(fast['link_options'][-3:], ['-O3', '-g3', '-flto=auto'])
+        for policy in (release, plain):
+            self.assertFalse(policy['lto'])
+            self.assertNotIn('-flto=auto', policy['compile_options'] + policy['link_options'])
+        self.assertNotEqual(self.paths('BUILD_MODE=fast')['obj'], self.paths('BUILD_MODE=fast', 'LTO=0')['obj'])
+        paths = self.paths('BUILD_MODE=fast')
+        if shutil.which('readelf'):
+            sections = subprocess.check_output(['readelf', '-SW', str(Path(paths['obj']) / 'core.o')], text=True)
+            self.assertIn('.gnu.lto_', sections)
+        self.assertEqual(self.execute(paths['binary']), 'optimized\nassertions=0 core=0 module=0\nv2\n')
+
+    def test_lto_selection_is_validated(self):
+        for args, message in [(['release', 'LTO=1'], 'LTO=1 requires BUILD_MODE=fast'), (['debug', 'LTO=1'], 'LTO=1 requires BUILD_MODE=fast'),
+                              (['fast', 'LTO=yes'], 'LTO must be auto, 0 or 1')]:
+            with self.subTest(args=args):
+                result = self.make('-n', *args, ok=False)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn(message, result.stderr)
+
+    def test_fast_links_tcmalloc_by_default(self):
+        self.make('-j4', 'fast', 'release')
+        self.make('fast', 'TCMALLOC=0')
+        fast, release, plain = self.policy('BUILD_MODE=fast'), self.policy('BUILD_MODE=release'), self.policy('BUILD_MODE=fast', 'TCMALLOC=0')
+        self.assertTrue(fast['tcmalloc'])
+        self.assertEqual(fast['libraries'][-1], '-ltcmalloc_minimal')
+        self.assertTrue(fast['dependencies']['linked_libraries']['-ltcmalloc_minimal'].endswith('/libtcmalloc_minimal.a'))
+        for policy in (release, plain):
+            self.assertFalse(policy['tcmalloc'])
+            self.assertNotIn('-ltcmalloc_minimal', policy['libraries'])
+        self.assertNotEqual(self.paths('BUILD_MODE=fast')['obj'], self.paths('BUILD_MODE=fast', 'TCMALLOC=0')['obj'])
+
+    def test_tcmalloc_selection_is_validated(self):
+        for args, message in [(['release', 'TCMALLOC=1'], 'TCMALLOC=1 requires BUILD_MODE=fast'),
+                              (['fast', 'TCMALLOC=yes'], 'TCMALLOC must be auto, 0 or 1'),
+                              (['fast', 'TCMALLOC=1', 'CXXFLAGS=-fsanitize=address'], 'cannot be combined with a sanitizer')]:
+            with self.subTest(args=args):
+                result = self.make('-n', *args, ok=False)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn(message, result.stderr)
+        # A sanitizer owns malloc, so the default leaves tcmalloc out rather than failing.
+        sanitized = ['BUILD_MODE=fast', 'CXXFLAGS=-fsanitize=address', 'LDFLAGS=-fsanitize=address']
+        self.make('all', *sanitized)
+        self.assertFalse(self.policy(*sanitized)['tcmalloc'])
+
+    def gcc_version(self):
+        macros = subprocess.check_output([self.compiler, '-dM', '-E', '-x', 'c++', '-'], input='', text=True)
+        values = dict(line.split()[1:3] for line in macros.splitlines() if line.startswith('#define __GNUC'))
+        return f"{values['__GNUC__']}.{values['__GNUC_MINOR__']}"
+
+    def train(self):
+        """make pgo-train on the fixture, whose binary ignores its arguments and stands in for ChampSim."""
+        traces = self.root / 'traces'
+        traces.mkdir()
+        (traces / 'one.champsimtrace').write_bytes(b'trace')
+        (self.root / 'probe.toml').write_text('# training config\n')
+        plan = {'schema_version': 1, 'warmup_instructions': 10, 'simulation_instructions': 20,
+                'runs': [{'trace': 'one.champsimtrace', 'trace_version': 1, 'configs': ['probe.toml']}]}
+        (self.root / 'plan.json').write_text(json.dumps(plan))
+        result = self.make('-j2', 'pgo-train', f'TRACE_ROOT={traces}', 'PGO_TRAIN=plan.json')
+        # pgo.py's builds must join make's jobserver: cut off from it they build with -j1, and
+        # GCC's -flto=auto falls back to one LTO job per CPU.
+        self.assertNotIn('jobserver unavailable', result.stdout + result.stderr)
+        return self.root / 'pgo/legacy-dram' / f'gcc-{self.gcc_version()}'
+
+    def test_pgo_train_writes_a_profile_that_fast_builds_use(self):
+        if int(self.gcc_version().split('.')[0]) < 11:
+            self.skipTest('PGO needs GCC 11 or newer')
+        self.make('fast')
+        self.assertEqual(self.policy('BUILD_MODE=fast')['pgo']['mode'], 'off')
+        profile = self.train()
+        names = sorted(p.name for p in profile.iterdir())
+        # Portable names: relative to the source root, and to the object tree's obj/ -dumpdir.
+        self.assertIn('obj#core.gcda', names)
+        self.assertIn('obj#modules#branch#probe#probe.gcda', names)
+        self.assertIn('MANIFEST.json', names)
+        manifest = json.loads((profile / 'MANIFEST.json').read_text())
+        self.assertEqual((manifest['dram_model'], manifest['compiler']['gcc_version']), ('legacy-dram', self.gcc_version()))
+        self.assertEqual(manifest['training']['runs'][0]['sha256'], hashlib.sha256(b'trace').hexdigest())
+        self.make('fast')
+        policy = self.policy('BUILD_MODE=fast')
+        self.assertEqual(policy['pgo']['mode'], 'use')
+        self.assertIn('-fprofile-partial-training', policy['compile_options'])
+        self.assertIn('-fprofile-prefix-path=' + str(self.root), policy['compile_options'])
+        self.assertIn('-fprofile-use=' + str(profile.resolve()), policy['link_options'])
+        self.assertEqual(self.execute(self.paths('BUILD_MODE=fast')['binary']), 'optimized\nassertions=0 core=0 module=0\nv2\n')
+        dry = self.make('-n', '-B', 'fast').stdout
+        self.assertRegex(dry, r'-dumpdir obj/modules/branch/probe/ -c -o \S+/modules/branch/probe/probe\.o')
+        # A changed profile is a different build.
+        before = self.paths('BUILD_MODE=fast')['obj']
+        (profile / 'MANIFEST.json').write_text(json.dumps(dict(manifest, created='later')))
+        self.assertNotEqual(self.paths('BUILD_MODE=fast')['obj'], before)
+        self.make('fast', 'PGO=0')
+        self.assertEqual(self.policy('BUILD_MODE=fast', 'PGO=0')['pgo']['mode'], 'off')
+
+    def test_pgo_selection_is_validated(self):
+        profile = self.root / 'pgo/legacy-dram' / f'gcc-{self.gcc_version()}'
+        for args, message in [(['fast', 'PGO=yes'], 'PGO must be auto, 0 or 1'),
+                              (['release', 'PGO=1'], 'PGO=1 requires a fast, unsanitized GCC 11+ build'),
+                              (['fast', 'PGO=1'], 'PGO=1: no usable profile'),
+                              (['fast', 'PGO=generate'], 'PGO=generate needs PGO_PROFILE')]:
+            with self.subTest(args=args):
+                result = self.make('-n', *args, ok=False)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn(message, result.stderr)
+        # A profile from another compiler version is skipped by auto and refused by PGO=1.
+        profile.mkdir(parents=True)
+        (profile / 'MANIFEST.json').write_text(json.dumps({'dram_model': 'legacy-dram', 'compiler': {'gcc_version': '1.0'}}))
+        (profile / 'obj#core.gcda').write_bytes(b'')
+        self.make('fast')
+        policy = self.policy('BUILD_MODE=fast')
+        self.assertEqual(policy['pgo']['mode'], 'off')
+        self.assertIn('trained with GCC 1.0', policy['pgo']['reason'])
+        result = self.make('-n', 'fast', 'PGO=1', ok=False)
+        self.assertIn('trained with GCC 1.0', result.stderr)
+
+    def test_include_paths_are_relative_to_the_source_root(self):
+        self.make('all')
+        options = (Path(self.paths()['obj']) / 'absolute.options').read_text().split()
+        self.assertIn('-Iinc', options)
+        self.assertEqual(options[options.index('-isystem') + 1], 'vcpkg_installed/x64-linux/include')
+
+    @unittest.skipUnless(shutil.which('clang++'), 'clang++ unavailable')
+    def test_clang_fast_does_not_use_lto(self):
+        self.compiler = shutil.which('clang++')
+        self.make('fast')
+        self.assertFalse(self.policy('BUILD_MODE=fast')['lto'])
+        self.assertEqual(self.policy('BUILD_MODE=fast')['pgo']['mode'], 'off')
+        result = self.make('-n', 'fast', 'LTO=1', ok=False)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn('LTO=1 is validated only with GCC', result.stderr)
 
     def test_sim_test_flavors_and_alias_override(self):
         self.make('-j4', 'all', 'test', 'BUILD_MODE=fast', 'test_main_name=custom/tests')
@@ -153,6 +298,42 @@ int main() {
         self.make('-t', 'release', *args)
         self.assertEqual(dep.stat().st_mtime_ns, stamp)
         self.assertGreaterEqual(obj.stat().st_mtime_ns, header.stat().st_mtime_ns)
+
+    def test_link_reaches_the_jobserver_only_when_executing(self):
+        # GCC's -flto=auto keeps to make's -j only through the jobserver, which make passes only
+        # to recipe lines marked +. On a shared host an unmarked link started one LTO job per CPU.
+        log = self.root / 'links.txt'
+        wrapper = self.root / 'jobserver-probe'
+        wrapper.write_text(f'''#!/usr/bin/env python3
+import os, re, sys
+args = sys.argv[1:]
+if '-o' in args and args[args.index('-o') + 1].endswith('/champsim'):
+    auth = re.search(r'--jobserver-auth=(\\S+)', os.environ.get('MAKEFLAGS', ''))
+    usable = False
+    if auth and auth.group(1).startswith('fifo:'):
+        usable = os.path.exists(auth.group(1)[5:])
+    elif auth:
+        try:
+            for fd in auth.group(1).split(','):
+                os.fstat(int(fd))
+            usable = True
+        except (ValueError, OSError):
+            pass
+    with open({str(log)!r}, 'a') as stream:
+        stream.write(f'{{usable}}\\n')
+os.execv('/usr/bin/g++', ['/usr/bin/g++', *args])
+''')
+        wrapper.chmod(0o755)
+        self.compiler = str(wrapper)
+        self.make('-j2', 'fast')
+        self.assertEqual(log.read_text().split(), ['True'])
+        # The mark must not make -n, -q or -t run the link.
+        binary = Path(self.paths('BUILD_MODE=fast')['binary'])
+        binary.unlink()
+        for flag in ('-n', '-q', '-t'):
+            self.make(flag, '-j2', 'fast', ok=flag != '-q')
+            self.assertEqual(log.read_text().split(), ['True'], flag)
+        self.assertFalse(binary.exists() and binary.stat().st_size)
 
     def test_alias_switch_back_to_existing_mode(self):
         self.make('all')

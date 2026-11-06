@@ -53,6 +53,84 @@ def expand(tokens, inputs, stack=()):
     return result
 
 
+def source_root():
+    """The working directory as GCC spells it: $PWD when it names the current directory (GCC's
+    getpwd prefers it, so a symlinked checkout keeps its symlinked spelling), else getcwd."""
+    pwd = os.environ.get('PWD')
+    if pwd and os.path.isabs(pwd):
+        try:
+            if os.path.samefile(pwd, '.'):
+                return pwd
+        except OSError:
+            pass
+    return os.getcwd()
+
+
+def resolve_pgo(args, predefined, gcc, sanitized):
+    """PGO=auto|0|1, and PGO=generate for `make pgo-train`. Returns the policy entry and the
+    compile and link options. Profiles live in pgo/<dram model>/gcc-<major.minor>/ (GCC reads
+    only profiles of its own version); PGO_PROFILE names another directory.
+
+    Profiles are portable between checkouts and build directories: -fprofile-prefix-path makes
+    profile file names relative to the source root, the compile rule adds -dumpdir obj/<object
+    dir>/ (GCC hashes internal-linkage functions with it), and include paths are relative."""
+    if args.pgo not in ('auto', '0', '1', 'generate'):
+        raise ValueError('PGO must be auto, 0 or 1')
+    dram = 'ramulator2' if args.native == '1' else 'legacy-dram'
+    numbers = [re.search(rf'^#define {name} (\d+)', predefined, re.M) for name in ('__GNUC__', '__GNUC_MINOR__')]
+    version = f'{numbers[0].group(1)}.{numbers[1].group(1)}' if gcc and all(numbers) else None
+    entry = {'mode': 'off', 'dram_model': dram, 'gcc_version': version}
+    blockers = []
+    if args.mode != 'fast':
+        blockers.append('BUILD_MODE is not fast')
+    if not gcc:
+        blockers.append('the compiler is not GCC')
+    elif int(numbers[0].group(1)) < 11:
+        blockers.append('GCC older than 11 lacks -fprofile-prefix-path')
+    if sanitized:
+        blockers.append('a sanitizer is enabled')
+    if args.pgo == '0':
+        return dict(entry, reason='PGO=0'), [], []
+    if blockers:
+        if args.pgo in ('1', 'generate'):
+            raise ValueError(f'PGO={args.pgo} requires a fast, unsanitized GCC 11+ build: ' + '; '.join(blockers))
+        return dict(entry, reason='; '.join(blockers)), [], []
+    portable = ['-fprofile-prefix-path=' + source_root()]
+    if args.pgo == 'generate':
+        if not os.path.isabs(args.pgo_profile):
+            raise ValueError('PGO=generate needs PGO_PROFILE=<absolute output directory>')
+        options = ['-fprofile-generate=' + args.pgo_profile, '-fprofile-update=single']
+        return dict(entry, mode='generate', profile=args.pgo_profile), options + portable, options
+    profile = Path(args.pgo_profile or Path('pgo') / dram / f'gcc-{version}')
+    problem = None
+    try:
+        manifest = json.loads((profile / 'MANIFEST.json').read_text())
+        files = sorted(p for p in profile.iterdir() if p.is_file())
+        if manifest.get('compiler', {}).get('gcc_version') != version:
+            problem = f"{profile} was trained with GCC {manifest.get('compiler', {}).get('gcc_version')}, not {version}"
+        elif manifest.get('dram_model') != dram:
+            problem = f"{profile} was trained with {manifest.get('dram_model')}, not {dram}"
+        elif not any(p.suffix == '.gcda' for p in files):
+            problem = f'{profile} holds no .gcda files'
+    except (OSError, ValueError) as error:
+        problem = f'no usable profile at {profile} ({error.__class__.__name__})'
+    if problem:
+        if args.pgo == '1':
+            raise ValueError('PGO=1: ' + problem)
+        return dict(entry, reason=problem), [], []
+    fingerprint = hashlib.sha256()
+    for path in files:
+        fingerprint.update(f'{path.name}\0{digest(path)}\0'.encode())
+    source = manifest.get('source', {})
+    entry.update(mode='use', profile=str(profile), profile_digest=fingerprint.hexdigest(),
+                 profile_files=sum(p.suffix == '.gcda' for p in files), trained_at_commit=source.get('commit'),
+                 trained_on=manifest.get('created'))
+    # Partial training compiles code the training never ran as if unprofiled, instead of for size;
+    # a stale profile only drops the functions whose control flow changed, so both diagnostics are off.
+    options = ['-fprofile-use=' + str(profile.resolve()), '-fprofile-partial-training', '-Wno-missing-profile', '-Wno-coverage-mismatch']
+    return entry, options + portable, options
+
+
 def run(command, *args, input=None):
     result = subprocess.run(command + list(args), input=input, text=True, capture_output=True)
     if result.returncode:
@@ -226,6 +304,18 @@ def resolve(args):
     library_options = [expand(shlex.split(args.libraries), inputs)]
     if args.flavor == 'test':
         library_options.append(expand(shlex.split(args.test_libraries), inputs))
+    # fast links gperftools' tcmalloc from the vcpkg tree: glibc's allocator cost it 7-11%.
+    # A sanitizer must own malloc itself, so sanitized builds keep the system allocator.
+    if args.tcmalloc not in ('auto', '0', '1'):
+        raise ValueError('TCMALLOC must be auto, 0 or 1')
+    sanitized = args.native_sanitize == '1' or any(t.startswith('-fsanitize=') for t in sum(options.values(), []))
+    if args.tcmalloc == '1' and args.mode != 'fast':
+        raise ValueError('TCMALLOC=1 requires BUILD_MODE=fast')
+    if args.tcmalloc == '1' and sanitized:
+        raise ValueError('TCMALLOC=1 cannot be combined with a sanitizer, which must own malloc')
+    tcmalloc = args.tcmalloc != '0' and args.mode == 'fast' and not sanitized
+    if tcmalloc:
+        library_options.append(['-ltcmalloc_minimal'])
     libraries = sum(library_options, [])
     all_user = command[1:] + common + module + sum(options.values(), []) + libraries
     # Leading executable compiler/wrapper operands are the transparent CXX
@@ -314,14 +404,29 @@ def resolve(args):
             if fields.get('Architecture') == triplet:
                 packages.append({k: v for k, v in fields.items() if k in ('Package', 'Version', 'Architecture', 'Abi', 'Status')})
     dependency_inputs = {str(p.resolve()): digest(p) for p in files if p.is_file()}
+    if args.lto not in ('auto', '0', '1'):
+        raise ValueError('LTO must be auto, 0 or 1')
+    if args.lto == '1' and args.mode != 'fast':
+        raise ValueError('LTO=1 requires BUILD_MODE=fast')
+    # Only GCC fast+LTO has been measured. Clang spells the option differently
+    # (Clang 12 rejects -flto=auto) and links bitcode only through lld or LLVMgold.
+    predefined = run(command + target_options, '-dM', '-E', '-x', 'c++', '-', input='')
+    gcc = re.search(r'^#define __GNUC__ ', predefined, re.M) is not None and re.search(r'^#define __clang__ ', predefined, re.M) is None
+    if args.lto == '1' and not gcc:
+        raise ValueError('LTO=1 is validated only with GCC; use LTO=0 (or leave LTO unset) with this compiler')
+    # LTO optimizes at link time, which sees none of the compile options, so the
+    # link repeats the mode's optimization and debug level.
+    lto = ['-flto=auto'] if args.lto == '1' or (args.lto == 'auto' and args.mode == 'fast' and gcc) else []
+    pgo, pgo_compile, pgo_link = resolve_pgo(args, predefined, gcc, sanitized)
     assertions = int(args.mode != 'fast')
-    flags = common + options['cppflags'] + options['cxxflags'] + MODES[args.mode] + architecture + [f'-DCHAMPSIM_ENABLE_ASSERTIONS={assertions}']
+    flags = common + options['cppflags'] + options['cxxflags'] + MODES[args.mode] + lto + pgo_compile + architecture + [f'-DCHAMPSIM_ENABLE_ASSERTIONS={assertions}']
     if args.flavor == 'test':
         flags += ['-DCHAMPSIM_TEST_BUILD=1']
     policy = {'schema_version': 1, 'mode': args.mode, 'assertions': assertions, 'flavor': args.flavor,
-              'isa': isa, 'architecture_options': architecture,
+              'isa': isa, 'architecture_options': architecture, 'lto': bool(lto), 'tcmalloc': tcmalloc, 'pgo': pgo,
               'compiler': {'command': command, 'target': target, 'version': run(command, '--version'), 'executables': compiler_paths},
-              'compile_options': flags, 'module_options': module, 'link_options': target_options + options['ldflags'] + architecture,
+              'compile_options': flags, 'module_options': module,
+              'link_options': target_options + options['ldflags'] + architecture + (MODES[args.mode] + lto if lto else []) + pgo_link,
               'libraries': options['loadlibes'] + options['ldlibs'] + libraries,
               'option_inputs': inputs, 'dependencies': {'triplet': triplet, 'directory': str(dependency),
                   'build_mode': 'Release', 'vcpkg_revision': vcpkg_revision, 'packages': packages, 'isa_provenance': 'unknown (external installation)',
@@ -330,7 +435,8 @@ def resolve(args):
                          'mode': ('RelWithDebInfo C++20 Python=OFF Sanitizers=address,undefined'
                                   if args.native_sanitize == '1' else 'Release C++20 Python=OFF'),
                          'sanitizers': 'address,undefined' if args.native_sanitize == '1' else '', 'architecture_options': architecture,
-                         'driver_options': ['-isystem', str(Path(args.native_root).resolve() / 'src'), '-std=c++20'] if args.native == '1' else [],
+                         'driver_options': ['-isystem', str(Path(args.native_root).resolve() / 'src'), '-std=c++20'] + (['-fno-lto'] if lto else [])
+                         if args.native == '1' else [],
                          'link_options': ['-Wl,-rpath,' + str(Path(args.native_root).resolve()), '-ldl'] if args.native == '1' else []},
               'registry_directory': str(Path(args.registry).resolve()),
               'build_inputs': {str(p): digest(p) for p in (Path(__file__), Path('Makefile'), Path('config/build_rules.mk'), Path('config/ramulator2_build.py')) if p.is_file()}}
@@ -374,7 +480,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('inspect', 'prepare', 'paths', 'publish'))
     for name, default in [('cxx', 'g++'), ('mode', 'release'), ('flavor', 'sim'), ('isa', ''), ('triplet', ''),
-                          ('installed', 'vcpkg_installed'), ('native', '0'), ('native-root', ''), ('native-sanitize', '0'),
+                          ('installed', 'vcpkg_installed'), ('native', '0'), ('native-root', ''), ('native-sanitize', '0'), ('lto', 'auto'), ('tcmalloc', 'auto'), ('pgo', 'auto'), ('pgo-profile', ''),
                           ('libraries', '-lCLI11 -llzma -lz -lbz2 -lzstd -lfmt'), ('test-libraries', '-lCatch2Main -lCatch2'),
                           ('obj', ''), ('dep', ''), ('binary', ''), ('registry', '.csconfig'), ('alias', '')]:
         parser.add_argument('--' + name, default=default)
@@ -398,11 +504,25 @@ def main():
     if args.action == 'inspect':
         # Make receives only path-safe identifiers. Compiler flags stay in JSON
         # and response files, avoiding a second shell/Make interpretation.
-        print(policy['compiler']['target'], policy['isa'], policy['policy_key'])
+        print(policy['compiler']['target'], policy['isa'], policy['policy_key'], int(policy['lto']), policy['pgo']['mode'])
         return
     obj = Path(args.obj)
-    includes = ['-I' + str(obj), '-I' + args.registry, '-I' + str(Path('inc').resolve()),
-                '-isystem', policy['dependencies']['directory'] + '/include']
+    # Include paths are relative to the source root where they can be: GCC hashes internal-linkage
+    # functions defined in headers with the header's path as compiled, so an absolute path would tie
+    # a PGO profile to one checkout. Make runs every compile from the source root.
+    # The dependency tree is often a symlink out of the checkout (vcpkg_installed -> elsewhere), so
+    # only the root's spelling is resolved, never the tree's own path.
+    dependency_include = policy['dependencies']['directory'] + '/include'
+    def relative(path):
+        path = os.path.normpath(os.path.join(source_root(), path))
+        for root in dict.fromkeys((source_root(), os.getcwd(), os.path.realpath(source_root()))):
+            if path.startswith(root + os.sep):
+                return path[len(root) + 1:]
+        return path
+    installed = relative(args.installed)
+    if not os.path.isabs(installed):
+        dependency_include = os.path.join(installed, policy['dependencies']['triplet'], 'include')
+    includes = ['-I' + str(obj), '-I' + relative(args.registry), '-Iinc', '-isystem', dependency_include]
     policy['trace_memory_values'] = verify(policy, includes)
     verify(dict(policy, compile_options=policy['compile_options'] + policy['module_options']), includes)
     policy['include_options'] = includes

@@ -99,12 +99,16 @@ publication_binary := $(executable_name)
 PUBLISH_ALIAS ?= 1
 
 policy_helper = python3 $(ROOT_DIR)/config/build_config.py
-policy_arguments = --obj=$(call shellquote,$(object_container)) --dep=$(call shellquote,$(dependency_container)) --binary=$(call shellquote,$(binary_container)) --registry=$(call shellquote,$(registry_dir)) --cxx=$(call shellquote,$(CXX)) --mode=$(call shellquote,$(BUILD_MODE)) --flavor=$(call shellquote,$(BUILD_FLAVOR)) --isa=$(call shellquote,$(X86_ISA)) $(if $(filter undefined,$(origin X86_ISA)),,--isa-explicit) --triplet=$(call shellquote,$(VCPKG_TARGET_TRIPLET)) --installed=$(call shellquote,$(VCPKG_INSTALLED_DIR)) --native=$(call shellquote,$(WITH_RAMULATOR2)) --native-root=$(call shellquote,$(RAMULATOR2_ROOT)) --native-sanitize=$(call shellquote,$(RAMULATOR2_SANITIZE)) --cppflags=$(call shellquote,$(CPPFLAGS)) --cxxflags=$(call shellquote,$(CXXFLAGS)) --ldflags=$(call shellquote,$(LDFLAGS)) --ldlibs=$(call shellquote,$(LDLIBS)) --loadlibes=$(call shellquote,$(LOADLIBES)) --libraries=$(call shellquote,$(CHAMPSIM_LIBRARIES)) --test-libraries=$(call shellquote,$(CHAMPSIM_TEST_LIBRARIES))
+policy_arguments = --obj=$(call shellquote,$(object_container)) --dep=$(call shellquote,$(dependency_container)) --binary=$(call shellquote,$(binary_container)) --registry=$(call shellquote,$(registry_dir)) --cxx=$(call shellquote,$(CXX)) --mode=$(call shellquote,$(BUILD_MODE)) --flavor=$(call shellquote,$(BUILD_FLAVOR)) --isa=$(call shellquote,$(X86_ISA)) $(if $(filter undefined,$(origin X86_ISA)),,--isa-explicit) --triplet=$(call shellquote,$(VCPKG_TARGET_TRIPLET)) --installed=$(call shellquote,$(VCPKG_INSTALLED_DIR)) --native=$(call shellquote,$(WITH_RAMULATOR2)) --native-root=$(call shellquote,$(RAMULATOR2_ROOT)) --native-sanitize=$(call shellquote,$(RAMULATOR2_SANITIZE)) --lto=$(call shellquote,$(LTO)) --tcmalloc=$(call shellquote,$(TCMALLOC)) --pgo=$(call shellquote,$(PGO)) --pgo-profile=$(call shellquote,$(PGO_PROFILE)) --cppflags=$(call shellquote,$(CPPFLAGS)) --cxxflags=$(call shellquote,$(CXXFLAGS)) --ldflags=$(call shellquote,$(LDFLAGS)) --ldlibs=$(call shellquote,$(LDLIBS)) --loadlibes=$(call shellquote,$(LOADLIBES)) --libraries=$(call shellquote,$(CHAMPSIM_LIBRARIES)) --test-libraries=$(call shellquote,$(CHAMPSIM_TEST_LIBRARIES))
 policy_selection := $(shell $(policy_helper) inspect $(policy_arguments))
-ifneq ($(words $(policy_selection)),3)
+ifneq ($(words $(policy_selection)),5)
 $(error Build policy selection failed; see diagnostic above)
 endif
 policy_leaf := $(word 1,$(policy_selection))/$(word 2,$(policy_selection))/$(BUILD_MODE)/$(word 3,$(policy_selection))/$(BUILD_FLAVOR)
+# Whether the resolved policy uses LTO: LTO=auto leaves that to the build helper.
+policy_lto := $(word 4,$(policy_selection))
+# PGO mode chosen by the helper (off, use, or generate for `make pgo-train`).
+policy_pgo := $(word 5,$(policy_selection))
 override OBJ_ROOT := $(object_container)/$(policy_leaf)
 override DEP_ROOT := $(dependency_container)/$(policy_leaf)
 override BIN_ROOT := $(binary_container)/$(policy_leaf)
@@ -137,7 +141,9 @@ ifeq ($(WITH_RAMULATOR2),1)
 native_library := $(abspath $(RAMULATOR2_ROOT))/libramulator.so
 $(native_library):
 	$(native_helper)
-native_private_options := -isystem $(call shellquote,$(abspath $(RAMULATOR2_ROOT))/src) -std=c++20
+# The driver is the one C++20 translation unit. Under LTO its std::variant-based types would be
+# merged with the C++17 units' differently defined ones (-Wodr), so it stays a regular object.
+native_private_options := -isystem $(call shellquote,$(abspath $(RAMULATOR2_ROOT))/src) -std=c++20$(if $(filter 1,$(policy_lto)), -fno-lto)
 native_link_options := -Wl,-rpath,$(call shellquote,$(abspath $(RAMULATOR2_ROOT))) -ldl
 endif
 $(OBJ_ROOT)/ramulator2_driver.o $(DEP_ROOT)/ramulator2_driver.d: private native_options = $(native_private_options)
@@ -158,8 +164,11 @@ get_base_objs = $(call get_object_list,$(base_source_dir),$(OBJ_ROOT),$1)
 test_base_objs = $(call get_object_list,$(test_source_dir),$(OBJ_ROOT)/test,TEST)
 selected_objects := $(call get_base_objs,$(if $(filter test,$(BUILD_FLAVOR)),TEST,SIM)) $(if $(filter test,$(BUILD_FLAVOR)),$(test_base_objs)) $(base_module_objs) $(nonbase_module_objs)
 attach_options = $(addprefix @,$(filter %.options,$^))
+# GCC hashes internal-linkage functions with the auxiliary base name it derives from -o, so a PGO
+# profile would be tied to one build directory; a -dumpdir relative to the source root is not.
+pgo_object_options = $(if $(filter use generate,$(policy_pgo)),-dumpdir obj$(patsubst $(OBJ_ROOT)%,%,$(@D))/)
 define obj_recipe
-	$(CXX) $(attach_options) $(native_options) -c -o $@ $(filter %.cc,$^)
+	$(CXX) $(attach_options) $(native_options)$(if $(pgo_object_options), $(pgo_object_options)) -c -o $@ $(filter %.cc,$^)
 endef
 define dep_recipe
 	$(CXX) $(attach_options) $(native_options) -MM -MP -MT $@ -MT $(patsubst $(DEP_ROOT)/%.d,$(OBJ_ROOT)/%.o,$@) -MF $@ $(filter %.cc,$^)
@@ -190,8 +199,12 @@ $(DEP_ROOT)/modules/%.d: $$(module_prereqs) | $$(dir $$@)
 $(sort $(dir $(selected_objects)) $(dir $(patsubst $(OBJ_ROOT)/%.o,$(DEP_ROOT)/%.d,$(selected_objects))) $(dir $(canonical_binary))):
 	mkdir -p $@
 
+# Make hands its jobserver only to recipe lines marked +, and GCC's -flto=auto uses the
+# jobserver when it can reach it, else one LTO job per CPU whatever -j says. A literal + would
+# also run the link under -n/-q/-t, so the mark is added only when make executes recipes.
+link_jobserver := $(if $(make_no_execute),,+)
 $(canonical_binary): $(selected_objects) $(OBJ_ROOT)/ramulator2_build.h $(OBJ_ROOT)/link.options $(OBJ_ROOT)/libraries.options $(native_library) | $$(dir $$@)
-	$(CXX) @$(OBJ_ROOT)/link.options -o $@ $(filter %.o,$^) $(native_library) @$(OBJ_ROOT)/libraries.options $(native_link_options)
+	$(link_jobserver)$(CXX) @$(OBJ_ROOT)/link.options -o $@ $(filter %.o,$^) $(native_library) @$(OBJ_ROOT)/libraries.options $(native_link_options)
 
 # Publish by atomic symlink replacement, so running executables retain their inode.
 publication_target := $(if $(filter test,$(BUILD_FLAVOR)),$(test_main_name),$(publication_binary))

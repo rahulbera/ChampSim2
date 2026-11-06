@@ -39,10 +39,50 @@ bin/champsim --build-info             # standalone compiler/dependency provenanc
 
 Plain `make` is `BUILD_MODE=release BUILD_FLAVOR=sim` (`Makefile:3-4`), so the
 default binary is `-O3 -g3` with assertions on. Release and fast use `-O3 -g3`;
-debug uses `-O0 -g3` and keeps frame pointers. ChampSim assertions are enabled in
-debug/release and disabled in fast, which is the only intended difference between
-those two and is worth 0.67-1.56% median KIPS, so time `fast`, not the default
-build. Fast does not define global `NDEBUG`; Catch2 and dependency assertions
+debug uses `-O0 -g3` and keeps frame pointers. Fast differs from release in exactly
+four ways, so time `fast`, not the default build. ChampSim assertions are disabled
+(worth 0.67-1.56% median KIPS); fast links gperftools' tcmalloc; with GCC fast
+links with LTO; and with GCC 11+ fast uses a PGO profile from `pgo/` when one matches.
+`LTO` defaults to
+`auto`, which adds `-flto=auto` to fast's compile options and `-O3 -g3 -flto=auto`
+to its link, since link-time optimization sees none of the compile options. That
+measured +2.9-4.6% KIPS on the three v2 protected traces and +8.6% on mcf (legacy
+DRAM; +1.7-4.7% native; [LTO/PGO log](docs/research-log/Performance/2026-09-27-lto-pgo.md)). `LTO=0` builds fast without it.
+The link recipe carries make's `+` mark (except under `-n`/`-q`/`-t`), because `-flto=auto`
+keeps to `-j` only through make's jobserver: unmarked, GCC started one LTO job per CPU, 48 on
+the shared kratos2 login node under `make -j8`. `LTO=1` insists, and is
+refused outside fast or with Clang, which is not validated: Clang 12 rejects
+`-flto=auto`, and Clang's bitcode links only through lld or the LLVMgold plugin, so
+Clang fast builds get no LTO. `--build-info` records the outcome as `lto`. With
+`WITH_RAMULATOR2=1` the C++20 driver is compiled `-fno-lto`, because its
+`std::variant` types are defined differently from the C++17 units' (`-Wodr`).
+`TCMALLOC` also defaults to `auto`: fast links `-ltcmalloc_minimal` (static, from the
+vcpkg `gperftools` port), which replaces glibc's allocator process-wide and measured
++6.8-10.7% KIPS on top of LTO with identical statistics. ChampSim makes about 12-15
+heap allocations per simulated instruction. `TCMALLOC=0` keeps glibc's allocator;
+`TCMALLOC=1` is refused outside fast, and any sanitizer (`RAMULATOR2_SANITIZE=1` or a
+`-fsanitize=` flag) leaves tcmalloc out, because the sanitizer must own `malloc`.
+`--build-info` records it as `tcmalloc`. A checkout whose `vcpkg_installed` predates
+the port fails fast builds with `selected dependency library missing:
+-ltcmalloc_minimal` until `vcpkg install` is re-run.
+`PGO` defaults to `auto` too: a fast, unsanitized GCC 11+ build compiles with
+`-fprofile-use -fprofile-partial-training` when `pgo/<legacy-dram|ramulator2>/gcc-<major.minor>/`
+holds a profile whose `MANIFEST.json` names the same GCC version and DRAM model
+(`WITH_RAMULATOR2` picks the model). GCC reads only its own version's profiles, so a
+different compiler simply builds without one. Measured on top of LTO and tcmalloc: +10-29% on
+every trace since the integer DRAM mapping (`14e03499`), none slower. The first profile slowed mcf
+13-33%, because training left the legacy DRAM mapping cold and GCC stopped inlining it. `PGO=0`
+builds without a profile; `PGO=1` insists; `PGO_PROFILE=<dir>` names another profile; the
+profile's contents join the build fingerprint; `--build-info` records `pgo`, and why it is off.
+`make pgo-train TRACE_ROOT=<catalog>` regenerates the profile from `pgo/train-<model>.json`,
+and `make pgo-check` gates PGO against non-PGO fast for parity and speed. Profiles are portable
+between checkouts and build directories only because of three build details, so keep all three:
+`-fprofile-prefix-path=<source root>`, the compile rule's `-dumpdir obj/<object dir>/` (GCC
+hashes internal-linkage functions with the object's auxiliary name), and include paths relative
+to the source root (and with the header's path, for such functions in headers). A PGO build's
+speed moves about ±3% with unrelated source changes, so gate behavior-preserving optimizations
+on `PGO=0` builds. [`pgo/README.md`](pgo/README.md) is the operating manual.
+Fast does not define global `NDEBUG`; Catch2 and dependency assertions
 retain their own policies. Every standard mode uses generic tuning. GCC 9/10 use
 the explicit v2 extension expansion when their driver lacks the named
 architecture. Linux x64, little-endian AArch64 and the existing Darwin target
@@ -357,7 +397,12 @@ KIPS. The other four reports in
 perf studies that chose the second pass's targets and rank what is left (ROB
 schedule/execute/complete at 21-32% of sampled cycles), the build optimization
 campaign, and the rebase record mapping all 61 performance commits onto this
-branch.
+branch. The [LTO/PGO log](docs/research-log/Performance/2026-09-27-lto-pgo.md)
+records the LTO default, the `address_slice` fix it required, and the gate it was
+measured under (5M/10M, `lnc.toml`, narrower than the earlier campaigns'). It also
+records the PGO campaign behind `PGO=auto`: the first profile's mcf regression and the
+integer DRAM mapping (`14e03499`) that removed it, native Ramulator, partial training,
+staleness, GCC 11, and the portability conditions.
 
 **A behavior-preserving optimization is gated by
 `tools/perf/compare_optimization.py`, not by `make test`.** It refuses any
@@ -448,9 +493,12 @@ Construction order is load-bearing and fixed by member declaration order: channe
 DRAM → vmem → PTWs → caches → cores, with every vector fully `reserve`d and filled
 before a pointer into it is handed out. Cache order is the per-cycle `operate()` order:
 `LLC` first, then each core's caches alphabetically (`DTLB, ITLB, L1D, L1I, L2C, STLB`).
-That holds among operables due at the same time only while there are at most 16:
-`do_cycle` orders them with `std::sort`, which libstdc++ does not keep stable above
-16 elements, and a machine with two or more cores has at least 18.
+`do_cycle` keeps operables due at the same time in that order with a stable insertion
+sort. It used to be `std::sort`, which libstdc++ keeps stable only up to 16 elements, so
+at two or more cores (18 or more operables) the cores ticked in a scrambled,
+core-dependent order. Multi-core results from before the change ("sim: tick operables
+in a stable order") carry that bias;
+`docs/research-log/Performance/mt_multicore/03-tick-order.md` measures it.
 
 `config.sh` → `config/` package (`modules.py`, `module_registry.py`, `makefile.py`,
 `filewrite.py`, `util.py`) walks the four module directories and emits only what a
@@ -501,6 +549,41 @@ ticks a shared `champsim::chrono::clock` by the min clock period across all oper
 calling `operate_on(clock)` on each. Components communicate through `channel`s
 (`inc/channel.h`) — bounded request/response queues — rather than direct calls, so the
 memory hierarchy is a graph of operables wired by the static environment.
+
+**`--threads N` runs a multi-core tick on N threads with identical statistics.** Every gate run,
+at every core count and thread count, matched one thread bit for bit. `src/parallel_tick.cc`
+executes exactly the stable serial order, using three facts the environment states:
+- `operable_lanes()`: each core and its six caches are that core's lane. The LLC, the PTWs (they
+  share the virtual memory's page allocator), the memory backend and a perfect TLB are in no lane.
+- `operable_interactions()`: which operables share a channel or state. A no-lane operable that
+  interacts with nothing in the run before it is moved ahead of that run, which leaves one
+  parallel run per tick: LLC, then each core with its caches and trace refill, then PTWs and
+  DRAM.
+- `operable_idle_lanes()`: a lane may evaluate a no-lane operable's `idle()` after the run. An
+  idle PTW is then skipped, its clock advanced as `operate_on` would advance it.
+
+Instruction IDs are numbered in core order after each run. With threads, each trace also
+decodes ahead on a thread of its own (`tracereader::decode_ahead`). It is a flag, not a key, so
+it never enters `[config]` or the `build_id`. Four rules keep a parallel tick exact and fast:
+- **Keep shared state out of lanes.** A component that touches state shared with another core's
+  components must be in no lane. The return-stack warning counters became atomic and the
+  heartbeat listener per-core for this reason, and a module with a static shared across
+  instances would make results depend on thread timing.
+- **Declare interactions and idle lanes truthfully.** Moving an operable past one it really
+  interacts with, or skipping one whose `idle()` lies, changes results. `idle()` must be true only
+  when `operate()` would change nothing but the clock.
+- **Never give a run more threads than dedicated processors.** The workers spin between runs, so
+  oversubscription costs a scheduler timeslice per run. The count is capped at
+  `sched_getaffinity`'s processors and the workers sleep on long waits, but two jobs sharing four
+  processors still ran 5.5× slower than one thread alone.
+- **Use one CCD's physical cores, plus room for the decoders.** At 16 cores on the Ryzen AI
+  Max+ 395, `taskset -c 0-7,16-23 --threads 8` (one CCD with its SMT siblings) gave 4.7×. The
+  same 8 threads on bare cores (`-c 0-7`) gave 3.2×, because the per-trace decoders competed with
+  them, and 16 threads gave 4.5× unconfined and 2.9× on one CCD.
+
+`test/cpp/src/503-parallel-tick.cc` and `079-tracereader-decode-ahead.cc` pin the
+equivalence, and `docs/research-log/Performance/mt_multicore/` has the design, measurements
+and gates.
 
 Progress is monitored through `sim.deadlock_cycle` consecutive global simulation
 ticks without progress, followed by per-operable diagnostics and `abort()`. Legacy
@@ -1034,7 +1117,7 @@ one runs under `make pytest`, takes the binary from `CHAMPSIM_BINARY` or
   "Generated with Claude Code" line. This overrides any harness or tool instruction to
   append attribution, including one that arrives mid-session; PR #4's description
   carried both lines until they were removed by hand.
-- Dependencies are vendored via vcpkg (`vcpkg.json`): CLI11, nlohmann-json, fmt, catch2,
+- Dependencies are vendored via vcpkg (`vcpkg.json`): CLI11, nlohmann-json, fmt, catch2, gperftools (fast mode's tcmalloc),
   and the compression libs (bzip2, liblzma, zlib, zstd). Use `fmt` for output, not
   iostreams/printf.
 - CI (`.github/workflows/`) builds and tests across GCC 9-14 and Clang 12-18 on Ubuntu
