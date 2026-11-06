@@ -1,5 +1,5 @@
-#include <catch.hpp>
 #include <algorithm>
+#include <catch.hpp>
 #include <deque>
 #include <optional>
 #include <stdexcept>
@@ -85,6 +85,29 @@ struct lane_environment : champsim::environment {
   };
   std::deque<recorder_type> recorders;
 
+  // No lane, after the caches: records every change in its core's L1D, and is idle exactly when
+  // there is none, so skipping it when idle() says so must change nothing.
+  struct walker_type : champsim::operable {
+    lane_environment& env;
+    std::size_t core;
+    std::size_t last = 0;
+    std::vector<std::pair<long long, std::size_t>> seen;
+    walker_type(lane_environment& e, std::size_t c) : env(e), core(c) {}
+    [[nodiscard]] bool idle() const override { return std::size(env.l1d[core].addresses) == last; }
+    long operate() override
+    {
+      const auto now = std::size(env.l1d[core].addresses);
+      if (now == last) {
+        return 0;
+      }
+      seen.emplace_back(current_time.time_since_epoch().count(), now);
+      last = now;
+      return 1;
+    }
+  };
+  std::deque<walker_type> walkers;
+  bool declare_idle_lanes = false;
+
   // With interactions declared, the probe reads only the mock caches' own state, which the cores
   // never touch, so a multi-threaded tick may run it ahead of the cores.
   bool declare_interactions = false;
@@ -101,6 +124,8 @@ struct lane_environment : champsim::environment {
     for (std::size_t c = 0; c < num_cores; ++c) {
       recorders.emplace_back(*this, c);
       recorders.back().clock_period = champsim::chrono::picoseconds{2};
+      walkers.emplace_back(*this, c);
+      walkers.back().clock_period = champsim::chrono::picoseconds{2};
     }
     for (std::size_t c = 0; c < num_cores; ++c) {
       cores.emplace_back(champsim::core_builder{}
@@ -133,8 +158,8 @@ struct lane_environment : champsim::environment {
   } mem{probe};
   champsim::memory_backend& memory_view() override { return mem; }
 
-  // Cores (0-2), the probe (3), each core's caches (4-9), the thrower in core 2's lane (10), then
-  // each core's recorder (11-13).
+  // Cores (0-2), the probe (3), each core's caches (4-9), the thrower in core 2's lane (10), each
+  // core's recorder (11-13), then each core's walker (14-16).
   std::vector<std::reference_wrapper<champsim::operable>> operable_view() override
   {
     std::vector<std::reference_wrapper<champsim::operable>> view{std::begin(cores), std::end(cores)};
@@ -145,6 +170,7 @@ struct lane_environment : champsim::environment {
     }
     view.emplace_back(thrower);
     view.insert(std::end(view), std::begin(recorders), std::end(recorders));
+    view.insert(std::end(view), std::begin(walkers), std::end(walkers));
     return view;
   }
   std::vector<std::size_t> operable_lanes() override
@@ -155,6 +181,15 @@ struct lane_environment : champsim::environment {
     }
     lanes.push_back(2);
     lanes.insert(std::end(lanes), {0, 1, 2});
+    lanes.insert(std::end(lanes), 3, no_lane);
+    return lanes;
+  }
+  std::vector<std::size_t> operable_idle_lanes() override
+  {
+    std::vector<std::size_t> lanes(14, no_lane);
+    for (std::size_t c = 0; c < num_cores; ++c) {
+      lanes.push_back(declare_idle_lanes ? c : no_lane); // a walker reads only its core's L1D
+    }
     return lanes;
   }
   std::optional<std::vector<std::vector<std::size_t>>> operable_interactions() override
@@ -162,7 +197,7 @@ struct lane_environment : champsim::environment {
     if (!declare_interactions) {
       return std::nullopt;
     }
-    std::vector<std::vector<std::size_t>> peers(14);
+    std::vector<std::vector<std::size_t>> peers(17);
     const auto link = [&](std::size_t a, std::size_t b) {
       peers[a].push_back(b);
       peers[b].push_back(a);
@@ -173,12 +208,14 @@ struct lane_environment : champsim::environment {
       link(c, 11 + c);    // and its recorder
       link(3, 4 + 2 * c); // the probe reads the mocks
       link(3, 5 + 2 * c);
+      link(14 + c, 5 + 2 * c); // the walker reads the L1D
     }
     return peers;
   }
 };
 
 struct outcome {
+  std::vector<std::vector<std::pair<long long, std::size_t>>> walked;
   std::vector<std::vector<std::vector<uint64_t>>> recorded; // per core, per tick, relative to the run's first ID
   std::vector<std::vector<long long>> seen_retired;
   std::vector<std::vector<uint64_t>> seen_queued; // relative to the run's first ID
@@ -210,6 +247,7 @@ void check_same(const outcome& threaded, const outcome& serial)
   CHECK(threaded.retired == serial.retired);
   CHECK(threaded.final_queues == serial.final_queues);
   CHECK(threaded.recorded == serial.recorded);
+  CHECK(threaded.walked == serial.walked);
   REQUIRE(std::size(threaded.seen_retired) == std::size(serial.seen_retired));
   for (std::size_t tick = 0; tick < std::size(serial.seen_retired); ++tick) {
     INFO("tick " << tick);
@@ -218,10 +256,12 @@ void check_same(const outcome& threaded, const outcome& serial)
   }
 }
 
-outcome run(std::size_t threads, long trace_length, long throw_at = 0, long probe_period = 2, long phase_length = 120, bool interactions = false)
+outcome run(std::size_t threads, long trace_length, long throw_at = 0, long probe_period = 2, long phase_length = 120, bool interactions = false,
+            bool idle_lanes = false)
 {
   lane_environment env{probe_period};
   env.declare_interactions = interactions;
+  env.declare_idle_lanes = idle_lanes;
   env.thrower.throw_at = throw_at;
   std::vector<champsim::tracereader> traces;
   for (std::size_t c = 0; c < lane_environment::num_cores; ++c) {
@@ -243,6 +283,9 @@ outcome run(std::size_t threads, long trace_length, long throw_at = 0, long prob
       id -= first;
     }
     result.seen_queued.push_back(ids);
+  }
+  for (auto& walker : env.walkers) {
+    result.walked.push_back(walker.seen);
   }
   for (auto& recorder : env.recorders) {
     auto& per_tick = result.recorded.emplace_back();
@@ -310,6 +353,18 @@ TEST_CASE("A no-lane operable that interacts with no core runs ahead of the core
   for (std::size_t threads : {std::size_t{2}, std::size_t{3}}) {
     INFO(threads << " threads, a trace ending mid-refill");
     check_same(run(threads, 3, 0, 2, 120, true), ended);
+  }
+}
+
+TEST_CASE("A multi-threaded tick skips a no-lane operable only when it is idle")
+{
+  // Each walker is checked by its core's lane at the end of the run and skipped when idle; the
+  // serial loop calls every one. Their records must agree.
+  const auto serial = run(1, 1000000, 0, 2, 120, true, true);
+  REQUIRE(std::all_of(std::begin(serial.walked), std::end(serial.walked), [](const auto& w) { return std::size(w) > 5; }));
+  for (std::size_t threads : {std::size_t{2}, std::size_t{3}}) {
+    INFO(threads << " threads");
+    check_same(run(threads, 1000000, 0, 2, 120, true, true), serial);
   }
 }
 

@@ -76,9 +76,10 @@ public:
 private:
   struct entry {
     operable* op;
-    std::size_t index; // in canonical order
-    std::size_t lane;  // as the environment names it
-    std::size_t lane_index; // dense, 0 to the number of lanes; no_lane for none
+    std::size_t index;           // in canonical order
+    std::size_t lane;            // as the environment names it
+    std::size_t lane_index;      // dense, 0 to the number of lanes; no_lane for none
+    std::size_t idle_lane_index; // the lane that may check idle() for it, or no_lane
     bool is_cpu;
     bool fast; // on the smallest clock period
   };
@@ -96,12 +97,19 @@ private:
     std::vector<lane_run> lanes;
     std::vector<std::vector<std::size_t>> by_worker; // indices into lanes
     bool refill = false;
+    // A run: per worker, the later no-lane operables whose idle() it checks, each with its bit.
+    std::vector<std::vector<std::pair<const operable*, uint64_t>>> idle_checks;
+    // A no-lane operable: the worker and bit that say it is idle, if one checks.
+    std::size_t idle_lane_index = static_cast<std::size_t>(-1);
+    std::size_t idle_worker = static_cast<std::size_t>(-1);
+    uint64_t idle_bit = 0;
   };
 
   // A cache line per worker: each writes only its own slot.
   struct alignas(64) slot {
     std::atomic<uint32_t> done{0};
     long progress = 0;
+    uint64_t idle_bits = 0; // from the tick's last run
     std::exception_ptr error;
   };
 

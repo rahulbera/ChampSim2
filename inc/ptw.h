@@ -99,6 +99,7 @@ public:
   [[nodiscard]] std::optional<champsim::chrono::picoseconds> fixed_translation_latency() const { return fixed_latency; }
 
   long operate() final;
+  [[nodiscard]] bool idle() const final;
 
   void begin_phase() final;
   void print_deadlock() final;

@@ -550,30 +550,38 @@ calling `operate_on(clock)` on each. Components communicate through `channel`s
 (`inc/channel.h`) — bounded request/response queues — rather than direct calls, so the
 memory hierarchy is a graph of operables wired by the static environment.
 
-**`--threads N` runs a multi-core tick on N threads with identical statistics** — at every
-core count and thread count, 92 of 92 gate runs were bit-identical to one thread.
-`src/parallel_tick.cc` executes exactly the stable serial order:
-- `environment::operable_lanes()` puts each core and its six caches in that core's lane;
-- the LLC, the PTWs (they share the virtual memory's page allocator), the memory backend and a
-  perfect TLB are in no lane;
-- runs of laned operables go to worker threads by lane, and no-lane operables run alone;
-- the trace refill joins the second run, with instruction IDs reserved in core order.
+**`--threads N` runs a multi-core tick on N threads with identical statistics.** Every gate run,
+at every core count and thread count, matched one thread bit for bit. `src/parallel_tick.cc`
+executes exactly the stable serial order, using three facts the environment states:
+- `operable_lanes()`: each core and its six caches are that core's lane. The LLC, the PTWs (they
+  share the virtual memory's page allocator), the memory backend and a perfect TLB are in no lane.
+- `operable_interactions()`: which operables share a channel or state. A no-lane operable that
+  interacts with nothing in the run before it is moved ahead of that run, which leaves one
+  parallel run per tick: LLC, then each core with its caches and trace refill, then PTWs and
+  DRAM.
+- `operable_idle_lanes()`: a lane may evaluate a no-lane operable's `idle()` after the run. An
+  idle PTW is then skipped, its clock advanced as `operate_on` would advance it.
 
-It is a flag, not a key, so it never enters `[config]` or the `build_id`. Three rules keep a
-parallel tick exact:
-- **Keep shared state out of lanes.** A component that touches state shared with another
-  core's components must be in no lane. The return-stack warning counters became atomic and
-  the heartbeat listener per-core for this reason, and a module with a static shared across
+Instruction IDs are numbered in core order after each run. With threads, each trace also
+decodes ahead on a thread of its own (`tracereader::decode_ahead`). It is a flag, not a key, so
+it never enters `[config]` or the `build_id`. Four rules keep a parallel tick exact and fast:
+- **Keep shared state out of lanes.** A component that touches state shared with another core's
+  components must be in no lane. The return-stack warning counters became atomic and the
+  heartbeat listener per-core for this reason, and a module with a static shared across
   instances would make results depend on thread timing.
-- **Never give a run more threads than dedicated processors.** The workers spin between the
-  two runs of each tick, so oversubscription costs a scheduler timeslice per run. The count is
-  capped at `sched_getaffinity`'s processors and the workers sleep on long waits, but two jobs
-  sharing four processors still ran 5.5× slower than one thread alone.
-- **Prefer threads on one CCD.** At 16 cores on the Ryzen AI Max+ 395, 8 threads gave 3.5×
-  and 16 threads, which span both CCDs, gave 2.3×.
+- **Declare interactions and idle lanes truthfully.** Moving an operable past one it really
+  interacts with, or skipping one whose `idle()` lies, changes results. `idle()` must be true only
+  when `operate()` would change nothing but the clock.
+- **Never give a run more threads than dedicated processors.** The workers spin between runs, so
+  oversubscription costs a scheduler timeslice per run. The count is capped at
+  `sched_getaffinity`'s processors and the workers sleep on long waits, but two jobs sharing four
+  processors still ran 5.5× slower than one thread alone.
+- **Prefer threads on one CCD.** On the Ryzen AI Max+ 395, 16 threads spanning both CCDs were
+  slower than 8 on one.
 
-`test/cpp/src/503-parallel-tick.cc` pins the equivalence, and
-`docs/research-log/Performance/mt_multicore/` has the design, the measurements and the gates.
+`test/cpp/src/503-parallel-tick.cc` and `079-tracereader-decode-ahead.cc` pin the
+equivalence, and `docs/research-log/Performance/mt_multicore/` has the design, measurements
+and gates.
 
 Progress is monitored through `sim.deadlock_cycle` consecutive global simulation
 ticks without progress, followed by per-operable diagnostics and `abort()`. Legacy

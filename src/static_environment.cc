@@ -551,12 +551,26 @@ std::vector<std::size_t> champsim::static_environment::operable_lanes()
   return retval;
 }
 
+std::vector<std::size_t> champsim::static_environment::operable_idle_lanes()
+{
+  std::vector<std::size_t> retval(std::size(cores) + std::size(caches), no_lane);
+  for (std::size_t cpu = 0; cpu < std::size(ptws); ++cpu) {
+    retval.push_back(cores.at(cpu).cpu); // the PTWs are built in core order
+  }
+  retval.push_back(no_lane); // memory
+  return retval;
+}
+
 std::optional<std::vector<std::vector<std::size_t>>> champsim::static_environment::operable_interactions()
 {
   // Indices into operable_view(): cores, caches, PTWs, memory.
   const auto ncores = std::size(cores);
-  const auto cache_at = [ncores](std::size_t i) { return ncores + i; };
-  const auto ptw_at = [ncores, this](std::size_t cpu) { return ncores + std::size(caches) + cpu; };
+  const auto cache_at = [ncores](std::size_t i) {
+    return ncores + i;
+  };
+  const auto ptw_at = [ncores, this](std::size_t cpu) {
+    return ncores + std::size(caches) + cpu;
+  };
   const auto memory_at = ncores + std::size(caches) + std::size(ptws);
 
   // Who touches each channel: the caches by their own pointers, the rest by the wiring above.

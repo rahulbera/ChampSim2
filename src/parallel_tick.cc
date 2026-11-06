@@ -22,10 +22,10 @@
 #include <stdexcept>
 #include <fmt/core.h>
 #if defined(__linux__)
-#include <linux/futex.h>
 #include <sched.h>
-#include <sys/syscall.h>
 #include <unistd.h>
+#include <linux/futex.h>
+#include <sys/syscall.h>
 #endif
 
 #include "environment.h"
@@ -106,6 +106,10 @@ champsim::parallel_tick::parallel_tick(environment& env, std::size_t threads)
 {
   const auto view = env.operable_view();
   const auto lanes = env.operable_lanes();
+  const auto idle_lanes = env.operable_idle_lanes();
+  if (std::size(idle_lanes) != std::size(view)) {
+    throw std::logic_error{"environment::operable_idle_lanes() must give one lane per operable"};
+  }
   if (std::size(lanes) != std::size(view)) {
     throw std::logic_error{"environment::operable_lanes() must give one lane per operable"};
   }
@@ -133,8 +137,9 @@ champsim::parallel_tick::parallel_tick(environment& env, std::size_t threads)
 
   // Lanes start round-robin, in lane order; rebalance() moves them.
   auto index_of = [&](std::size_t lane) {
-    return lane == environment::no_lane ? environment::no_lane
-                                        : static_cast<std::size_t>(std::distance(std::begin(distinct), std::find(std::begin(distinct), std::end(distinct), lane)));
+    return lane == environment::no_lane
+               ? environment::no_lane
+               : static_cast<std::size_t>(std::distance(std::begin(distinct), std::find(std::begin(distinct), std::end(distinct), lane)));
   };
   for (std::size_t li = 0; li < std::size(distinct); ++li) {
     lane_worker.push_back(li % nthreads);
@@ -151,7 +156,9 @@ champsim::parallel_tick::parallel_tick(environment& env, std::size_t threads)
   for (std::size_t i = 0; i < std::size(view); ++i) {
     operable* op = &view[i].get();
     const bool is_cpu = std::find(std::begin(cpus), std::end(cpus), op) != std::end(cpus);
-    canonical.push_back({op, i, lanes[i], index_of(lanes[i]), is_cpu, op->clock_period == quantum});
+    const auto idle_index =
+        std::find(std::begin(distinct), std::end(distinct), idle_lanes[i]) == std::end(distinct) ? environment::no_lane : index_of(idle_lanes[i]);
+    canonical.push_back({op, i, lanes[i], index_of(lanes[i]), idle_index, is_cpu, op->clock_period == quantum});
   }
   for (const auto& e : canonical) {
     if (!e.fast) {
@@ -237,8 +244,9 @@ void champsim::parallel_tick::build(std::vector<step>& schedule, const std::vect
       while (j > 0 && sequence[j - 1]->lane != environment::no_lane) {
         --j;
       }
-      const auto free = std::none_of(std::next(std::begin(sequence), static_cast<std::ptrdiff_t>(j)), std::next(std::begin(sequence), static_cast<std::ptrdiff_t>(i)),
-                                     [&](const entry* e) { return interacts[e->index][sequence[i]->index] != 0; });
+      const auto free =
+          std::none_of(std::next(std::begin(sequence), static_cast<std::ptrdiff_t>(j)), std::next(std::begin(sequence), static_cast<std::ptrdiff_t>(i)),
+                       [&](const entry* e) { return interacts[e->index][sequence[i]->index] != 0; });
       if (j < i && free) {
         std::rotate(std::next(std::begin(sequence), static_cast<std::ptrdiff_t>(j)), std::next(std::begin(sequence), static_cast<std::ptrdiff_t>(i)),
                     std::next(std::begin(sequence), static_cast<std::ptrdiff_t>(i + 1)));
@@ -250,11 +258,16 @@ void champsim::parallel_tick::build(std::vector<step>& schedule, const std::vect
   schedule.clear();
   for (std::size_t i = 0; i < std::size(sequence);) {
     if (sequence[i]->lane == environment::no_lane || nthreads == 1) {
-      schedule.push_back({sequence[i]->op, {}, {}, false});
+      step serial_step;
+      serial_step.serial = sequence[i]->op;
+      serial_step.idle_lane_index = sequence[i]->idle_lane_index;
+      schedule.push_back(std::move(serial_step));
       ++i;
       continue;
     }
-    step run_step{nullptr, {}, std::vector<std::vector<std::size_t>>(nthreads), false};
+    step run_step;
+    run_step.by_worker.resize(nthreads);
+    run_step.idle_checks.resize(nthreads);
     std::vector<std::size_t> position(std::size(lane_worker), environment::no_lane);
     for (; i < std::size(sequence) && sequence[i]->lane != environment::no_lane; ++i) {
       auto& at = position[sequence[i]->lane_index];
@@ -283,11 +296,29 @@ void champsim::parallel_tick::build(std::vector<step>& schedule, const std::vect
   if (parallel_refill && last != std::rend(schedule) && std::none_of(std::rbegin(schedule), last, [&](const step& x) { return sees_a_core(x.serial); })) {
     last->refill = true;
   }
+
+  // The no-lane operables after the last run that a lane can check: the lane's worker calls
+  // idle() at the end of the run, and the operable is skipped if it says so.
+  if (last != std::rend(schedule)) {
+    std::vector<uint64_t> next_bit(nthreads, 1);
+    for (auto it = std::rbegin(schedule); it != last; ++it) {
+      if (it->idle_lane_index != environment::no_lane && it->idle_lane_index < std::size(lane_worker)) {
+        const auto w = lane_worker[it->idle_lane_index];
+        if (next_bit[w] != 0) {
+          it->idle_worker = w;
+          it->idle_bit = next_bit[w];
+          last->idle_checks[w].emplace_back(it->serial, next_bit[w]);
+          next_bit[w] <<= 1; // up to 64 per worker; the rest always operate
+        }
+      }
+    }
+  }
 }
 
 std::size_t champsim::parallel_tick::runs_per_tick() const
 {
-  return static_cast<std::size_t>(std::count_if(std::begin(canonical_schedule), std::end(canonical_schedule), [](const step& x) { return x.serial == nullptr; }));
+  return static_cast<std::size_t>(
+      std::count_if(std::begin(canonical_schedule), std::end(canonical_schedule), [](const step& x) { return x.serial == nullptr; }));
 }
 
 const std::vector<champsim::parallel_tick::step>& champsim::parallel_tick::schedule_for(const chrono::clock& clock)
@@ -424,6 +455,13 @@ void champsim::parallel_tick::work(std::size_t worker)
         }
       }
     }
+  }
+  if (!std::empty(run->idle_checks)) {
+    uint64_t idle_bits{0};
+    for (const auto& [op, bit] : run->idle_checks[worker]) {
+      idle_bits |= op->idle() ? bit : 0;
+    }
+    slots[worker].idle_bits = idle_bits;
   }
   slots[worker].progress = progress;
 }
@@ -567,7 +605,14 @@ long champsim::parallel_tick::operator()(std::vector<tracereader>& traces, const
   bool first_run = true;
   for (const auto& current : schedule) {
     if (current.serial != nullptr) {
-      progress += current.serial->operate_on(clock);
+      if (current.idle_bit != 0 && (slots[current.idle_worker].idle_bits & current.idle_bit) != 0) {
+        // operate() would do nothing: only the clock moves, as operate_on would move it.
+        while (current.serial->current_time < clock.now()) {
+          current.serial->current_time += current.serial->clock_period;
+        }
+      } else {
+        progress += current.serial->operate_on(clock);
+      }
       continue;
     }
 

@@ -40,6 +40,9 @@ public:
 
   virtual void initialize() {} // LCOV_EXCL_LINE
   virtual long operate() = 0;
+  // True only if operate() would change nothing but the clock right now. A multi-threaded tick
+  // may then advance current_time without calling it.
+  [[nodiscard]] virtual bool idle() const { return false; }
   virtual void begin_phase() {}                     // LCOV_EXCL_LINE
   virtual void end_phase(unsigned /*cpu index*/) {} // LCOV_EXCL_LINE
   virtual void print_deadlock() {}                  // LCOV_EXCL_LINE

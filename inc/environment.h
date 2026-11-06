@@ -52,6 +52,11 @@ struct environment {
   // unknown, keeps every operable where the order puts it.
   virtual std::optional<std::vector<std::vector<std::size_t>>> operable_interactions() { return std::nullopt; }
 
+  // For each operable_view() entry, a lane whose thread may call its idle() at the end of the
+  // tick's last parallel run, or no_lane. Name a lane only if nothing between the end of that
+  // run and the operable's own turn changes what its idle() reads. The default names none.
+  virtual std::vector<std::size_t> operable_idle_lanes() { return std::vector<std::size_t>(std::size(operable_view()), no_lane); }
+
   virtual ~environment() = default;
 };
 

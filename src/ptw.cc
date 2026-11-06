@@ -193,6 +193,17 @@ long PageTableWalker::operate()
   return progress;
 }
 
+bool PageTableWalker::idle() const
+{
+  // Nothing returned, nothing to finish or complete, and nothing new to read: operate() and
+  // operate_fixed() would only look.
+  const bool nothing_read = std::all_of(std::begin(upper_levels), std::end(upper_levels), [](const auto* ul) { return std::empty(ul->RQ); });
+  if (fixed_latency.has_value()) {
+    return nothing_read && std::empty(completed);
+  }
+  return nothing_read && std::empty(lower_level->returned) && std::empty(completed) && std::empty(finished);
+}
+
 long PageTableWalker::operate_fixed()
 {
   // This queue contains complete translations with known deadlines. No PSCL

@@ -46,6 +46,10 @@ public:
   // Operables sharing a channel interact, from the wiring below, and so do the PTWs and any
   // perfect TLB, which all share the virtual memory.
   std::optional<std::vector<std::vector<std::size_t>>> operable_interactions() final;
+  // A PTW's idle() reads its own queues and the two channels to its core's STLB and L1D, which
+  // only that core's lane writes; the PTWs before it in a tick touch only the virtual memory and
+  // their own channels. So each PTW is checked in its core's lane.
+  std::vector<std::size_t> operable_idle_lanes() final;
 
   // The per-core component names, which are also the runtime-configuration
   // key prefixes: cache.cpu0_l1d.sets, ooo_cpu.cpu0.rob_size, ...
