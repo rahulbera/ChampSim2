@@ -159,9 +159,12 @@ jobs:
 
     - name: Set Coverage Environment
       if: ${{ matrix.config.coverage }}
+      # Tests such as 503-parallel-tick run simulator code on several threads. Without -pthread,
+      # GCC updates coverage counters non-atomically, the threads lose increments, and geninfo
+      # rejects the resulting negative counts.
       run: |
         sudo apt-get install lcov
-        echo "CXXFLAGS=--coverage" >> $GITHUB_ENV
+        echo "CXXFLAGS=--coverage -fprofile-update=atomic" >> $GITHUB_ENV
         echo "LDFLAGS=--coverage" >> $GITHUB_ENV
 
     - name: Configure
