@@ -154,6 +154,9 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
     }
 
     if (stalled_cycle >= knobs.deadlock_cycle || livelock_trigger) {
+      if (threaded) {
+        threaded->settle();
+      }
       print_deadlock_diagnostics(operables);
       // abort() flushes nothing. With stdout a pipe or a file, as in a batch
       // job, the buffered tail of these diagnostics -- the memory backend's,

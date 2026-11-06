@@ -19,6 +19,7 @@
 
 #include <functional>
 #include <limits>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -44,6 +45,12 @@ struct environment {
   // keeps a machine serial at every thread count.
   static constexpr std::size_t no_lane = std::numeric_limits<std::size_t>::max();
   virtual std::vector<std::size_t> operable_lanes() { return std::vector<std::size_t>(std::size(operable_view()), no_lane); }
+
+  // For each operable_view() entry, the entries it may interact with: share a channel, or any
+  // other state. A multi-threaded tick runs a no-lane operable ahead of a whole run of laned
+  // operables it interacts with none of, which can merge two runs into one. The default,
+  // unknown, keeps every operable where the order puts it.
+  virtual std::optional<std::vector<std::vector<std::size_t>>> operable_interactions() { return std::nullopt; }
 
   virtual ~environment() = default;
 };

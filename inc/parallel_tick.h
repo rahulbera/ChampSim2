@@ -2,6 +2,7 @@
 #define PARALLEL_TICK_H
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -28,14 +29,25 @@ struct environment;
  * operable in a lane, the core whose private state it touches, or in no lane. Neighbouring
  * operables of different lanes never touch the same state, so a run of laned operables can be
  * split by lane across threads, each lane keeping its own order, and a no-lane operable runs
- * alone on the calling thread. Every core's refill joins the first run of laned operables that
- * starts after every core has operated, with instruction IDs reserved in core order, so
- * instructions are numbered as the serial loop numbers them.
+ * alone on the calling thread. When the environment says what interacts with what, a no-lane
+ * operable that interacts with nothing in the run before it runs ahead of that run, which in the
+ * standard machine moves the LLC ahead of the cores and leaves one run per tick: the cores and
+ * their caches.
+ *
+ * Every core's refill joins the tick's last run. Instruction IDs are global and numbered in core
+ * order, which needs every core's refill count, so a lane reads with provisional IDs and they are
+ * set after the run: by the lane itself at the start of its next run when nothing in between can
+ * see a core, otherwise by the calling thread straight away.
  *
  * The order rarely changes. An operable on the fastest clock is exactly one quantum behind the
  * clock at the start of every tick, so only slower operables can sort later than canonical
  * order, and only when they are behind by less. The schedule is rebuilt only when that moves
  * one of them, which in the standard machine is never: DRAM, the one slower clock, is last.
+ *
+ * Lanes cost different amounts: a busy core does several times the work of a stalled one, and a
+ * run lasts as long as its slowest worker. With fewer threads than lanes, every few thousand
+ * ticks the lanes are reassigned from their measured cost, heaviest first to the least loaded
+ * worker. Which thread runs a lane does not change what it computes.
  *
  * The workers spin between runs, which in a tick are a few microseconds apart, and sleep when a
  * wait runs long (between phases, or on a host with fewer free processors than threads).
@@ -54,21 +66,35 @@ public:
 
   [[nodiscard]] std::size_t threads() const { return nthreads; }
 
+  // Parallel runs in a tick of the standard order.
+  [[nodiscard]] std::size_t runs_per_tick() const;
+
+  // Gives every refilled instruction its final ID now. A phase's end does this itself; anything
+  // that reads input queues between ticks (deadlock diagnostics) calls it first.
+  void settle();
+
 private:
   struct entry {
     operable* op;
     std::size_t index; // in canonical order
-    std::size_t lane;
-    std::size_t worker; // the thread that runs this lane
+    std::size_t lane;  // as the environment names it
+    std::size_t lane_index; // dense, 0 to the number of lanes; no_lane for none
     bool is_cpu;
     bool fast; // on the smallest clock period
   };
 
+  // One lane's operables within a run, in order.
+  struct lane_run {
+    std::size_t lane_index;
+    std::vector<operable*> ops;
+  };
+
   // One step of a tick: a no-lane operable on the calling thread, or a run of laned operables,
-  // each worker's share in order.
+  // each lane's in order, with each worker's lanes listed.
   struct step {
     operable* serial = nullptr;
-    std::vector<std::vector<operable*>> by_worker;
+    std::vector<lane_run> lanes;
+    std::vector<std::vector<std::size_t>> by_worker; // indices into lanes
     bool refill = false;
   };
 
@@ -85,21 +111,33 @@ private:
   bool checked_alignment = false;
   bool aligned = false; // every fast operable one quantum behind the clock, so only slow ones move
 
+  std::vector<const entry*> canonical_order;
   std::vector<step> canonical_schedule;
   std::vector<step> moved_schedule;
   std::vector<const entry*> late;
   std::vector<const entry*> moved_late; // the late operables moved_schedule was built for
   std::vector<const entry*> order;
 
-  std::vector<O3_CPU*> cpus;
-  std::vector<std::size_t> cpu_worker;
-  bool parallel_refill = false;
+  // Which operables, by canonical index, may interact; empty when unknown.
+  std::vector<std::vector<char>> interacts;
 
-  // The refill of the current tick, by core.
-  std::vector<long> requested;
+  std::vector<O3_CPU*> cpus;
+  std::vector<std::size_t> cpu_lane; // each core's lane index
+  bool parallel_refill = false;
+  bool deferred_ids = false; // no no-lane operable interacts with a core
+  bool ids_pending = false;  // the last refill's IDs are still provisional
+  bool run_fixup = false;    // the current run sets them first
+
+  // Which worker runs each lane, and what the lanes cost on sampled ticks since the last
+  // reassignment. A worker writes only its own lanes' costs.
+  std::vector<std::size_t> lane_worker;
+  std::vector<std::chrono::steady_clock::duration> lane_cost;
+  uint64_t tick_count = 0;
+  bool timed_tick = false;
+
+  // The last refill, by core: how many instructions it read, and their first ID.
   std::vector<long> pushed;
   std::vector<uint64_t> first_id;
-  uint64_t tick_first_id = 0;
 
   // The current run, read by the workers after they see a new epoch.
   const step* run = nullptr;
@@ -116,12 +154,15 @@ private:
   std::vector<std::thread> workers;
 
   void build(std::vector<step>& schedule, const std::vector<const entry*>& sequence) const;
+  void rebalance();
   const std::vector<step>& schedule_for(const chrono::clock& clock);
   void work(std::size_t worker);
   void worker_loop(std::size_t worker);
   void publish(uint32_t run_number);
   long dispatch();
   void refill(std::size_t cpu_index);
+  void set_ids(std::size_t cpu_index);
+  void number_refill();
   void serial_refill(std::vector<tracereader>& traces, const std::vector<std::size_t>& trace_index);
 };
 } // namespace champsim

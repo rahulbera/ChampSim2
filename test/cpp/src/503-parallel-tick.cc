@@ -7,6 +7,7 @@
 #include "environment.h"
 #include "instr.h"
 #include "mocks.hpp"
+#include "parallel_tick.h"
 #include "phase_info.h"
 #include "tracereader.h"
 
@@ -36,10 +37,13 @@ struct lane_environment : champsim::environment {
     {
       auto& counts = retired.emplace_back();
       auto& ids = queued.emplace_back();
+      // With interactions declared, it reads only what it declares: the mock caches.
       for (auto& core : env.cores) {
-        counts.push_back(core.num_retired);
-        for (const auto& instr : core.input_queue) {
-          ids.push_back(instr.instr_id);
+        if (!env.declare_interactions) {
+          counts.push_back(core.num_retired);
+          for (const auto& instr : core.input_queue) {
+            ids.push_back(instr.instr_id);
+          }
         }
       }
       for (std::size_t c = 0; c < num_cores; ++c) {
@@ -63,6 +67,28 @@ struct lane_environment : champsim::environment {
     }
   } thrower;
 
+  // In core c's lane, after its caches: records the core's queued instruction IDs every tick, so
+  // a lane sees the same IDs as the serial loop's operables do.
+  struct recorder_type : champsim::operable {
+    lane_environment& env;
+    std::size_t core;
+    std::vector<std::vector<uint64_t>> seen;
+    recorder_type(lane_environment& e, std::size_t c) : env(e), core(c) {}
+    long operate() override
+    {
+      auto& ids = seen.emplace_back();
+      for (const auto& instr : env.cores[core].input_queue) {
+        ids.push_back(instr.instr_id);
+      }
+      return 0;
+    }
+  };
+  std::deque<recorder_type> recorders;
+
+  // With interactions declared, the probe reads only the mock caches' own state, which the cores
+  // never touch, so a multi-threaded tick may run it ahead of the cores.
+  bool declare_interactions = false;
+
   explicit lane_environment(long probe_period)
   {
     probe.clock_period = champsim::chrono::picoseconds{probe_period};
@@ -71,6 +97,10 @@ struct lane_environment : champsim::environment {
       l1i.emplace_back(static_cast<int>(c));     // a different latency per core, so cores
       l1d.emplace_back(static_cast<int>(2 * c)); // drain their input queues at different rates
       l1i.back().clock_period = l1d.back().clock_period = champsim::chrono::picoseconds{2};
+    }
+    for (std::size_t c = 0; c < num_cores; ++c) {
+      recorders.emplace_back(*this, c);
+      recorders.back().clock_period = champsim::chrono::picoseconds{2};
     }
     for (std::size_t c = 0; c < num_cores; ++c) {
       cores.emplace_back(champsim::core_builder{}
@@ -103,7 +133,8 @@ struct lane_environment : champsim::environment {
   } mem{probe};
   champsim::memory_backend& memory_view() override { return mem; }
 
-  // Cores, the probe, then each core's caches (the thrower among core 2's).
+  // Cores (0-2), the probe (3), each core's caches (4-9), the thrower in core 2's lane (10), then
+  // each core's recorder (11-13).
   std::vector<std::reference_wrapper<champsim::operable>> operable_view() override
   {
     std::vector<std::reference_wrapper<champsim::operable>> view{std::begin(cores), std::end(cores)};
@@ -113,6 +144,7 @@ struct lane_environment : champsim::environment {
       view.emplace_back(l1d[c]);
     }
     view.emplace_back(thrower);
+    view.insert(std::end(view), std::begin(recorders), std::end(recorders));
     return view;
   }
   std::vector<std::size_t> operable_lanes() override
@@ -122,11 +154,32 @@ struct lane_environment : champsim::environment {
       lanes.insert(std::end(lanes), 2, c);
     }
     lanes.push_back(2);
+    lanes.insert(std::end(lanes), {0, 1, 2});
     return lanes;
+  }
+  std::optional<std::vector<std::vector<std::size_t>>> operable_interactions() override
+  {
+    if (!declare_interactions) {
+      return std::nullopt;
+    }
+    std::vector<std::vector<std::size_t>> peers(14);
+    const auto link = [&](std::size_t a, std::size_t b) {
+      peers[a].push_back(b);
+      peers[b].push_back(a);
+    };
+    for (std::size_t c = 0; c < num_cores; ++c) {
+      link(c, 4 + 2 * c); // the core and its L1I
+      link(c, 5 + 2 * c); // and its L1D
+      link(c, 11 + c);    // and its recorder
+      link(3, 4 + 2 * c); // the probe reads the mocks
+      link(3, 5 + 2 * c);
+    }
+    return peers;
   }
 };
 
 struct outcome {
+  std::vector<std::vector<std::vector<uint64_t>>> recorded; // per core, per tick, relative to the run's first ID
   std::vector<std::vector<long long>> seen_retired;
   std::vector<std::vector<uint64_t>> seen_queued; // relative to the run's first ID
   std::vector<std::vector<uint64_t>> final_queues;
@@ -156,6 +209,7 @@ void check_same(const outcome& threaded, const outcome& serial)
 {
   CHECK(threaded.retired == serial.retired);
   CHECK(threaded.final_queues == serial.final_queues);
+  CHECK(threaded.recorded == serial.recorded);
   REQUIRE(std::size(threaded.seen_retired) == std::size(serial.seen_retired));
   for (std::size_t tick = 0; tick < std::size(serial.seen_retired); ++tick) {
     INFO("tick " << tick);
@@ -164,16 +218,17 @@ void check_same(const outcome& threaded, const outcome& serial)
   }
 }
 
-outcome run(std::size_t threads, long trace_length, long throw_at = 0, long probe_period = 2)
+outcome run(std::size_t threads, long trace_length, long throw_at = 0, long probe_period = 2, long phase_length = 120, bool interactions = false)
 {
   lane_environment env{probe_period};
+  env.declare_interactions = interactions;
   env.thrower.throw_at = throw_at;
   std::vector<champsim::tracereader> traces;
   for (std::size_t c = 0; c < lane_environment::num_cores; ++c) {
     traces.emplace_back(reader{0x1000 * (c + 1), trace_length + static_cast<long>(7 * c)});
   }
   champsim::chrono::clock clock;
-  champsim::phase_info phase{"Simulation", false, 120, {0, 1, 2}, {"a", "b", "c"}};
+  champsim::phase_info phase{"Simulation", false, phase_length, {0, 1, 2}, {"a", "b", "c"}};
   champsim::simulation_knobs knobs;
   knobs.threads = threads;
 
@@ -188,6 +243,15 @@ outcome run(std::size_t threads, long trace_length, long throw_at = 0, long prob
       id -= first;
     }
     result.seen_queued.push_back(ids);
+  }
+  for (auto& recorder : env.recorders) {
+    auto& per_tick = result.recorded.emplace_back();
+    for (auto ids : recorder.seen) {
+      for (auto& id : ids) {
+        id -= first;
+      }
+      per_tick.push_back(ids);
+    }
   }
   for (auto& core : env.cores) {
     std::vector<uint64_t> queue;
@@ -223,6 +287,41 @@ TEST_CASE("A multi-threaded tick follows the serial order when a slower operable
     INFO(threads << " threads");
     check_same(run(threads, 1000000, 0, 3), serial);
   }
+}
+
+TEST_CASE("A no-lane operable that interacts with no core runs ahead of the cores")
+{
+  // Declared interactions let the probe run first, which leaves one run per tick, and the IDs a
+  // lane refills with are set at its next run. The serial loop, which ignores interactions, is
+  // the reference.
+  {
+    lane_environment env{2};
+    env.declare_interactions = true;
+    CHECK(champsim::parallel_tick{env, 3}.runs_per_tick() == 1);
+    env.declare_interactions = false;
+    CHECK(champsim::parallel_tick{env, 3}.runs_per_tick() == 2);
+  }
+  const auto serial = run(1, 1000000, 0, 2, 120, true);
+  for (std::size_t threads : {std::size_t{2}, std::size_t{3}}) {
+    INFO(threads << " threads");
+    check_same(run(threads, 1000000, 0, 2, 120, true), serial);
+  }
+  const auto ended = run(1, 3, 0, 2, 120, true);
+  for (std::size_t threads : {std::size_t{2}, std::size_t{3}}) {
+    INFO(threads << " threads, a trace ending mid-refill");
+    check_same(run(threads, 3, 0, 2, 120, true), ended);
+  }
+}
+
+TEST_CASE("A multi-threaded tick gives the serial result while lanes move between threads")
+{
+  // Two threads for three lanes: lanes are reassigned from their measured cost every 4,096
+  // ticks, and which thread runs a lane must not matter. The assignment depends on timing, so
+  // the run is long enough to pass several reassignment points whichever way they go.
+  const auto serial = run(1, 1000000, 0, 2, 15000);
+  REQUIRE(std::size(serial.seen_retired) > 3 * 4096);
+  INFO("2 threads");
+  check_same(run(2, 1000000, 0, 2, 15000), serial);
 }
 
 TEST_CASE("A multi-threaded tick numbers instructions as the serial loop does when a trace ends")

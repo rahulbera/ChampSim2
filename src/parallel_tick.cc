@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <numeric>
 #include <stdexcept>
 #include <fmt/core.h>
 #if defined(__linux__)
@@ -69,6 +70,11 @@ void wake_all(std::atomic<uint32_t>& word)
   (void)word;
 #endif
 }
+
+// Lane costs are sampled on one tick in this many, and lanes are reassigned after this many
+// samples (about 4,000 ticks), if that lowers the most loaded worker's cost by 5% or more.
+constexpr uint64_t ticks_per_sample = 64;
+constexpr uint64_t samples_per_rebalance = 64;
 
 // The processors this process may run on, or 0 if unknown.
 std::size_t available_processors()
@@ -125,10 +131,15 @@ champsim::parallel_tick::parallel_tick(environment& env, std::size_t threads)
     nthreads = processors;
   }
 
-  // Lanes go to workers round-robin, in lane order.
-  auto worker_of = [&](std::size_t lane) {
-    return static_cast<std::size_t>(std::distance(std::begin(distinct), std::find(std::begin(distinct), std::end(distinct), lane))) % nthreads;
+  // Lanes start round-robin, in lane order; rebalance() moves them.
+  auto index_of = [&](std::size_t lane) {
+    return lane == environment::no_lane ? environment::no_lane
+                                        : static_cast<std::size_t>(std::distance(std::begin(distinct), std::find(std::begin(distinct), std::end(distinct), lane)));
   };
+  for (std::size_t li = 0; li < std::size(distinct); ++li) {
+    lane_worker.push_back(li % nthreads);
+  }
+  lane_cost.resize(std::size(distinct));
 
   for (O3_CPU& cpu : env.cpu_view()) {
     cpus.push_back(&cpu);
@@ -140,8 +151,7 @@ champsim::parallel_tick::parallel_tick(environment& env, std::size_t threads)
   for (std::size_t i = 0; i < std::size(view); ++i) {
     operable* op = &view[i].get();
     const bool is_cpu = std::find(std::begin(cpus), std::end(cpus), op) != std::end(cpus);
-    const auto worker = lanes[i] == environment::no_lane ? std::size_t{0} : worker_of(lanes[i]);
-    canonical.push_back({op, i, lanes[i], worker, is_cpu, op->clock_period == quantum});
+    canonical.push_back({op, i, lanes[i], index_of(lanes[i]), is_cpu, op->clock_period == quantum});
   }
   for (const auto& e : canonical) {
     if (!e.fast) {
@@ -154,19 +164,36 @@ champsim::parallel_tick::parallel_tick(environment& env, std::size_t threads)
     auto it = std::find_if(std::begin(canonical), std::end(canonical), [cpu](const entry& e) { return e.op == cpu; });
     if (it == std::end(canonical) || it->lane == environment::no_lane) {
       parallel_refill = false;
-      cpu_worker.push_back(0);
+      cpu_lane.push_back(environment::no_lane);
     } else {
-      cpu_worker.push_back(it->worker);
+      cpu_lane.push_back(it->lane_index);
     }
   }
-  requested.resize(std::size(cpus));
   pushed.resize(std::size(cpus));
   first_id.resize(std::size(cpus));
 
-  for (const auto& e : canonical) {
-    order.push_back(&e);
+  if (const auto known = env.operable_interactions(); known.has_value()) {
+    if (std::size(*known) != std::size(view)) {
+      throw std::logic_error{"environment::operable_interactions() must list one entry per operable"};
+    }
+    interacts.assign(std::size(view), std::vector<char>(std::size(view), 0));
+    for (std::size_t i = 0; i < std::size(view); ++i) {
+      for (auto j : (*known)[i]) {
+        interacts.at(i).at(j) = interacts.at(j).at(i) = 1;
+      }
+    }
+    deferred_ids = parallel_refill;
+    for (const auto& e : canonical) {
+      for (const auto& f : canonical) {
+        deferred_ids = deferred_ids && !(e.lane == environment::no_lane && f.is_cpu && interacts[e.index][f.index]);
+      }
+    }
   }
-  build(canonical_schedule, order);
+
+  for (const auto& e : canonical) {
+    canonical_order.push_back(&e);
+  }
+  build(canonical_schedule, canonical_order);
 
   // The heartbeat listener is shared by every core: size it now, and hold its lines while the
   // workers run.
@@ -184,6 +211,7 @@ champsim::parallel_tick::parallel_tick(environment& env, std::size_t threads)
 
 champsim::parallel_tick::~parallel_tick()
 {
+  settle();
   stopping.store(true, std::memory_order_release);
   publish(epoch.load(std::memory_order_relaxed) + 1);
   for (auto& t : workers) {
@@ -194,31 +222,72 @@ champsim::parallel_tick::~parallel_tick()
   heartbeat.defer = false;
 }
 
-void champsim::parallel_tick::build(std::vector<step>& schedule, const std::vector<const entry*>& sequence) const
+void champsim::parallel_tick::build(std::vector<step>& schedule, const std::vector<const entry*>& given) const
 {
-  std::size_t after_cpus{0};
-  for (std::size_t i = 0; i < std::size(sequence); ++i) {
-    if (sequence[i]->is_cpu) {
-      after_cpus = i + 1;
+  // A no-lane operable that interacts with nothing in the whole run of laned operables before it
+  // commutes with that run, so it can run first, which joins that run to the one after it.
+  auto sequence = given;
+  for (bool moved = !std::empty(interacts); moved;) {
+    moved = false;
+    for (std::size_t i = 0; i < std::size(sequence); ++i) {
+      if (sequence[i]->lane != environment::no_lane) {
+        continue;
+      }
+      auto j = i;
+      while (j > 0 && sequence[j - 1]->lane != environment::no_lane) {
+        --j;
+      }
+      const auto free = std::none_of(std::next(std::begin(sequence), static_cast<std::ptrdiff_t>(j)), std::next(std::begin(sequence), static_cast<std::ptrdiff_t>(i)),
+                                     [&](const entry* e) { return interacts[e->index][sequence[i]->index] != 0; });
+      if (j < i && free) {
+        std::rotate(std::next(std::begin(sequence), static_cast<std::ptrdiff_t>(j)), std::next(std::begin(sequence), static_cast<std::ptrdiff_t>(i)),
+                    std::next(std::begin(sequence), static_cast<std::ptrdiff_t>(i + 1)));
+        moved = true;
+      }
     }
   }
 
   schedule.clear();
-  bool refill_placed = false;
   for (std::size_t i = 0; i < std::size(sequence);) {
     if (sequence[i]->lane == environment::no_lane || nthreads == 1) {
-      schedule.push_back({sequence[i]->op, {}, false});
+      schedule.push_back({sequence[i]->op, {}, {}, false});
       ++i;
       continue;
     }
-    // Every core has operated before this run, so each one's refill count is final.
-    step run_step{nullptr, std::vector<std::vector<operable*>>(nthreads), parallel_refill && !refill_placed && i >= after_cpus};
-    refill_placed = refill_placed || run_step.refill;
+    step run_step{nullptr, {}, std::vector<std::vector<std::size_t>>(nthreads), false};
+    std::vector<std::size_t> position(std::size(lane_worker), environment::no_lane);
     for (; i < std::size(sequence) && sequence[i]->lane != environment::no_lane; ++i) {
-      run_step.by_worker[sequence[i]->worker].push_back(sequence[i]->op);
+      auto& at = position[sequence[i]->lane_index];
+      if (at == environment::no_lane) {
+        at = std::size(run_step.lanes);
+        run_step.lanes.push_back({sequence[i]->lane_index, {}});
+      }
+      run_step.lanes[at].ops.push_back(sequence[i]->op);
+    }
+    for (std::size_t k = 0; k < std::size(run_step.lanes); ++k) {
+      run_step.by_worker[lane_worker[run_step.lanes[k].lane_index]].push_back(k);
     }
     schedule.push_back(std::move(run_step));
   }
+
+  // The serial loop refills every core after the whole tick. The tick's last run is after every
+  // core has operated, and the refill can join it when nothing after it can see a core.
+  const auto last = std::find_if(std::rbegin(schedule), std::rend(schedule), [](const step& x) { return x.serial == nullptr; });
+  const auto sees_a_core = [this](const operable* op) {
+    if (std::empty(interacts)) {
+      return true;
+    }
+    const auto& e = *std::find_if(std::begin(canonical), std::end(canonical), [op](const entry& x) { return x.op == op; });
+    return std::any_of(std::begin(canonical), std::end(canonical), [&](const entry& f) { return f.is_cpu && interacts[e.index][f.index] != 0; });
+  };
+  if (parallel_refill && last != std::rend(schedule) && std::none_of(std::rbegin(schedule), last, [&](const step& x) { return sees_a_core(x.serial); })) {
+    last->refill = true;
+  }
+}
+
+std::size_t champsim::parallel_tick::runs_per_tick() const
+{
+  return static_cast<std::size_t>(std::count_if(std::begin(canonical_schedule), std::end(canonical_schedule), [](const step& x) { return x.serial == nullptr; }));
 }
 
 const std::vector<champsim::parallel_tick::step>& champsim::parallel_tick::schedule_for(const chrono::clock& clock)
@@ -326,18 +395,62 @@ void champsim::parallel_tick::worker_loop(std::size_t worker)
 
 void champsim::parallel_tick::work(std::size_t worker)
 {
+  using sampling_clock = std::chrono::steady_clock;
+  if (run_fixup) {
+    for (std::size_t c = 0; c < std::size(cpus); ++c) {
+      if (lane_worker[cpu_lane[c]] == worker) {
+        set_ids(c);
+      }
+    }
+  }
   long progress{0};
-  for (operable* op : run->by_worker[worker]) {
-    progress += op->operate_on(*run_clock);
+  for (auto k : run->by_worker[worker]) {
+    const auto& lane = run->lanes[k];
+    const auto start = timed_tick ? sampling_clock::now() : sampling_clock::time_point{};
+    for (operable* op : lane.ops) {
+      progress += op->operate_on(*run_clock);
+    }
+    if (timed_tick) {
+      lane_cost[lane.lane_index] += sampling_clock::now() - start;
+    }
   }
   if (run->refill) {
     for (std::size_t c = 0; c < std::size(cpus); ++c) {
-      if (cpu_worker[c] == worker) {
+      if (lane_worker[cpu_lane[c]] == worker) {
+        const auto start = timed_tick ? sampling_clock::now() : sampling_clock::time_point{};
         refill(c);
+        if (timed_tick) {
+          lane_cost[cpu_lane[c]] += sampling_clock::now() - start;
+        }
       }
     }
   }
   slots[worker].progress = progress;
+}
+
+void champsim::parallel_tick::rebalance()
+{
+  // Longest processing time first: each lane, heaviest first, to the least loaded worker.
+  std::vector<std::size_t> heaviest(std::size(lane_cost));
+  std::iota(std::begin(heaviest), std::end(heaviest), std::size_t{0});
+  std::stable_sort(std::begin(heaviest), std::end(heaviest), [this](auto a, auto b) { return lane_cost[a] > lane_cost[b]; });
+  std::vector<std::chrono::steady_clock::duration> load(nthreads), current(nthreads);
+  auto assigned = lane_worker;
+  for (auto li : heaviest) {
+    const auto w = static_cast<std::size_t>(std::distance(std::begin(load), std::min_element(std::begin(load), std::end(load))));
+    assigned[li] = w;
+    load[w] += lane_cost[li];
+    current[lane_worker[li]] += lane_cost[li];
+  }
+  const auto worst_now = *std::max_element(std::begin(current), std::end(current));
+  const auto worst_then = *std::max_element(std::begin(load), std::end(load));
+  if (worst_then * 20 < worst_now * 19) {
+    lane_worker = assigned;
+    build(canonical_schedule, canonical_order);
+    moved_schedule.clear();
+    moved_late.clear();
+  }
+  std::fill(std::begin(lane_cost), std::end(lane_cost), std::chrono::steady_clock::duration::zero());
 }
 
 long champsim::parallel_tick::dispatch()
@@ -376,13 +489,51 @@ long champsim::parallel_tick::dispatch()
 
 void champsim::parallel_tick::refill(std::size_t cpu_index)
 {
+  // As the serial loop, with provisional IDs: number_refill() decides the real ones.
   auto& cpu = *cpus[cpu_index];
   auto& trace = run_traces->at(run_trace_index->at(cpu.cpu));
   long count{0};
-  for (; count < requested[cpu_index] && !trace.eof(); ++count) {
-    cpu.input_queue.push_back(trace(first_id[cpu_index] + static_cast<uint64_t>(count)));
+  for (auto wanted = cpu.IN_QUEUE_SIZE - static_cast<long>(std::size(cpu.input_queue)); count < wanted && !trace.eof(); ++count) {
+    cpu.input_queue.push_back(trace(0));
   }
   pushed[cpu_index] = count;
+}
+
+void champsim::parallel_tick::set_ids(std::size_t cpu_index)
+{
+  auto& queue = cpus[cpu_index]->input_queue;
+  auto id = first_id[cpu_index];
+  for (auto it = std::prev(std::end(queue), pushed[cpu_index]); it != std::end(queue); ++it) {
+    it->instr_id = id++;
+  }
+}
+
+void champsim::parallel_tick::number_refill()
+{
+  // In core order, as the serial loop numbers them.
+  uint64_t total{0};
+  for (auto count : pushed) {
+    total += static_cast<uint64_t>(count);
+  }
+  auto next = tracereader::reserve_ids(total);
+  for (std::size_t c = 0; c < std::size(cpus); ++c) {
+    first_id[c] = next;
+    next += static_cast<uint64_t>(pushed[c]);
+  }
+  ids_pending = true;
+  if (!deferred_ids) {
+    settle();
+  }
+}
+
+void champsim::parallel_tick::settle()
+{
+  if (ids_pending) {
+    for (std::size_t c = 0; c < std::size(cpus); ++c) {
+      set_ids(c);
+    }
+    ids_pending = false;
+  }
 }
 
 void champsim::parallel_tick::serial_refill(std::vector<tracereader>& traces, const std::vector<std::size_t>& trace_index)
@@ -398,6 +549,13 @@ void champsim::parallel_tick::serial_refill(std::vector<tracereader>& traces, co
 
 long champsim::parallel_tick::operator()(std::vector<tracereader>& traces, const std::vector<std::size_t>& trace_index, const chrono::clock& clock)
 {
+  if (nthreads > 1 && nthreads < std::size(lane_worker)) {
+    ++tick_count;
+    timed_tick = tick_count % ticks_per_sample == 0;
+    if (tick_count % (ticks_per_sample * samples_per_rebalance) == 0) {
+      rebalance();
+    }
+  }
   const auto& schedule = schedule_for(clock);
   run_clock = &clock;
   run_traces = &traces;
@@ -406,53 +564,30 @@ long champsim::parallel_tick::operator()(std::vector<tracereader>& traces, const
 
   long progress{0};
   bool refilled = false;
+  bool first_run = true;
   for (const auto& current : schedule) {
     if (current.serial != nullptr) {
       progress += current.serial->operate_on(clock);
       continue;
     }
 
-    if (current.refill) {
-      // Number every core's instructions now, in core order, as the serial loop would.
-      uint64_t total{0};
-      for (std::size_t c = 0; c < std::size(cpus); ++c) {
-        requested[c] = std::max<long>(0, cpus[c]->IN_QUEUE_SIZE - static_cast<long>(std::size(cpus[c]->input_queue)));
-        total += static_cast<uint64_t>(requested[c]);
-      }
-      tick_first_id = tracereader::reserve_ids(total);
-      auto next = tick_first_id;
-      for (std::size_t c = 0; c < std::size(cpus); ++c) {
-        first_id[c] = next;
-        next += static_cast<uint64_t>(requested[c]);
-      }
-    }
-
     run = &current;
+    run_fixup = first_run && ids_pending; // the previous tick's IDs, before any core reads them
     progress += dispatch();
     heartbeat.flush_deferred();
+    if (run_fixup) {
+      ids_pending = false;
+    }
+    first_run = false;
 
     if (current.refill) {
       refilled = true;
-      // A trace that ended early read fewer than its block: renumber the tick's instructions
-      // without the gaps, as the serial loop would have numbered them.
-      bool short_read = false;
-      for (std::size_t c = 0; c < std::size(cpus); ++c) {
-        short_read = short_read || pushed[c] < requested[c];
-      }
-      if (short_read) {
-        auto next = tick_first_id;
-        for (std::size_t c = 0; c < std::size(cpus); ++c) {
-          auto& queue = cpus[c]->input_queue;
-          for (auto it = std::prev(std::end(queue), pushed[c]); it != std::end(queue); ++it) {
-            it->instr_id = next++;
-          }
-        }
-        tracereader::set_next_id(next);
-      }
+      number_refill();
     }
   }
 
   if (!refilled) {
+    settle();
     serial_refill(traces, trace_index);
   }
   return progress;

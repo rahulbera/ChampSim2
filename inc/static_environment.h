@@ -43,6 +43,9 @@ public:
   // the virtual memory's page allocator), the memory backend and a perfect TLB (it calls
   // the virtual memory itself) are in no lane.
   std::vector<std::size_t> operable_lanes() final;
+  // Operables sharing a channel interact, from the wiring below, and so do the PTWs and any
+  // perfect TLB, which all share the virtual memory.
+  std::optional<std::vector<std::vector<std::size_t>>> operable_interactions() final;
 
   // The per-core component names, which are also the runtime-configuration
   // key prefixes: cache.cpu0_l1d.sets, ooo_cpu.cpu0.rob_size, ...

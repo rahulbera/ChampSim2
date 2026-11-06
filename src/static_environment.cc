@@ -550,3 +550,62 @@ std::vector<std::size_t> champsim::static_environment::operable_lanes()
   retval.insert(std::end(retval), std::size(ptws) + 1, no_lane);
   return retval;
 }
+
+std::optional<std::vector<std::vector<std::size_t>>> champsim::static_environment::operable_interactions()
+{
+  // Indices into operable_view(): cores, caches, PTWs, memory.
+  const auto ncores = std::size(cores);
+  const auto cache_at = [ncores](std::size_t i) { return ncores + i; };
+  const auto ptw_at = [ncores, this](std::size_t cpu) { return ncores + std::size(caches) + cpu; };
+  const auto memory_at = ncores + std::size(caches) + std::size(ptws);
+
+  // Who touches each channel: the caches by their own pointers, the rest by the wiring above.
+  std::vector<std::vector<std::size_t>> touching(std::size(channels));
+  const auto add = [&](const channel* ch, std::size_t who) {
+    if (ch != nullptr) {
+      touching.at(static_cast<std::size_t>(ch - std::data(channels))).push_back(who);
+    }
+  };
+  for (std::size_t i = 0; i < std::size(caches); ++i) {
+    for (const auto* ch : caches[i].upper_levels) {
+      add(ch, cache_at(i));
+    }
+    add(caches[i].lower_level, cache_at(i));
+    add(caches[i].lower_translate, cache_at(i));
+  }
+  for (std::size_t cpu = 0; cpu < ncores; ++cpu) {
+    add(&channels.at(chan(cpu, core_to_l1i)), cpu);
+    add(&channels.at(chan(cpu, core_to_l1d)), cpu);
+    add(&channels.at(chan(cpu, stlb_to_ptw)), ptw_at(cpu));
+    add(&channels.at(chan(cpu, ptw_to_l1d)), ptw_at(cpu));
+  }
+  add(&channels.at(llc_to_dram_chan(ncores)), memory_at);
+
+  // The virtual memory's users: every PTW, and a perfect TLB, which translates by itself.
+  std::vector<std::size_t> vmem_users;
+  for (std::size_t cpu = 0; cpu < std::size(ptws); ++cpu) {
+    vmem_users.push_back(ptw_at(cpu));
+  }
+  for (std::size_t i = 0; i < std::size(caches); ++i) {
+    if (caches[i].perfect && caches[i].vmem != nullptr) {
+      vmem_users.push_back(cache_at(i));
+    }
+  }
+  touching.push_back(vmem_users);
+
+  std::vector<std::vector<std::size_t>> retval(memory_at + 1);
+  for (const auto& group : touching) {
+    for (auto a : group) {
+      for (auto b : group) {
+        if (a != b) {
+          retval.at(a).push_back(b);
+        }
+      }
+    }
+  }
+  for (auto& peers : retval) {
+    std::sort(std::begin(peers), std::end(peers));
+    peers.erase(std::unique(std::begin(peers), std::end(peers)), std::end(peers));
+  }
+  return retval;
+}
