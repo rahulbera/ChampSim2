@@ -376,6 +376,13 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
                      return get_tracereader(name, i++, knob_cloudsuite, repeat, trace_version);
                    });
 
+    // With simulation threads, each trace also decodes on a thread of its own.
+    if (sim_knobs.threads > 1) {
+      for (auto& trace : traces) {
+        trace.decode_ahead();
+      }
+    }
+
     std::vector<champsim::phase_info> phases{
         {champsim::phase_info{"Warmup", true, warmup_instructions, std::vector<std::size_t>(std::size(trace_names), 0), trace_names},
          champsim::phase_info{"Simulation", false, simulation_instructions, std::vector<std::size_t>(std::size(trace_names), 0), trace_names}}};

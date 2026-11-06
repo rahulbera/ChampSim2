@@ -16,9 +16,14 @@
 
 #include "tracereader.h"
 
+#include <atomic>
+#include <condition_variable>
 #include <fstream>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include "inf_stream.h"
 #include "repeatable.h"
@@ -26,6 +31,133 @@
 namespace champsim
 {
 uint64_t tracereader::instr_unique_id = 0; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+
+// A single-producer, single-consumer ring of decoded instructions, filled by a thread of its own.
+// The producer stops at half-full intervals: it sleeps once the ring is full and is woken when the
+// reader has drained it to half. The reader waits (rarely) only when the producer is behind.
+struct tracereader::background_model final : public tracereader::reader_concept {
+  std::unique_ptr<reader_concept> source;
+  std::vector<ooo_model_instr> ring;
+  const std::size_t mask;
+
+  alignas(64) std::atomic<std::size_t> head{0}; // next to read; written by the reader
+  alignas(64) std::atomic<std::size_t> tail{0}; // next to write; written by the producer
+  std::atomic<bool> source_ended{false};
+  std::atomic<bool> failed{false};
+  std::exception_ptr error;
+
+  std::mutex sleep_mutex;
+  std::condition_variable wake;
+  std::atomic<bool> producer_asleep{false};
+  std::atomic<bool> stopping{false}; // set under sleep_mutex, so a sleeping producer sees it
+  std::thread producer;
+
+  background_model(std::unique_ptr<reader_concept> src, std::size_t capacity)
+      : source(std::move(src)), ring(capacity, ooo_model_instr{0, input_instr{}}), mask(capacity - 1)
+  {
+    producer = std::thread{[this] {
+      produce();
+    }};
+  }
+
+  ~background_model() override
+  {
+    {
+      std::lock_guard lock{sleep_mutex};
+      stopping.store(true, std::memory_order_seq_cst);
+    }
+    wake.notify_all();
+    producer.join();
+  }
+
+  background_model(const background_model&) = delete;
+  background_model& operator=(const background_model&) = delete;
+
+  void produce()
+  {
+    try {
+      while (true) {
+        const auto t = tail.load(std::memory_order_relaxed);
+        if (t - head.load(std::memory_order_acquire) == std::size(ring)) {
+          std::unique_lock lock{sleep_mutex};
+          producer_asleep.store(true, std::memory_order_seq_cst);
+          wake.wait(lock, [&] { return stopping.load(std::memory_order_seq_cst) || t - head.load(std::memory_order_seq_cst) <= std::size(ring) / 2; });
+          producer_asleep.store(false, std::memory_order_relaxed);
+          if (stopping.load(std::memory_order_relaxed)) {
+            return;
+          }
+          continue;
+        }
+        if (source->eof()) {
+          source_ended.store(true, std::memory_order_release);
+          return;
+        }
+        ring[t & mask] = (*source)();
+        tail.store(t + 1, std::memory_order_release);
+        if (stopping.load(std::memory_order_relaxed)) {
+          return;
+        }
+      }
+    } catch (...) {
+      error = std::current_exception();
+      failed.store(true, std::memory_order_release);
+    }
+  }
+
+  // Waits until an instruction is decoded or none ever will be; true if one is.
+  bool ready() const
+  {
+    const auto h = head.load(std::memory_order_relaxed);
+    for (unsigned spins = 0;; ++spins) {
+      if (tail.load(std::memory_order_acquire) != h) {
+        return true;
+      }
+      if (source_ended.load(std::memory_order_acquire) || failed.load(std::memory_order_acquire)) {
+        return tail.load(std::memory_order_acquire) != h;
+      }
+      if (spins > 1024) {
+        std::this_thread::yield();
+      }
+    }
+  }
+
+  ooo_model_instr operator()() override
+  {
+    if (!ready()) {
+      if (failed.load(std::memory_order_acquire)) {
+        std::rethrow_exception(error); // where the reader would have failed without this
+      }
+    }
+    const auto h = head.load(std::memory_order_relaxed);
+    auto retval = std::move(ring[h & mask]);
+    head.store(h + 1, std::memory_order_seq_cst);
+    if (producer_asleep.load(std::memory_order_seq_cst) && tail.load(std::memory_order_acquire) - (h + 1) <= std::size(ring) / 2) {
+      std::lock_guard lock{sleep_mutex};
+      wake.notify_one();
+    }
+    return retval;
+  }
+
+  [[nodiscard]] bool eof() const override
+  {
+    if (ready()) {
+      return false;
+    }
+    if (failed.load(std::memory_order_acquire)) {
+      return false; // the next read rethrows, as the reader would have thrown
+    }
+    return true;
+  }
+};
+
+void tracereader::decode_ahead(std::size_t capacity)
+{
+  std::size_t size{1};
+  while (size < capacity) {
+    size *= 2;
+  }
+  pimpl_ = std::make_unique<background_model>(std::move(pimpl_), size);
+}
 
 ooo_model_instr apply_branch_target(ooo_model_instr branch, const ooo_model_instr& target)
 {

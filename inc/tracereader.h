@@ -58,6 +58,8 @@ class tracereader
 
   std::unique_ptr<reader_concept> pimpl_;
 
+  struct background_model;
+
 public:
   template <typename T, std::enable_if_t<!std::is_same_v<tracereader, T>, bool> = true>
   tracereader(T&& val) : pimpl_(std::make_unique<reader_model<T>>(std::forward<T>(val)))
@@ -95,6 +97,12 @@ public:
   static void set_next_id(uint64_t id) { instr_unique_id = id; }
 
   [[nodiscard]] auto eof() const { return pimpl_->eof(); }
+
+  // From now on, decodes on a thread of its own, up to `capacity` instructions ahead, and reads
+  // from what that thread has decoded: the same instructions in the same order, so nothing a
+  // simulation computes changes. A multi-threaded tick refills each core in its own lane, so this
+  // takes the decoding, which comes in bursts of a whole buffer, out of the tick.
+  void decode_ahead(std::size_t capacity = 1024);
 };
 
 template <typename T, typename F>
