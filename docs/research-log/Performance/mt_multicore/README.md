@@ -36,6 +36,7 @@ The criterion was set on 2026-11-05.
 | 3 | [A stable tick order](03-tick-order.md) | retained |
 | 4 | [The phase-parallel tick](04-parallel-tick.md) | retained |
 | 5 | [Parallel results](05-parallel-results.md) | done: 4.6–4.7× at 16 cores, statistics identical at every thread count |
+| 6 | [Sixteen memory-intensive cores at full length](06-memory-intensive-16-core.md) | done: PGO build, 10M + 50M per core; 2 h 50 min serial, 30 min with 8 threads (5.6×) |
 
 ## Tools
 
