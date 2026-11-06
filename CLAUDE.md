@@ -576,8 +576,10 @@ it never enters `[config]` or the `build_id`. Four rules keep a parallel tick ex
   oversubscription costs a scheduler timeslice per run. The count is capped at
   `sched_getaffinity`'s processors and the workers sleep on long waits, but two jobs sharing four
   processors still ran 5.5× slower than one thread alone.
-- **Prefer threads on one CCD.** On the Ryzen AI Max+ 395, 16 threads spanning both CCDs were
-  slower than 8 on one.
+- **Use one CCD's physical cores, plus room for the decoders.** At 16 cores on the Ryzen AI
+  Max+ 395, `taskset -c 0-7,16-23 --threads 8` (one CCD with its SMT siblings) gave 4.7×. The
+  same 8 threads on bare cores (`-c 0-7`) gave 3.2×, because the per-trace decoders competed with
+  them, and 16 threads gave 4.5× unconfined and 2.9× on one CCD.
 
 `test/cpp/src/503-parallel-tick.cc` and `079-tracereader-decode-ahead.cc` pin the
 equivalence, and `docs/research-log/Performance/mt_multicore/` has the design, measurements
