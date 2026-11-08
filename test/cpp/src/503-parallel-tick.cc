@@ -1,8 +1,10 @@
 #include <algorithm>
 #include <catch.hpp>
+#include <chrono>
 #include <deque>
 #include <optional>
 #include <stdexcept>
+#include <thread>
 
 #include "environment.h"
 #include "instr.h"
@@ -68,17 +70,23 @@ struct lane_environment : champsim::environment {
   } thrower;
 
   // In core c's lane, after its caches: records the core's queued instruction IDs every tick, so
-  // a lane sees the same IDs as the serial loop's operables do.
+  // a lane sees the same IDs as the serial loop's operables do, and which thread ran it. Core 0's
+  // can be made slow, so that another worker takes the lanes left behind it.
   struct recorder_type : champsim::operable {
     lane_environment& env;
     std::size_t core;
     std::vector<std::vector<uint64_t>> seen;
+    std::vector<std::thread::id> threads;
+    std::chrono::microseconds spin{0};
     recorder_type(lane_environment& e, std::size_t c) : env(e), core(c) {}
     long operate() override
     {
       auto& ids = seen.emplace_back();
       for (const auto& instr : env.cores[core].input_queue) {
         ids.push_back(instr.instr_id);
+      }
+      threads.push_back(std::this_thread::get_id());
+      for (const auto until = std::chrono::steady_clock::now() + spin; std::chrono::steady_clock::now() < until;) {
       }
       return 0;
     }
@@ -221,6 +229,7 @@ struct outcome {
   std::vector<std::vector<uint64_t>> seen_queued; // relative to the run's first ID
   std::vector<std::vector<uint64_t>> final_queues;
   std::vector<long long> retired;
+  std::vector<std::vector<std::thread::id>> lane_threads; // per core, per tick; not compared
 };
 
 // Instructions with a load every third one, so the L1D lanes have work too. A finite reader
@@ -257,12 +266,13 @@ void check_same(const outcome& threaded, const outcome& serial)
 }
 
 outcome run(std::size_t threads, long trace_length, long throw_at = 0, long probe_period = 2, long phase_length = 120, bool interactions = false,
-            bool idle_lanes = false)
+            bool idle_lanes = false, std::chrono::microseconds slow_lane = {})
 {
   lane_environment env{probe_period};
   env.declare_interactions = interactions;
   env.declare_idle_lanes = idle_lanes;
   env.thrower.throw_at = throw_at;
+  env.recorders.front().spin = slow_lane;
   std::vector<champsim::tracereader> traces;
   for (std::size_t c = 0; c < lane_environment::num_cores; ++c) {
     traces.emplace_back(reader{0x1000 * (c + 1), trace_length + static_cast<long>(7 * c)});
@@ -295,6 +305,7 @@ outcome run(std::size_t threads, long trace_length, long throw_at = 0, long prob
       }
       per_tick.push_back(ids);
     }
+    result.lane_threads.push_back(recorder.threads);
   }
   for (auto& core : env.cores) {
     std::vector<uint64_t> queue;
@@ -377,6 +388,33 @@ TEST_CASE("A multi-threaded tick gives the serial result while lanes move betwee
   REQUIRE(std::size(serial.seen_retired) > 3 * 4096);
   INFO("2 threads");
   check_same(run(2, 1000000, 0, 2, 15000), serial);
+}
+
+TEST_CASE("A multi-threaded tick gives the serial result when a worker takes another's lane")
+{
+  // Lanes start round-robin, so with two threads lanes 0 and 2 share a worker. Lane 0 is slow on
+  // every tick, so the other worker, done with lane 1, takes lane 2: it refills core 2 and, with
+  // interactions declared, also sets core 2's IDs and checks its walker. Which thread runs a lane
+  // must not matter.
+  const bool two_threads = [] {
+    lane_environment env{2};
+    return champsim::parallel_tick{env, 2}.threads() == 2;
+  }();
+  constexpr std::chrono::microseconds slow{20};
+  for (bool declared : {false, true}) {
+    INFO((declared ? "one run per tick, with idle skipping" : "two runs per tick"));
+    const auto serial = run(1, 1000000, 0, 2, 120, declared, declared, slow);
+    const auto threaded = run(2, 1000000, 0, 2, 120, declared, declared, slow);
+    check_same(threaded, serial);
+    REQUIRE(std::size(threaded.lane_threads.at(0)) == std::size(threaded.lane_threads.at(2)));
+    bool apart = false;
+    for (std::size_t tick = 0; tick < std::size(threaded.lane_threads[0]); ++tick) {
+      apart = apart || threaded.lane_threads[0][tick] != threaded.lane_threads[2][tick];
+    }
+    if (two_threads) {
+      CHECK(apart);
+    }
+  }
 }
 
 TEST_CASE("A multi-threaded tick numbers instructions as the serial loop does when a trace ends")

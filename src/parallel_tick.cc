@@ -17,6 +17,7 @@
 #include "parallel_tick.h"
 
 #include <algorithm>
+#include <chrono>
 #include <climits>
 #include <numeric>
 #include <stdexcept>
@@ -71,10 +72,21 @@ void wake_all(std::atomic<uint32_t>& word)
 #endif
 }
 
-// Lane costs are sampled on one tick in this many, and lanes are reassigned after this many
-// samples (about 4,000 ticks), if that lowers the most loaded worker's cost by 5% or more.
-constexpr uint64_t ticks_per_sample = 64;
-constexpr uint64_t samples_per_rebalance = 64;
+// Lanes are reassigned after this many ticks, if that lowers the most loaded worker's cost by 5%
+// or more.
+constexpr uint64_t ticks_per_rebalance = 4096;
+
+// A lane's cost, in units that only need to agree with each other: the time-stamp counter where
+// there is one, since the workers read it on every lane they run, else the steady clock. A
+// thread that moves to a processor whose counter is behind measures nothing, not a huge cost.
+uint64_t cost_now()
+{
+#if defined(__x86_64__) || defined(__i386__)
+  return __builtin_ia32_rdtsc();
+#else
+  return static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+#endif
+}
 
 // The processors this process may run on, or 0 if unknown.
 std::size_t available_processors()
@@ -144,7 +156,7 @@ champsim::parallel_tick::parallel_tick(environment& env, std::size_t threads)
   for (std::size_t li = 0; li < std::size(distinct); ++li) {
     lane_worker.push_back(li % nthreads);
   }
-  lane_cost.resize(std::size(distinct));
+  lane_slots = std::make_unique<lane_slot[]>(std::size(distinct));
 
   for (O3_CPU& cpu : env.cpu_view()) {
     cpus.push_back(&cpu);
@@ -267,18 +279,24 @@ void champsim::parallel_tick::build(std::vector<step>& schedule, const std::vect
     }
     step run_step;
     run_step.by_worker.resize(nthreads);
-    run_step.idle_checks.resize(nthreads);
     std::vector<std::size_t> position(std::size(lane_worker), environment::no_lane);
     for (; i < std::size(sequence) && sequence[i]->lane != environment::no_lane; ++i) {
       auto& at = position[sequence[i]->lane_index];
       if (at == environment::no_lane) {
         at = std::size(run_step.lanes);
-        run_step.lanes.push_back({sequence[i]->lane_index, {}});
+        run_step.lanes.push_back({sequence[i]->lane_index, {}, {}, {}});
       }
       run_step.lanes[at].ops.push_back(sequence[i]->op);
     }
     for (std::size_t k = 0; k < std::size(run_step.lanes); ++k) {
       run_step.by_worker[lane_worker[run_step.lanes[k].lane_index]].push_back(k);
+    }
+    for (std::size_t c = 0; c < std::size(cpus); ++c) {
+      if (cpu_lane[c] != environment::no_lane && position[cpu_lane[c]] != environment::no_lane) {
+        run_step.lanes[position[cpu_lane[c]]].cpus.push_back(c);
+      } else {
+        run_step.outside.push_back(c);
+      }
     }
     schedule.push_back(std::move(run_step));
   }
@@ -297,19 +315,20 @@ void champsim::parallel_tick::build(std::vector<step>& schedule, const std::vect
     last->refill = true;
   }
 
-  // The no-lane operables after the last run that a lane can check: the lane's worker calls
-  // idle() at the end of the run, and the operable is skipped if it says so.
+  // The no-lane operables after the last run that a lane in it can check: whoever runs the lane
+  // calls idle() after it, and the operable is skipped if it says so.
   if (last != std::rend(schedule)) {
-    std::vector<uint64_t> next_bit(nthreads, 1);
+    std::vector<std::size_t> position(std::size(lane_worker), environment::no_lane);
+    for (std::size_t k = 0; k < std::size(last->lanes); ++k) {
+      position[last->lanes[k].lane_index] = k;
+    }
+    std::vector<uint64_t> next_bit(std::size(lane_worker), 1);
     for (auto it = std::rbegin(schedule); it != last; ++it) {
-      if (it->idle_lane_index != environment::no_lane && it->idle_lane_index < std::size(lane_worker)) {
-        const auto w = lane_worker[it->idle_lane_index];
-        if (next_bit[w] != 0) {
-          it->idle_worker = w;
-          it->idle_bit = next_bit[w];
-          last->idle_checks[w].emplace_back(it->serial, next_bit[w]);
-          next_bit[w] <<= 1; // up to 64 per worker; the rest always operate
-        }
+      const auto li = it->idle_lane_index;
+      if (li != environment::no_lane && li < std::size(lane_worker) && position[li] != environment::no_lane && next_bit[li] != 0) {
+        it->idle_bit = next_bit[li];
+        last->lanes[position[li]].idle_checks.emplace_back(it->serial, next_bit[li]);
+        next_bit[li] <<= 1; // up to 64 per lane; the rest always operate
       }
     }
   }
@@ -416,7 +435,7 @@ void champsim::parallel_tick::worker_loop(std::size_t worker)
     }
     seen = now;
     try {
-      work(worker);
+      work(worker, now);
     } catch (...) {
       slots[worker].error = std::current_exception();
     }
@@ -424,61 +443,107 @@ void champsim::parallel_tick::worker_loop(std::size_t worker)
   }
 }
 
-void champsim::parallel_tick::work(std::size_t worker)
+void champsim::parallel_tick::work(std::size_t worker, uint32_t run_number)
 {
-  using sampling_clock = std::chrono::steady_clock;
-  if (run_fixup) {
-    for (std::size_t c = 0; c < std::size(cpus); ++c) {
-      if (lane_worker[cpu_lane[c]] == worker) {
-        set_ids(c);
-      }
-    }
-  }
+  auto& mine = slots[worker];
   long progress{0};
-  for (auto k : run->by_worker[worker]) {
-    const auto& lane = run->lanes[k];
-    const auto start = timed_tick ? sampling_clock::now() : sampling_clock::time_point{};
-    for (operable* op : lane.ops) {
-      progress += op->operate_on(*run_clock);
-    }
-    if (timed_tick) {
-      lane_cost[lane.lane_index] += sampling_clock::now() - start;
+
+  // Its own lanes first, the one that cost most the last time it ran first, skipping any a
+  // worker that finished its own has taken.
+  auto& own = mine.order;
+  own = run->by_worker[worker];
+  auto costlier = [this](std::size_t a, std::size_t b) {
+    return lane_slots[run->lanes[a].lane_index].predicted.load(std::memory_order_relaxed)
+           > lane_slots[run->lanes[b].lane_index].predicted.load(std::memory_order_relaxed);
+  };
+  for (auto it = std::begin(own); it != std::end(own); ++it) { // a worker owns a few lanes
+    for (auto hole = it; hole != std::begin(own) && costlier(*hole, *std::prev(hole)); --hole) {
+      std::iter_swap(hole, std::prev(hole));
     }
   }
-  if (run->refill) {
-    for (std::size_t c = 0; c < std::size(cpus); ++c) {
-      if (lane_worker[cpu_lane[c]] == worker) {
-        const auto start = timed_tick ? sampling_clock::now() : sampling_clock::time_point{};
-        refill(c);
-        if (timed_tick) {
-          lane_cost[cpu_lane[c]] += sampling_clock::now() - start;
+  for (auto k : own) {
+    if (claim(k, run_number)) {
+      progress += run_lane(k);
+    }
+  }
+
+  // Then the lane nobody has started that cost most the last time it ran, until none is left.
+  while (true) {
+    auto best = std::size(run->lanes);
+    uint64_t best_cost{0};
+    for (std::size_t k = 0; k < std::size(run->lanes); ++k) {
+      const auto& state = lane_slots[run->lanes[k].lane_index];
+      if (state.claimed.load(std::memory_order_relaxed) != run_number) {
+        const auto cost = state.predicted.load(std::memory_order_relaxed);
+        if (best == std::size(run->lanes) || cost > best_cost) {
+          best = k;
+          best_cost = cost;
         }
       }
     }
-  }
-  if (!std::empty(run->idle_checks)) {
-    uint64_t idle_bits{0};
-    for (const auto& [op, bit] : run->idle_checks[worker]) {
-      idle_bits |= op->idle() ? bit : 0;
+    if (best == std::size(run->lanes)) {
+      break;
     }
-    slots[worker].idle_bits = idle_bits;
+    if (claim(best, run_number)) {
+      progress += run_lane(best);
+    }
   }
-  slots[worker].progress = progress;
+  mine.progress = progress;
+}
+
+bool champsim::parallel_tick::claim(std::size_t k, uint32_t run_number)
+{
+  // Only one claim of a lane per run succeeds. Nothing passes between claimants: the lane's
+  // state reaches whoever runs it through the end of the previous run, as without stealing.
+  auto& claimed = lane_slots[run->lanes[k].lane_index].claimed;
+  auto seen = claimed.load(std::memory_order_relaxed);
+  return seen != run_number && claimed.compare_exchange_strong(seen, run_number, std::memory_order_relaxed);
+}
+
+long champsim::parallel_tick::run_lane(std::size_t k)
+{
+  const auto& lane = run->lanes[k];
+  auto& state = lane_slots[lane.lane_index];
+  const auto start = cost_now();
+  if (run_fixup) {
+    for (auto c : lane.cpus) {
+      set_ids(c); // the previous tick's IDs, before the core reads them
+    }
+  }
+  long progress{0};
+  for (operable* op : lane.ops) {
+    progress += op->operate_on(*run_clock);
+  }
+  if (run->refill) {
+    for (auto c : lane.cpus) {
+      refill(c);
+    }
+  }
+  uint64_t idle_bits{0};
+  for (const auto& [op, bit] : lane.idle_checks) {
+    idle_bits |= op->idle() ? bit : 0;
+  }
+  state.idle_bits = idle_bits;
+  const auto end = cost_now();
+  const auto spent = end > start ? end - start : 0;
+  state.predicted.store(spent, std::memory_order_relaxed);
+  state.cost += spent;
+  return progress;
 }
 
 void champsim::parallel_tick::rebalance()
 {
   // Longest processing time first: each lane, heaviest first, to the least loaded worker.
-  std::vector<std::size_t> heaviest(std::size(lane_cost));
+  std::vector<std::size_t> heaviest(std::size(lane_worker));
   std::iota(std::begin(heaviest), std::end(heaviest), std::size_t{0});
-  std::stable_sort(std::begin(heaviest), std::end(heaviest), [this](auto a, auto b) { return lane_cost[a] > lane_cost[b]; });
-  std::vector<std::chrono::steady_clock::duration> load(nthreads), current(nthreads);
+  std::stable_sort(std::begin(heaviest), std::end(heaviest), [this](auto a, auto b) { return lane_slots[a].cost > lane_slots[b].cost; });
+  std::vector<uint64_t> load(nthreads), current(nthreads);
   auto assigned = lane_worker;
   for (auto li : heaviest) {
     const auto w = static_cast<std::size_t>(std::distance(std::begin(load), std::min_element(std::begin(load), std::end(load))));
     assigned[li] = w;
-    load[w] += lane_cost[li];
-    current[lane_worker[li]] += lane_cost[li];
+    load[w] += lane_slots[li].cost;
+    current[lane_worker[li]] += lane_slots[li].cost;
   }
   const auto worst_now = *std::max_element(std::begin(current), std::end(current));
   const auto worst_then = *std::max_element(std::begin(load), std::end(load));
@@ -488,17 +553,25 @@ void champsim::parallel_tick::rebalance()
     moved_schedule.clear();
     moved_late.clear();
   }
-  std::fill(std::begin(lane_cost), std::end(lane_cost), std::chrono::steady_clock::duration::zero());
+  for (std::size_t li = 0; li < std::size(lane_worker); ++li) {
+    lane_slots[li].cost = 0;
+  }
 }
 
 long champsim::parallel_tick::dispatch()
 {
+  // A core in no lane of the run is the calling thread's: no worker touches it.
+  if (run_fixup) {
+    for (auto c : run->outside) {
+      set_ids(c);
+    }
+  }
   const auto this_run = static_cast<uint32_t>(epoch.load(std::memory_order_relaxed) + 1);
   publish(this_run);
 
   std::exception_ptr error;
   try {
-    work(0);
+    work(0, this_run);
   } catch (...) {
     error = std::current_exception();
   }
@@ -521,6 +594,11 @@ long champsim::parallel_tick::dispatch()
   }
   if (error) {
     std::rethrow_exception(error);
+  }
+  if (run->refill) {
+    for (auto c : run->outside) {
+      refill(c);
+    }
   }
   return progress;
 }
@@ -587,12 +665,8 @@ void champsim::parallel_tick::serial_refill(std::vector<tracereader>& traces, co
 
 long champsim::parallel_tick::operator()(std::vector<tracereader>& traces, const std::vector<std::size_t>& trace_index, const chrono::clock& clock)
 {
-  if (nthreads > 1 && nthreads < std::size(lane_worker)) {
-    ++tick_count;
-    timed_tick = tick_count % ticks_per_sample == 0;
-    if (tick_count % (ticks_per_sample * samples_per_rebalance) == 0) {
-      rebalance();
-    }
+  if (nthreads > 1 && nthreads < std::size(lane_worker) && ++tick_count % ticks_per_rebalance == 0) {
+    rebalance();
   }
   const auto& schedule = schedule_for(clock);
   run_clock = &clock;
@@ -605,7 +679,7 @@ long champsim::parallel_tick::operator()(std::vector<tracereader>& traces, const
   bool first_run = true;
   for (const auto& current : schedule) {
     if (current.serial != nullptr) {
-      if (current.idle_bit != 0 && (slots[current.idle_worker].idle_bits & current.idle_bit) != 0) {
+      if (current.idle_bit != 0 && (lane_slots[current.idle_lane_index].idle_bits & current.idle_bit) != 0) {
         // operate() would do nothing: only the clock moves, as operate_on would move it.
         while (current.serial->current_time < clock.now()) {
           current.serial->current_time += current.serial->clock_period;

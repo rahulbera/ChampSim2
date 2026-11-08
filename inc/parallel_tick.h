@@ -45,9 +45,13 @@ struct environment;
  * one of them, which in the standard machine is never: DRAM, the one slower clock, is last.
  *
  * Lanes cost different amounts: a busy core does several times the work of a stalled one, and a
- * run lasts as long as its slowest worker. With fewer threads than lanes, every few thousand
- * ticks the lanes are reassigned from their measured cost, heaviest first to the least loaded
- * worker. Which thread runs a lane does not change what it computes.
+ * run lasts as long as its slowest worker. Each lane has an owner. With fewer threads than lanes,
+ * every few thousand ticks the lanes are reassigned from their measured cost, heaviest first to
+ * the least loaded worker. That evens out the average, but a core's cost comes in bursts that
+ * last tens to hundreds of ticks, so within a run a worker also steals: it runs its own lanes,
+ * the one that cost most last time first, and then the costliest lane no worker has started. A
+ * lane is claimed atomically, so each runs exactly once per run. Which thread runs a lane does
+ * not change what it computes.
  *
  * The workers spin between runs, which in a tick are a few microseconds apart, and sleep when a
  * wait runs long (between phases, or on a host with fewer free processors than threads).
@@ -84,24 +88,25 @@ private:
     bool fast; // on the smallest clock period
   };
 
-  // One lane's operables within a run, in order.
+  // One lane's operables within a run, in order, and what its runner does around them.
   struct lane_run {
     std::size_t lane_index;
     std::vector<operable*> ops;
+    std::vector<std::size_t> cpus; // the cores in this lane, whose IDs it sets and whose input it refills
+    // In the tick's last run: the later no-lane operables whose idle() this lane checks, each with its bit.
+    std::vector<std::pair<const operable*, uint64_t>> idle_checks;
   };
 
   // One step of a tick: a no-lane operable on the calling thread, or a run of laned operables,
-  // each lane's in order, with each worker's lanes listed.
+  // each lane's in order, with each worker's own lanes listed.
   struct step {
     operable* serial = nullptr;
     std::vector<lane_run> lanes;
     std::vector<std::vector<std::size_t>> by_worker; // indices into lanes
+    std::vector<std::size_t> outside;                // the cores in no lane of this run
     bool refill = false;
-    // A run: per worker, the later no-lane operables whose idle() it checks, each with its bit.
-    std::vector<std::vector<std::pair<const operable*, uint64_t>>> idle_checks;
-    // A no-lane operable: the worker and bit that say it is idle, if one checks.
+    // A no-lane operable: the lane and bit that say it is idle, if one checks.
     std::size_t idle_lane_index = static_cast<std::size_t>(-1);
-    std::size_t idle_worker = static_cast<std::size_t>(-1);
     uint64_t idle_bit = 0;
   };
 
@@ -109,8 +114,16 @@ private:
   struct alignas(64) slot {
     std::atomic<uint32_t> done{0};
     long progress = 0;
-    uint64_t idle_bits = 0; // from the tick's last run
+    std::vector<std::size_t> order; // its own lanes in this run, costliest first
     std::exception_ptr error;
+  };
+
+  // A cache line per lane, written by whichever worker runs it.
+  struct alignas(64) lane_slot {
+    std::atomic<uint32_t> claimed{0};   // the last run that claimed it
+    std::atomic<uint64_t> predicted{0}; // what it cost the last time it ran, which orders the next run
+    uint64_t cost = 0;                  // since the last reassignment
+    uint64_t idle_bits = 0;             // from the tick's last run
   };
 
   std::vector<entry> canonical;
@@ -136,12 +149,10 @@ private:
   bool ids_pending = false;  // the last refill's IDs are still provisional
   bool run_fixup = false;    // the current run sets them first
 
-  // Which worker runs each lane, and what the lanes cost on sampled ticks since the last
-  // reassignment. A worker writes only its own lanes' costs.
+  // Which worker owns each lane, and each lane's state.
   std::vector<std::size_t> lane_worker;
-  std::vector<std::chrono::steady_clock::duration> lane_cost;
+  std::unique_ptr<lane_slot[]> lane_slots;
   uint64_t tick_count = 0;
-  bool timed_tick = false;
 
   // The last refill, by core: how many instructions it read, and their first ID.
   std::vector<long> pushed;
@@ -164,7 +175,9 @@ private:
   void build(std::vector<step>& schedule, const std::vector<const entry*>& sequence) const;
   void rebalance();
   const std::vector<step>& schedule_for(const chrono::clock& clock);
-  void work(std::size_t worker);
+  void work(std::size_t worker, uint32_t run_number);
+  bool claim(std::size_t k, uint32_t run_number);
+  long run_lane(std::size_t k);
   void worker_loop(std::size_t worker);
   void publish(uint32_t run_number);
   long dispatch();
