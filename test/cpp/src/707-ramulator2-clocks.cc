@@ -44,10 +44,8 @@ using ps = long long;
 //   2. An operable whose own time is behind the clock adds its period to its
 //      time and operates, until it has caught up.
 //   3. Within one tick, operables are offered the clock in order of their own
-//      time, earliest first. Equal times keep environment order: do_cycle uses
-//      std::sort, which promises no stability, but with fewer than 17
-//      operables libstdc++ and libc++ both insertion-sort. The machines below
-//      have six.
+//      time, earliest first. Equal times keep environment order: do_cycle
+//      sorts stably.
 // In closed form: with period P >= q, operation m (at the operable's time m*P)
 // runs on global tick floor((m-1)*P/q) + 1, never twice in one tick, and by the
 // end of tick k the operable has operated ceil(k*q/P) times. Nothing here

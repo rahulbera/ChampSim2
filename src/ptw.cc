@@ -120,7 +120,7 @@ auto PageTableWalker::step_translation(const mshr_type& source) -> std::optional
   packet.is_translated = true;
   packet.type = access_type::TRANSLATION;
 
-  bool success = lower_level->add_rq(packet);
+  bool success = lower_level->add_rq(std::move(packet));
   if (success) {
     return source;
   }
@@ -191,6 +191,17 @@ long PageTableWalker::operate()
   }
 
   return progress;
+}
+
+bool PageTableWalker::idle() const
+{
+  // Nothing returned, nothing to finish or complete, and nothing new to read: operate() and
+  // operate_fixed() would only look.
+  const bool nothing_read = std::all_of(std::begin(upper_levels), std::end(upper_levels), [](const auto* ul) { return std::empty(ul->RQ); });
+  if (fixed_latency.has_value()) {
+    return nothing_read && std::empty(completed);
+  }
+  return nothing_read && std::empty(lower_level->returned) && std::empty(completed) && std::empty(finished);
 }
 
 long PageTableWalker::operate_fixed()

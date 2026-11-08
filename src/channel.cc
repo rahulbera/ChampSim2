@@ -29,22 +29,23 @@ champsim::channel::channel(std::size_t rq_size, std::size_t pq_size, std::size_t
 {
 }
 
-template <typename R>
-bool champsim::channel::do_add_queue(R& queue, std::size_t queue_size, const typename R::value_type& packet)
+template <typename R, typename P>
+bool champsim::channel::do_add_queue(R& queue, std::size_t queue_size, P&& packet)
 {
   // check occupancy
   if (std::size(queue) >= queue_size) {
     return false; // cannot handle this request
   }
 
-  // Insert the packet ahead of the translation misses
-  auto fwd_pkt = packet;
-  queue.push_back(fwd_pkt);
+  // Insert the packet ahead of the translation misses. A copy only when the caller keeps its
+  // packet: each copy reallocates instr_depend_on_me.
+  queue.push_back(std::forward<P>(packet));
 
   return true;
 }
 
-bool champsim::channel::add_rq(const request_type& packet)
+template <typename P>
+bool champsim::channel::add_to_rq(P&& packet)
 {
   if constexpr (champsim::debug_print) {
     fmt::print("[channel_rq] {} instr_id: {} address: {} v_address: {} type: {}\n", __func__, packet.instr_id, packet.address, packet.v_address,
@@ -53,7 +54,7 @@ bool champsim::channel::add_rq(const request_type& packet)
 
   sim_stats.RQ_ACCESS++;
 
-  auto result = do_add_queue(RQ, RQ_SIZE, packet);
+  auto result = do_add_queue(RQ, RQ_SIZE, std::forward<P>(packet));
 
   if (result) {
     sim_stats.RQ_TO_CACHE++;
@@ -64,7 +65,8 @@ bool champsim::channel::add_rq(const request_type& packet)
   return result;
 }
 
-bool champsim::channel::add_wq(const request_type& packet)
+template <typename P>
+bool champsim::channel::add_to_wq(P&& packet)
 {
   if constexpr (champsim::debug_print) {
     fmt::print("[channel_wq] {} instr_id: {} address: {} v_address: {} type: {}\n", __func__, packet.instr_id, packet.address, packet.v_address,
@@ -73,7 +75,7 @@ bool champsim::channel::add_wq(const request_type& packet)
 
   sim_stats.WQ_ACCESS++;
 
-  auto result = do_add_queue(WQ, WQ_SIZE, packet);
+  auto result = do_add_queue(WQ, WQ_SIZE, std::forward<P>(packet));
 
   if (result) {
     sim_stats.WQ_TO_CACHE++;
@@ -84,7 +86,8 @@ bool champsim::channel::add_wq(const request_type& packet)
   return result;
 }
 
-bool champsim::channel::add_pq(const request_type& packet)
+template <typename P>
+bool champsim::channel::add_to_pq(P&& packet)
 {
   if constexpr (champsim::debug_print) {
     fmt::print("[channel_pq] {} instr_id: {} address: {} v_address: {} type: {}\n", __func__, packet.instr_id, packet.address, packet.v_address,
@@ -93,8 +96,7 @@ bool champsim::channel::add_pq(const request_type& packet)
 
   sim_stats.PQ_ACCESS++;
 
-  auto fwd_pkt = packet;
-  auto result = do_add_queue(PQ, PQ_SIZE, fwd_pkt);
+  auto result = do_add_queue(PQ, PQ_SIZE, std::forward<P>(packet));
   if (result) {
     sim_stats.PQ_TO_CACHE++;
   } else {
@@ -103,6 +105,13 @@ bool champsim::channel::add_pq(const request_type& packet)
 
   return result;
 }
+
+bool champsim::channel::add_rq(const request_type& packet) { return add_to_rq(packet); }
+bool champsim::channel::add_wq(const request_type& packet) { return add_to_wq(packet); }
+bool champsim::channel::add_pq(const request_type& packet) { return add_to_pq(packet); }
+bool champsim::channel::add_rq(request_type&& packet) { return add_to_rq(std::move(packet)); }
+bool champsim::channel::add_wq(request_type&& packet) { return add_to_wq(std::move(packet)); }
+bool champsim::channel::add_pq(request_type&& packet) { return add_to_pq(std::move(packet)); }
 
 std::size_t champsim::channel::rq_occupancy() const { return std::size(RQ); }
 

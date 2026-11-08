@@ -159,9 +159,12 @@ jobs:
 
     - name: Set Coverage Environment
       if: ${{ matrix.config.coverage }}
+      # Tests such as 503-parallel-tick run simulator code on several threads. Without -pthread,
+      # GCC updates coverage counters non-atomically, the threads lose increments, and geninfo
+      # rejects the resulting negative counts.
       run: |
         sudo apt-get install lcov
-        echo "CXXFLAGS=--coverage" >> $GITHUB_ENV
+        echo "CXXFLAGS=--coverage -fprofile-update=atomic" >> $GITHUB_ENV
         echo "LDFLAGS=--coverage" >> $GITHUB_ENV
 
     - name: Configure
@@ -173,11 +176,13 @@ jobs:
     - name: Run
       run: test/bin/000-test-main --order rand --warn NoAssertions --invisibles
 
+    # Search the build tree, not the checkout: pgo/ holds committed .gcda profiles with no .gcno,
+    # which geninfo refuses. Sources are compiled by root-relative path, hence --base-directory.
     - name: Capture LCOV
       if: ${{ matrix.config.coverage }}
       run: |
         lcov --capture --no-external \
-        --directory . \
+        --directory .csconfig --base-directory . \
         --exclude $(pwd)/.csconfig/\* \
         --exclude $(pwd)/test/\* \
         --exclude $(pwd)/vcpkg_installed/\* \
@@ -462,10 +467,11 @@ jobs:
         test "$status" -ne 0 || { echo "expected --json to exit non-zero"; exit 1; }
         echo "$message" | grep -q -- "--json has been removed" || { echo "exited non-zero, but not because of the --json guard"; exit 1; }
 
+    # As in the test job: the build tree only, so the committed PGO profiles are not scanned.
     - name: Capture LCOV
       run: |
         lcov --capture --no-external \
-        --directory . \
+        --directory .csconfig --base-directory . \
         --include $(pwd)/src/toml_printer.cc \
         --include $(pwd)/src/runtime_config.cc \
         --include $(pwd)/inc/runtime_config.h \

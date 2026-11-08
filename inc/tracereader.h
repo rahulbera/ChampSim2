@@ -58,6 +58,8 @@ class tracereader
 
   std::unique_ptr<reader_concept> pimpl_;
 
+  struct background_model;
+
 public:
   template <typename T, std::enable_if_t<!std::is_same_v<tracereader, T>, bool> = true>
   tracereader(T&& val) : pimpl_(std::make_unique<reader_model<T>>(std::forward<T>(val)))
@@ -71,7 +73,36 @@ public:
     return retval;
   }
 
+  // Reads the next instruction with an ID from reserve_ids(). Instructions are numbered across
+  // all cores in the order the serial loop refills them, so a multi-threaded refill reserves
+  // each core's block in core order and reads with these.
+  auto operator()(uint64_t id)
+  {
+    auto retval = (*pimpl_)();
+    retval.instr_id = id;
+    return retval;
+  }
+
+  // Reserves count consecutive IDs and returns the first.
+  static uint64_t reserve_ids(uint64_t count)
+  {
+    const auto first = instr_unique_id;
+    instr_unique_id += count;
+    return first;
+  }
+
+  // The ID the next instruction read without one would get. Setting it returns IDs that were
+  // reserved but never read.
+  static uint64_t next_id() { return instr_unique_id; }
+  static void set_next_id(uint64_t id) { instr_unique_id = id; }
+
   [[nodiscard]] auto eof() const { return pimpl_->eof(); }
+
+  // From now on, decodes on a thread of its own, up to `capacity` instructions ahead, and reads
+  // from what that thread has decoded: the same instructions in the same order, so nothing a
+  // simulation computes changes. A multi-threaded tick refills each core in its own lane, so this
+  // takes the decoding, which comes in bursts of a whole buffer, out of the tick.
+  void decode_ahead(std::size_t capacity = 1024);
 };
 
 template <typename T, typename F>
