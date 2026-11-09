@@ -6,9 +6,9 @@
 
 #include "champsim_assert.h"
 
-// The per-context rename methods, moved line-for-line from RegisterAllocator.
-// The shared physical-register pool and its free list live behind
-// reg_allocator, which the core guarantees outlives this context.
+// The per-context rename methods. The shared physical-register pool and its
+// free list live behind reg_allocator, which the core guarantees outlives this
+// context.
 
 PHYSICAL_REGISTER_ID champsim::core_context::rename_dest_register(int16_t reg, champsim::program_ordered<ooo_model_instr>::id_type producer_id)
 {
@@ -81,18 +81,15 @@ bool champsim::core_context::isAllocated(PHYSICAL_REGISTER_ID archreg) const
   return frontend_RAT[static_cast<std::size_t>(archreg)] != -1;
 }
 
-// The RAT half of the deadlock printer, printed back-to-back with
-// RegisterAllocator::print_deadlock() (the physical-file half) so the combined
-// output matches the original single-function version.
+// The RAT half of the deadlock printer, printed once per context. The
+// physical-file half is RegisterAllocator::print_deadlock(); the "completely
+// occupied" warning and that half are emitted once by O3_CPU::print_deadlock()
+// after every context's RAT, so a multi-context dump names each RAT without
+// repeating the shared-file warning.
 void champsim::core_context::print_deadlock()
 {
   fmt::print("Frontend Register Allocation Table        Backend Register Allocation Table\n");
   for (size_t i = 0; i < frontend_RAT.size(); ++i) {
     fmt::print("Arch reg: {:3}    Phys reg: {:3}            Arch reg: {:3}    Phys reg: {:3}\n", i, frontend_RAT[i], i, backend_RAT[i]);
-  }
-
-  if (reg_allocator->count_free_registers() == 0) {
-    fmt::print("\n**WARNING!! WARNING!!** THE PHYSICAL REGISTER FILE IS COMPLETELY OCCUPIED.\n");
-    fmt::print("It is extremely likely your register file size is too small.\n");
   }
 }

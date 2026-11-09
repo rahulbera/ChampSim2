@@ -128,7 +128,7 @@ public:
 
   champsim::bandwidth::maximum_type L1I_BANDWIDTH, L1D_BANDWIDTH;
 
-  void resume_fetch_after_mispredict();                                // single-context convenience (tests)
+  void resume_fetch_after_mispredict(); // single-context convenience (tests)
   void resume_fetch_after_mispredict(champsim::core_context& c);
 
   const long IN_QUEUE_SIZE;
@@ -275,7 +275,7 @@ public:
     void impl_update_btb(champsim::address ip, champsim::address predicted_target, bool taken, uint8_t branch_type, champsim::context_index context,
                          champsim::address_space_id asid) final;
     [[nodiscard]] std::pair<champsim::address, bool> impl_btb_prediction(champsim::address ip, uint8_t branch_type, champsim::context_index context,
-                                                                        champsim::address_space_id asid) final;
+                                                                         champsim::address_space_id asid) final;
 
     champsim::modules::smt_capability capability() const final;
   };
@@ -306,7 +306,7 @@ public:
   void impl_update_btb(champsim::address ip, champsim::address predicted_target, bool taken, uint8_t branch_type, champsim::context_index context,
                        champsim::address_space_id asid) const;
   [[nodiscard]] std::pair<champsim::address, bool> impl_btb_prediction(champsim::address ip, uint8_t branch_type, champsim::context_index context,
-                                                                      champsim::address_space_id asid) const;
+                                                                       champsim::address_space_id asid) const;
   // NOLINTEND(readability-make-member-function-const)
 
   // Divides the whole-core capacity totals into per-context quotas, refusing a
@@ -576,7 +576,7 @@ std::pair<champsim::address, bool> O3_CPU::btb_module_model<Ts...>::impl_btb_pre
     if constexpr (btb::has_btb_prediction<decltype(t), champsim::address, champsim::context_index, champsim::address_space_id>)
       return return_type{t.btb_prediction(ip, context, asid)};
 
-    /* Strong addresses, asid only (every shipped BTB) */
+    /* Strong addresses, asid only (a BTB written before the hook took a context index) */
     if constexpr (btb::has_btb_prediction<decltype(t), champsim::address, champsim::address_space_id>)
       return return_type{t.btb_prediction(ip, asid)};
 

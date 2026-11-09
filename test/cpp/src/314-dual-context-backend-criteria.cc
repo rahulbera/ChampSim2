@@ -178,7 +178,7 @@ TEST_CASE_METHOD(dual_criteria_fixture, "Oldest-first is fair: an older sibling 
   c1.dispatch_sequence = 0;
   dual.contexts[1].ROB = {c1};
   for (int i = 0; i < 4; ++i) {
-    auto c0 = ready_no_dest(100 + i);
+    auto c0 = ready_no_dest(static_cast<uint64_t>(100 + i));
     c0.dispatch_sequence = static_cast<uint64_t>(100 + i);
     dual.contexts[0].ROB.push_back(c0);
   }

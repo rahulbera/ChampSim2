@@ -41,13 +41,18 @@ int RegisterAllocator::count_reg_dependencies(const ooo_model_instr& instr) cons
   }));
 }
 
-void RegisterAllocator::print_deadlock()
+void RegisterAllocator::print_deadlock(bool with_context)
 {
   fmt::print("\nPhysical Register File\n");
   for (size_t i = 0; i < physical_register_file.size(); ++i) {
-    fmt::print("Phys reg: {:3}\t Arch reg: {:3}\t Producer: {}\t Valid: {}\t Busy: {}\n", static_cast<int>(i),
-               static_cast<int>(physical_register_file.at(i).arch_reg_index), physical_register_file.at(i).producing_instruction_id,
-               physical_register_file.at(i).valid, physical_register_file.at(i).busy);
+    const auto& reg = physical_register_file.at(i);
+    fmt::print("Phys reg: {:3}\t Arch reg: {:3}\t Producer: {}\t Valid: {}\t Busy: {}", static_cast<int>(i), static_cast<int>(reg.arch_reg_index),
+               reg.producing_instruction_id, reg.valid, reg.busy);
+    // With several contexts each busy register names the context that owns it;
+    // a free register has no owner, so the field is a dash.
+    if (with_context)
+      fmt::print("\t Context: {}", reg.busy ? std::to_string(reg.context.value) : std::string{"-"});
+    fmt::print("\n");
   }
   fmt::print("\n");
 }

@@ -10,9 +10,8 @@
 // Step 2.5: the decoded-instruction buffer, the branch direction predictor and
 // the BTB are all keyed by (asid, ip), so two address spaces reusing the same
 // instruction pointer must not share a decoded window, a direction counter or a
-// branch target. In the N=1 milestone asid is constant {0,0}, which is exactly
-// why the ASID fold is a numeric no-op there; these scenarios prove the
-// isolation is real once asid actually differs.
+// branch target. The ASID fold is a numeric no-op only when asid happens to be
+// {0,0}; these scenarios prove the isolation is real once asid actually differs.
 
 TEST_CASE("The DIB keys a decoded window by (asid, ip)")
 {

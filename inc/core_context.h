@@ -26,10 +26,13 @@
 // register file and its free list, bandwidth and capacity constants) stays on
 // the core. So do the branch predictor and BTB modules: they are constructed
 // from the O3_CPU and reach the instruction under prediction through
-// O3_CPU::ctx(), which is context 0.
+// O3_CPU::ctx() (context 0); a module that keys state per context indexes the
+// core's contexts vector by context.value.
 //
-// Stage 1 has exactly one context per core and does not change the order of
-// operations, so single-context results remain bit-identical.
+// Each context's buffers and queues are sized by its share of the core's
+// totals (O3_CPU divides the knobs into per-context quotas; only the one DIB
+// stays shared), and the order of operations is unchanged, so single-context
+// results remain bit-identical.
 
 struct LSQ_ENTRY : champsim::program_ordered<LSQ_ENTRY> {
   champsim::address virtual_address{};
@@ -66,8 +69,8 @@ struct dib_shift {
 // The DIB key is (asid, ip): two address spaces never share a decoded window.
 // The set index stays ip>>shamt; the tag is the pair (ip>>shamt, asid), so a hit
 // needs the same window and address space. An XOR fold would let a different
-// window compare equal. In N=1 asid is {0,0}, so the pair compares equal exactly
-// when the original tag did.
+// window compare equal; the pair compares equal only when the window and the
+// address space both match.
 struct dib_entry {
   champsim::address ip{};
   champsim::address_space_id asid{};
@@ -132,9 +135,10 @@ struct core_context {
   std::array<PHYSICAL_REGISTER_ID, std::numeric_limits<uint8_t>::max() + 1> frontend_RAT, backend_RAT;
   RegisterAllocator* reg_allocator = nullptr;
 
-  // Rename methods that read or write the per-context RATs. They are moved here
-  // line-for-line from RegisterAllocator; the physical-register pool they touch
-  // is the shared reg_allocator above.
+  // Rename methods that read or write the per-context RATs. A rename stamps the
+  // physical register it hands out with this context's ctx_index and, on a hit,
+  // asserts the register already belongs to this thread; the physical-register
+  // pool they touch is the shared reg_allocator above.
   PHYSICAL_REGISTER_ID rename_dest_register(int16_t reg, champsim::program_ordered<ooo_model_instr>::id_type producer_id);
   PHYSICAL_REGISTER_ID rename_src_register(int16_t reg);
   void retire_dest_register(PHYSICAL_REGISTER_ID physreg);
@@ -142,8 +146,8 @@ struct core_context {
   bool isAllocated(PHYSICAL_REGISTER_ID archreg) const;
 
   // The RAT half of the deadlock printer; RegisterAllocator::print_deadlock()
-  // prints the physical-file half. Called back-to-back in that order by
-  // O3_CPU::print_deadlock() so the combined output matches the original.
+  // prints the physical-file half. O3_CPU::print_deadlock() prints one RAT per
+  // context and the physical file once after them.
   void print_deadlock();
 
   // Fetch freeze bookkeeping for this context.

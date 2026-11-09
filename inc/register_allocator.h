@@ -42,7 +42,7 @@ public:
   bool isValid(PHYSICAL_REGISTER_ID physreg) const;
   unsigned long count_free_registers() const;
   int count_reg_dependencies(const ooo_model_instr& instr) const;
-  void print_deadlock();
+  void print_deadlock(bool with_context = false);
 
   friend struct champsim::core_context;
 };

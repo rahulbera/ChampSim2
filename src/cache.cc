@@ -603,13 +603,11 @@ long CACHE::operate()
     std::rotate(upper_levels.begin(), upper_levels.begin() + 1, upper_levels.end());
   }
 
-  // Explicit admission policy (Stage 3.6). The remaining tag-check bandwidth is
-  // split across upper channels with a floor of one, and each queue of an upper
-  // (WQ, then RQ, then PQ) may initiate up to that per-upper amount, bounded by
-  // what is left. The floor is what makes each upper's admission independent of
-  // the channel count: an upper channel always keeps its own one-per-queue slot,
-  // so adding a per-context core_to_l1d would add a second load slot for the
-  // sibling rather than subdividing this channel's. For L1D (two uppers,
+  // Explicit admission policy (Stage 3.6). The translation stash initiates first
+  // and consumes its share of the tag-check bandwidth; the uppers then share the
+  // bandwidth the stash leaves, split across channels with a floor of one, and
+  // each queue of an upper (WQ, then RQ, then PQ) may initiate up to that
+  // per-upper amount, bounded by what is left. For L1D (two uppers,
   // max_tag_check == 2) this yields the explicit "one load + one store per cycle"
   // core admission, decoupled from lq_width.
   champsim::bandwidth::maximum_type per_upper_bandwidth =
