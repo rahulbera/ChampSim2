@@ -737,7 +737,7 @@ long O3_CPU::execute_instruction()
         for (auto& instr : c.ROB) {
           if (instr.scheduled && !instr.executed && instr.ready_time <= current_time
               && std::all_of(std::begin(instr.source_registers), std::end(instr.source_registers),
-                             [this](auto srcreg) { return shared_prf->isValid(srcreg); })) {
+                             [&alloc = std::as_const(*shared_prf)](auto srcreg) { return alloc.isValid(srcreg); })) {
             if (instr.dispatch_sequence < best_seq) {
               best_c = &c;
               best = &instr;
