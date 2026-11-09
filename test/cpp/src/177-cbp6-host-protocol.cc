@@ -1,5 +1,4 @@
 #include <catch.hpp>
-
 #include <cstdint>
 #include <string>
 #include <vector>

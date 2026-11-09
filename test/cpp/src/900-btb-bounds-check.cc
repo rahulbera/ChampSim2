@@ -19,7 +19,8 @@ TEST_CASE("The basic_btb module does not overflow its bounds.")
 
   // Populate the other_cpu's BTB tables
   other_cpu.initialize();
-  other_cpu.impl_update_btb(champsim::address{0xffffffff}, champsim::address{}, true, BRANCH_DIRECT_CALL, champsim::context_index{}, champsim::address_space_id{});
+  other_cpu.impl_update_btb(champsim::address{0xffffffff}, champsim::address{}, true, BRANCH_DIRECT_CALL, champsim::context_index{},
+                            champsim::address_space_id{});
 
   // Access the table from the uut
   uut.initialize();

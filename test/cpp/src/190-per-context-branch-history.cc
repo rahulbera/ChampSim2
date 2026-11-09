@@ -1,6 +1,5 @@
-#include <catch.hpp>
-
 #include <array>
+#include <catch.hpp>
 #include <cstdint>
 
 #include "../../../branch/gshare/gshare.h"

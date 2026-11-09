@@ -1,7 +1,6 @@
-#include <catch.hpp>
-
 #include <algorithm>
 #include <array>
+#include <catch.hpp>
 #include <vector>
 
 #include "../../../prefetcher/ip_stride/ip_stride.h"

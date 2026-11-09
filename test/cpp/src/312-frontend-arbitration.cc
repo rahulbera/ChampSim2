@@ -1,6 +1,6 @@
 #include <algorithm>
-#include <cstddef>
 #include <catch.hpp>
+#include <cstddef>
 
 #include "defaults.hpp"
 #include "instr.h"

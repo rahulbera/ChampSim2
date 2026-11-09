@@ -48,8 +48,7 @@ void blbp_64kb_tuned::configure(const champsim::runtime_config& cfg, std::string
 
 void blbp_64kb_tuned::initialize_btb() {}
 
-std::pair<champsim::address, bool> blbp_64kb_tuned::btb_prediction(champsim::address ip, champsim::context_index context,
-                                                                   champsim::address_space_id asid)
+std::pair<champsim::address, bool> blbp_64kb_tuned::btb_prediction(champsim::address ip, champsim::context_index context, champsim::address_space_id asid)
 {
   return instances[context.value].prediction(ip, asid);
 }
