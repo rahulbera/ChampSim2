@@ -267,8 +267,8 @@ bool CACHE::handle_fill(const fill_type& fill)
     sim_stats.total_miss_latency_cycles += (current_time - (fill.time_enqueued + clock_period)) / clock_period;
   sim_stats.fill.increment(std::pair{fill.type, fill.cpu});
 
-  response_type response{fill.address, fill.v_address, fill.data_promise->data, metadata_thru, fill.cpu, fill.asid[0], fill.asid[1],
-                         fill.instr_depend_on_me, fill.load_waiters};
+  response_type response{fill.address, fill.v_address, fill.data_promise->data, metadata_thru,    fill.cpu,
+                         fill.asid[0], fill.asid[1],   fill.instr_depend_on_me, fill.load_waiters};
   for (auto* ret : fill.to_return) {
     ret->push_back(response);
   }
@@ -313,8 +313,15 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
       // for the same reason.
       data = champsim::address{vmem->va_to_pa({handle_pkt.asid[0], handle_pkt.asid[1]}, champsim::page_number{handle_pkt.address}).first};
     }
-    response_type response{handle_pkt.address, handle_pkt.v_address, data, handle_pkt.pf_metadata, handle_pkt.cpu, handle_pkt.asid[0], handle_pkt.asid[1],
-                           handle_pkt.instr_depend_on_me, handle_pkt.load_waiters};
+    response_type response{handle_pkt.address,
+                           handle_pkt.v_address,
+                           data,
+                           handle_pkt.pf_metadata,
+                           handle_pkt.cpu,
+                           handle_pkt.asid[0],
+                           handle_pkt.asid[1],
+                           handle_pkt.instr_depend_on_me,
+                           handle_pkt.load_waiters};
     for (auto* ret : handle_pkt.to_return) {
       ret->push_back(response);
     }
@@ -348,8 +355,9 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
   if (hit) {
     sim_stats.hits.increment(std::pair{handle_pkt.type, handle_pkt.cpu});
 
-    response_type response{handle_pkt.address, handle_pkt.v_address, way->data, metadata_thru, handle_pkt.cpu, handle_pkt.asid[0], handle_pkt.asid[1],
-                           handle_pkt.instr_depend_on_me, handle_pkt.load_waiters};
+    response_type response{handle_pkt.address,     handle_pkt.v_address, way->data,          metadata_thru,
+                           handle_pkt.cpu,         handle_pkt.asid[0],   handle_pkt.asid[1], handle_pkt.instr_depend_on_me,
+                           handle_pkt.load_waiters};
     for (auto* ret : handle_pkt.to_return) {
       ret->push_back(response);
     }
@@ -689,12 +697,12 @@ long CACHE::invalidate_entry(champsim::address inval_addr)
 
 bool CACHE::prefetch_line(champsim::address pf_addr, bool fill_this_level, uint32_t prefetch_metadata)
 {
-  // Origin-less entry point kept for backward compatibility. It reproduces the
-  // pre-explicit-origin behaviour: stamp the last-writer cursor and leave the
-  // ASID at its unset sentinel, so callers that cannot name an origin still get
-  // the legacy packet.
-  return prefetch_line(pf_addr, fill_this_level, prefetch_metadata,
-                       {std::numeric_limits<uint8_t>::max(), std::numeric_limits<uint8_t>::max()}, cpu);
+  // Origin-less entry point kept for backward compatibility. It stamps the
+  // last-writer cursor, and a prefetch is translated in the address space of
+  // the core it is issued for, {cpu, cpu}, the asid the trace reader gives that
+  // core's demand instructions. Left at the {255,255} default, a virtual
+  // prefetch would be walked in a page table of its own.
+  return prefetch_line(pf_addr, fill_this_level, prefetch_metadata, {static_cast<uint8_t>(cpu), static_cast<uint8_t>(cpu)}, cpu);
 }
 
 bool CACHE::prefetch_line(champsim::address pf_addr, bool fill_this_level, uint32_t prefetch_metadata, champsim::address_space_id asid, uint32_t pf_cpu)
@@ -925,10 +933,9 @@ uint32_t CACHE::impl_prefetcher_cache_operate(champsim::address addr, champsim::
                                               uint32_t metadata_in) const
 {
   // Origin-less overload kept for direct callers (e.g. the va_ampm_lite
-  // benchmark): thread an unset ASID and the last-writer cursor, mirroring the
-  // legacy prefetch_line entry point.
-  return impl_prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata_in,
-                                       {std::numeric_limits<uint8_t>::max(), std::numeric_limits<uint8_t>::max()}, cpu);
+  // benchmark): thread the last-writer cursor and its core's address space
+  // {cpu, cpu}, mirroring the origin-less prefetch_line entry point.
+  return impl_prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata_in, {static_cast<uint8_t>(cpu), static_cast<uint8_t>(cpu)}, cpu);
 }
 
 uint32_t CACHE::impl_prefetcher_cache_operate(champsim::address addr, champsim::address ip, bool cache_hit, bool useful_prefetch, access_type type,

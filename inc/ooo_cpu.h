@@ -22,12 +22,9 @@
 #undef CHAMPSIM_MODULE
 #endif
 
-#include <array>
 #include <bitset>
 #include <deque>
-#include <limits>
 #include <memory>
-#include <optional>
 #include <queue>
 #include <stdexcept>
 #include <type_traits>
@@ -38,7 +35,6 @@
 #include "channel.h"
 #include "core_builder.h"
 #include "core_context.h"
-#include "core_stats.h"
 #include "instruction.h"
 #include "modules.h"
 #include "operable.h"
@@ -81,9 +77,11 @@ public:
   // hold raw pointers to it and must never dangle.
   std::unique_ptr<RegisterAllocator> shared_prf;
 
-  // Per-hardware-context pipeline state. Stage 1 builds exactly one. ctx()
-  // computes the reference on every call and never caches it, so a later
-  // vector growth cannot leave a stale reference behind.
+  // Per-hardware-context pipeline state: the builder's num_contexts of them,
+  // built in place by make_contexts(), and nothing resizes the vector
+  // afterwards. core_context is move-only, so a reallocation would move each
+  // context: the references inside a context (SQ entries to LQ slots) survive
+  // that, but a reference to a context itself does not.
   std::vector<champsim::core_context> contexts;
 
   // Front-end arbitration state (Stage 3.4). `fetch_round_robin` picks which
@@ -185,13 +183,12 @@ public:
   [[nodiscard]] auto sim_instr() const { return ctx().num_retired - ctx().begin_phase_instr; }
   [[nodiscard]] auto sim_cycle() const { return (current_time.time_since_epoch() / clock_period) - ctx().sim_stats.begin_cycles; }
 
-  // The hardware context this core's frontend and backend operate on.
-  //
-  // Stage 2 severs the inheritance: the core now owns a vector of contexts and
-  // a shared physical register file, and ctx() returns the (single) context.
-  // The reference is computed on every call and never cached in a member:
-  // `contexts` lives in a std::vector that reallocates, so a cached reference
-  // would dangle after any growth.
+  // Context 0: with one context, the context this core's frontend and backend
+  // operate on. With more, the pipeline stages iterate over `contexts`, and
+  // every caller of ctx(), including the branch predictor and BTB modules,
+  // still sees context 0. It is looked up on every call and never cached in a
+  // member, because a reallocation of `contexts` would leave a cached
+  // reference dangling.
   champsim::core_context& ctx() { return contexts.front(); }
   const champsim::core_context& ctx() const { return contexts.front(); }
 
@@ -295,12 +292,22 @@ public:
                                                                       champsim::address_space_id asid) const;
   // NOLINTEND(readability-make-member-function-const)
 
+  // Builds the contexts in place. std::vector's fill and initializer_list
+  // constructors copy their elements, and core_context cannot be copied.
+  static std::vector<champsim::core_context> make_contexts(std::size_t num_contexts, RegisterAllocator* shared_prf, std::size_t lq_size, std::size_t dib_set,
+                                                           std::size_t dib_way, unsigned long dib_window)
+  {
+    std::vector<champsim::core_context> result;
+    result.reserve(num_contexts);
+    for (std::size_t i = 0; i < num_contexts; ++i)
+      result.emplace_back(shared_prf, lq_size, dib_set, dib_way, dib_window);
+    return result;
+  }
+
   template <typename... Bs, typename... Ts>
   explicit O3_CPU(champsim::core_builder<champsim::core_builder_module_type_holder<Bs...>, champsim::core_builder_module_type_holder<Ts...>> b)
-      : champsim::operable(b.m_clock_period),
-        cpu(b.m_cpu),
-        shared_prf(std::make_unique<RegisterAllocator>(b.m_register_file_size)),
-        contexts(b.m_num_contexts, champsim::core_context{shared_prf.get(), b.m_lq_size, b.m_dib_set, b.m_dib_way, b.m_dib_window}),
+      : champsim::operable(b.m_clock_period), cpu(b.m_cpu), shared_prf(std::make_unique<RegisterAllocator>(b.m_register_file_size)),
+        contexts(make_contexts(b.m_num_contexts, shared_prf.get(), b.m_lq_size, b.m_dib_set, b.m_dib_way, b.m_dib_window)),
         IFETCH_BUFFER_SIZE(b.m_ifetch_buffer_size), DISPATCH_BUFFER_SIZE(b.m_dispatch_buffer_size), DECODE_BUFFER_SIZE(b.m_decode_buffer_size),
         REGISTER_FILE_SIZE(b.m_register_file_size), ROB_SIZE(b.m_rob_size), SQ_SIZE(b.m_sq_size), DIB_HIT_BUFFER_SIZE(b.m_dib_hit_buffer_size),
         FETCH_WIDTH(b.m_fetch_width), DECODE_WIDTH(b.m_decode_width), DISPATCH_WIDTH(b.m_dispatch_width), SCHEDULER_SIZE(b.m_schedule_width),
@@ -354,6 +361,10 @@ void O3_CPU::branch_module_model<Bs...>::impl_branch_execute_resolve(uint64_t in
                                                         champsim::address_space_id>) {
       b.branch_execute_resolve(instr_id, ip, branch_target, taken, branch_type, asid);
     }
+    /* Without asid, for modules written before the hook took one */
+    else if constexpr (branch_predictor::has_execute_resolve<decltype(b), uint64_t, champsim::address, champsim::address, bool, uint8_t>) {
+      b.branch_execute_resolve(instr_id, ip, branch_target, taken, branch_type);
+    }
   };
 
   std::apply([&](auto&... b) { (..., process_one(b)); }, intern_);
@@ -404,10 +415,18 @@ void O3_CPU::branch_module_model<Bs...>::impl_last_branch_result(champsim::addre
 {
   [[maybe_unused]] auto process_one = [&](auto& b) {
     using namespace champsim::modules;
-    if constexpr (branch_predictor::has_last_branch_result<decltype(b), uint64_t, uint64_t, bool, uint8_t, champsim::address_space_id>)
+    constexpr bool raw_asid = branch_predictor::has_last_branch_result<decltype(b), uint64_t, uint64_t, bool, uint8_t, champsim::address_space_id>;
+    constexpr bool strong_asid =
+        branch_predictor::has_last_branch_result<decltype(b), champsim::address, champsim::address, bool, uint8_t, champsim::address_space_id>;
+    if constexpr (raw_asid)
       b.last_branch_result(ip.to<uint64_t>(), target.to<uint64_t>(), taken, branch_type, asid);
-    if constexpr (branch_predictor::has_last_branch_result<decltype(b), champsim::address, champsim::address, bool, uint8_t, champsim::address_space_id>)
+    if constexpr (strong_asid)
       b.last_branch_result(ip, target, taken, branch_type, asid);
+    /* Without asid, for modules written before the hook took one */
+    if constexpr (!raw_asid && !strong_asid && branch_predictor::has_last_branch_result<decltype(b), uint64_t, uint64_t, bool, uint8_t>)
+      b.last_branch_result(ip.to<uint64_t>(), target.to<uint64_t>(), taken, branch_type);
+    if constexpr (!raw_asid && !strong_asid && branch_predictor::has_last_branch_result<decltype(b), champsim::address, champsim::address, bool, uint8_t>)
+      b.last_branch_result(ip, target, taken, branch_type);
   };
 
   std::apply([&](auto&... b) { (..., process_one(b)); }, intern_);
@@ -427,6 +446,14 @@ bool O3_CPU::branch_module_model<Bs...>::impl_predict_branch(champsim::address i
     /* Raw integer addresses, full size */
     if constexpr (branch_predictor::has_predict_branch<decltype(b), uint64_t, uint64_t, bool, uint8_t, champsim::address_space_id>)
       return return_type{b.predict_branch(ip.to<uint64_t>(), predicted_target.to<uint64_t>(), always_taken, branch_type, asid)};
+
+    /* Strong addresses, full size without asid, for modules written before the hook took one */
+    if constexpr (branch_predictor::has_predict_branch<decltype(b), champsim::address, champsim::address, bool, uint8_t>)
+      return return_type{b.predict_branch(ip, predicted_target, always_taken, branch_type)};
+
+    /* Raw integer addresses, full size without asid */
+    if constexpr (branch_predictor::has_predict_branch<decltype(b), uint64_t, uint64_t, bool, uint8_t>)
+      return return_type{b.predict_branch(ip.to<uint64_t>(), predicted_target.to<uint64_t>(), always_taken, branch_type)};
 
     /* Strong addresses, short size */
     if constexpr (branch_predictor::has_predict_branch<decltype(b), champsim::address>)
@@ -475,13 +502,22 @@ void O3_CPU::btb_module_model<Ts...>::impl_update_btb(champsim::address ip, cham
 {
   [[maybe_unused]] auto process_one = [&](auto& t) {
     using namespace champsim::modules;
+    constexpr bool context_asid =
+        btb::has_update_btb<decltype(t), champsim::address, champsim::address, bool, uint8_t, champsim::context_index, champsim::address_space_id>;
+    constexpr bool strong_asid = btb::has_update_btb<decltype(t), champsim::address, champsim::address, bool, uint8_t, champsim::address_space_id>;
+    constexpr bool raw_asid = btb::has_update_btb<decltype(t), uint64_t, uint64_t, bool, uint8_t, champsim::address_space_id>;
     /* Per-context modules: context index between branch type and asid */
-    if constexpr (btb::has_update_btb<decltype(t), champsim::address, champsim::address, bool, uint8_t, champsim::context_index, champsim::address_space_id>)
+    if constexpr (context_asid)
       t.update_btb(ip, predicted_target, taken, branch_type, context, asid);
-    if constexpr (btb::has_update_btb<decltype(t), champsim::address, champsim::address, bool, uint8_t, champsim::address_space_id>)
+    if constexpr (strong_asid)
       t.update_btb(ip, predicted_target, taken, branch_type, asid);
-    if constexpr (btb::has_update_btb<decltype(t), uint64_t, uint64_t, bool, uint8_t, champsim::address_space_id>)
+    if constexpr (raw_asid)
       t.update_btb(ip.to<uint64_t>(), predicted_target.to<uint64_t>(), taken, branch_type, asid);
+    /* Without asid, for modules written before the hook took one */
+    if constexpr (!context_asid && !raw_asid && !strong_asid && btb::has_update_btb<decltype(t), champsim::address, champsim::address, bool, uint8_t>)
+      t.update_btb(ip, predicted_target, taken, branch_type);
+    if constexpr (!context_asid && !raw_asid && !strong_asid && btb::has_update_btb<decltype(t), uint64_t, uint64_t, bool, uint8_t>)
+      t.update_btb(ip.to<uint64_t>(), predicted_target.to<uint64_t>(), taken, branch_type);
   };
 
   std::apply([&](auto&... t) { (..., process_one(t)); }, intern_);
@@ -507,6 +543,10 @@ std::pair<champsim::address, bool> O3_CPU::btb_module_model<Ts...>::impl_btb_pre
     if constexpr (btb::has_btb_prediction<decltype(t), champsim::address, uint8_t, champsim::address_space_id>)
       return return_type{t.btb_prediction(ip, branch_type, asid)};
 
+    /* Strong addresses, full size without asid, for modules written before the hook took one */
+    if constexpr (btb::has_btb_prediction<decltype(t), champsim::address, uint8_t>)
+      return return_type{t.btb_prediction(ip, branch_type)};
+
     /* Strong addresses, short size */
     if constexpr (btb::has_btb_prediction<decltype(t), champsim::address>)
       return return_type{t.btb_prediction(ip)};
@@ -518,6 +558,10 @@ std::pair<champsim::address, bool> O3_CPU::btb_module_model<Ts...>::impl_btb_pre
     /* Raw integer addresses, full size */
     if constexpr (btb::has_btb_prediction<decltype(t), uint64_t, uint8_t, champsim::address_space_id>)
       return return_type{t.btb_prediction(ip.to<uint64_t>(), branch_type, asid)};
+
+    /* Raw integer addresses, full size without asid */
+    if constexpr (btb::has_btb_prediction<decltype(t), uint64_t, uint8_t>)
+      return return_type{t.btb_prediction(ip.to<uint64_t>(), branch_type)};
 
     /* Raw integer addresses, short size */
     if constexpr (btb::has_btb_prediction<decltype(t), uint64_t>)

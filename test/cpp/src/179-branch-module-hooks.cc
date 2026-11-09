@@ -24,9 +24,11 @@ struct counting_branch_predictor : champsim::modules::branch_predictor {
   static void reset() { final_stats_calls = 0; }
 
   bool predict_branch(champsim::address /*ip*/, champsim::address /*predicted_target*/, bool /*always_taken*/, uint8_t /*branch_type*/,
-                      champsim::address_space_id /*asid*/) { return false; }
-  void last_branch_result(champsim::address /*ip*/, champsim::address /*target*/, bool /*taken*/, uint8_t /*type*/,
-                          champsim::address_space_id /*asid*/) {}
+                      champsim::address_space_id /*asid*/)
+  {
+    return false;
+  }
+  void last_branch_result(champsim::address /*ip*/, champsim::address /*target*/, bool /*taken*/, uint8_t /*type*/, champsim::address_space_id /*asid*/) {}
 
   void branch_predictor_final_stats() { ++final_stats_calls; }
 };
@@ -34,7 +36,10 @@ struct counting_branch_predictor : champsim::modules::branch_predictor {
 struct silent_branch_predictor : champsim::modules::branch_predictor {
   using branch_predictor::branch_predictor;
   bool predict_branch(champsim::address /*ip*/, champsim::address /*predicted_target*/, bool /*always_taken*/, uint8_t /*branch_type*/,
-                      champsim::address_space_id /*asid*/) { return false; }
+                      champsim::address_space_id /*asid*/)
+  {
+    return false;
+  }
   // deliberately no branch_predictor_final_stats
 };
 } // namespace
@@ -90,7 +95,10 @@ struct resolve_recording_predictor : champsim::modules::branch_predictor {
   static void reset() { resolved.clear(); }
 
   bool predict_branch(champsim::address /*ip*/, champsim::address /*predicted_target*/, bool /*always_taken*/, uint8_t /*branch_type*/,
-                      champsim::address_space_id /*asid*/) { return false; }
+                      champsim::address_space_id /*asid*/)
+  {
+    return false;
+  }
 
   void branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address /*target*/, bool taken, uint8_t branch_type,
                               champsim::address_space_id /*asid*/)

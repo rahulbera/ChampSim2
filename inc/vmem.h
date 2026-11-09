@@ -17,7 +17,6 @@
 #ifndef VMEM_H
 #define VMEM_H
 
-#include <array>
 #include <cstdint>
 #include <deque>
 #include <map>
@@ -34,13 +33,9 @@ using pte_entry = champsim::data::size<long long, std::ratio<8>>;
 
 class VirtualMemory
 {
-public:
-  // An address space is identified by its ASID, not by a physical-core number.
-  using address_space_id = std::array<uint8_t, 2>;
-
 private:
-  std::map<std::pair<address_space_id, champsim::page_number>, champsim::page_number> vpage_to_ppage_map;
-  std::map<std::tuple<address_space_id, uint32_t, champsim::address_slice<champsim::dynamic_extent>>, champsim::address> page_table;
+  std::map<std::pair<champsim::address_space_id, champsim::page_number>, champsim::page_number> vpage_to_ppage_map;
+  std::map<std::tuple<champsim::address_space_id, uint32_t, champsim::address_slice<champsim::dynamic_extent>>, champsim::address> page_table;
   std::optional<uint64_t> randomization_seed;
   const champsim::data::bytes physical_capacity;
 
@@ -114,7 +109,7 @@ public:
    *
    * :returns: A pair of the physical address and the latency to be applied to the translation.
    */
-  std::pair<champsim::page_number, champsim::chrono::clock::duration> va_to_pa(address_space_id asid, champsim::page_number vaddr);
+  std::pair<champsim::page_number, champsim::chrono::clock::duration> va_to_pa(champsim::address_space_id asid, champsim::page_number vaddr);
 
   /**
    * Find the address for the page table page for the given virtual address (under translation), and the given level.
@@ -126,7 +121,7 @@ public:
    *
    * :returns: A pair of the page table page address and the latency to be applied to the operation.
    */
-  std::pair<champsim::address, champsim::chrono::clock::duration> get_pte_pa(address_space_id asid, champsim::page_number vaddr, std::size_t level);
+  std::pair<champsim::address, champsim::chrono::clock::duration> get_pte_pa(champsim::address_space_id asid, champsim::page_number vaddr, std::size_t level);
 };
 
 #endif

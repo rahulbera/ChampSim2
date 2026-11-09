@@ -2,26 +2,31 @@
 #define CORE_CONTEXT_H
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <limits>
 #include <optional>
-#include <queue>
+#include <utility>
 #include <vector>
 
 #include "core_stats.h"
 #include "instruction.h"
+#include "msl/lru_table.h"
 #include "register_allocator.h"
-#include "util/lru_table.h"
 
 // Per-hardware-context (per-thread) pipeline state.
 //
-// A core_context holds everything a single hardware thread owns privately: its
-// own frontend buffers, its own reorder buffer, its own load/store queues, its
-// own register alias tables, and its own branch predictor state. A physical
-// core with N hardware contexts will hold N core_context objects. Everything
-// the threads share (L1 caches, the physical register file and its free list,
-// bandwidth and capacity constants) stays on the core.
+// A core_context holds the pipeline state a single hardware thread owns
+// privately: its own frontend buffers, its own reorder buffer, its own
+// load/store queues, its own register alias tables, and its fetch-stall
+// bookkeeping. A physical core with N hardware contexts will hold N
+// core_context objects. Everything the threads share (L1 caches, the physical
+// register file and its free list, bandwidth and capacity constants) stays on
+// the core. So do the branch predictor and BTB modules: they are constructed
+// from the O3_CPU and reach the instruction under prediction through
+// O3_CPU::ctx(), which is context 0.
 //
 // Stage 1 has exactly one context per core and does not change the order of
 // operations, so single-context results remain bit-identical.
@@ -37,11 +42,12 @@ struct LSQ_ENTRY : champsim::program_ordered<LSQ_ENTRY> {
   uint64_t producer_id = std::numeric_limits<uint64_t>::max();
   std::vector<std::reference_wrapper<std::optional<LSQ_ENTRY>>> lq_depend_on_me{};
 
-  // Unique token naming this LQ entry as a load waiter. instr_id is one-to-many
+  // Token naming this LQ entry as a load waiter. instr_id is one-to-many
   // with LQ entries (an instruction with several source-memory operands allocates
   // one entry each), so it cannot name a single waiter. The core assigns this
   // monotonically at allocation and echoes it through the memory system in
-  // channel::request/response.load_waiters.
+  // channel::request/response.load_waiters. It is unique only within one
+  // context, and load completion does not read it yet.
   uint64_t load_waiter_id = std::numeric_limits<uint64_t>::max();
 
   LSQ_ENTRY(champsim::address addr, champsim::program_ordered<LSQ_ENTRY>::id_type id, champsim::address ip, std::array<uint8_t, 2> asid);
@@ -58,8 +64,10 @@ struct dib_shift {
 };
 
 // The DIB key is (asid, ip): two address spaces never share a decoded window.
-// The set index stays ip>>shamt; the tag is that window XORed with the ASID.
-// In N=1 asid is {0,0}, so the folded tag is numerically the original tag.
+// The set index stays ip>>shamt; the tag is the pair (ip>>shamt, asid), so a hit
+// needs the same window and address space. An XOR fold would let a different
+// window compare equal. In N=1 asid is {0,0}, so the pair compares equal exactly
+// when the original tag did.
 struct dib_entry {
   champsim::address ip{};
   champsim::address_space_id asid{};
@@ -72,10 +80,10 @@ struct dib_index {
 
 struct dib_tag {
   champsim::data::bits shamt;
-  auto operator()(const dib_entry& entry) const { return entry.ip.slice_upper(shamt).to<uint64_t>() ^ champsim::asid_word(entry.asid); }
+  auto operator()(const dib_entry& entry) const { return std::pair{entry.ip.slice_upper(shamt), entry.asid}; }
 };
 
-using dib_type = champsim::lru_table<dib_entry, dib_index, dib_tag>;
+using dib_type = champsim::msl::lru_table<dib_entry, dib_index, dib_tag>;
 
 struct core_context {
   using stats_type = cpu_stats;
@@ -91,7 +99,8 @@ struct core_context {
   std::vector<std::optional<LSQ_ENTRY>> LQ;
   std::deque<LSQ_ENTRY> SQ;
 
-  // Monotonic source of the per-LQ-entry load_waiter_id token.
+  // Monotonic source of the per-LQ-entry load_waiter_id token. Each context
+  // counts from zero, so ids repeat across contexts and across cores.
   uint64_t next_load_waiter_id = 0;
 
   dib_type DIB;
@@ -156,6 +165,15 @@ struct core_context {
     frontend_RAT.fill(-1); // default value for no mapping
     backend_RAT.fill(-1);
   }
+
+  // Move-only. An SQ entry's lq_depend_on_me refers to slots of this context's
+  // LQ. A move takes the LQ's buffer along, so those references stay valid; a
+  // copy's SQ would still refer to the source's LQ.
+  core_context(const core_context&) = delete;
+  core_context& operator=(const core_context&) = delete;
+  core_context(core_context&&) = default;
+  core_context& operator=(core_context&&) = default;
+  ~core_context() = default;
 };
 
 } // namespace champsim

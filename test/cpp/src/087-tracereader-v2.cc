@@ -207,7 +207,8 @@ TEST_CASE("v1 and CloudSuite constructors compact sparse records and own their o
     record.source_memory[2] = 0;
     record.destination_memory[3] = 0;
 
-    REQUIRE(instr.asid == std::array<uint8_t, 2>{3, 7});
+    // The record's own asid is ignored: the trace runs in its core's address space.
+    REQUIRE(instr.asid == std::array<uint8_t, 2>{2, 2});
     REQUIRE_THAT(instr.source_memory, Catch::Matchers::RangeEquals(std::vector<champsim::address>{champsim::address{0x33330000}}));
     REQUIRE_THAT(instr.destination_memory, Catch::Matchers::RangeEquals(std::vector<champsim::address>{champsim::address{0x55550000}}));
   }

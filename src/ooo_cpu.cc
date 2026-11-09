@@ -667,6 +667,12 @@ long O3_CPU::schedule_instruction_impl(champsim::core_context& c, long& occupied
   int progress{0};
   for (auto rob_it = std::begin(c.ROB); rob_it != std::end(c.ROB) && occupied < capacity; ++rob_it) {
     if (!rob_it->scheduled && rob_it->ready_time <= current_time) {
+      // The free-register rename gate applies only to instructions being
+      // renamed this cycle. An already-scheduled instruction has claimed its
+      // registers, so evaluating the gate against it (and breaking when free
+      // registers fall below its destination count) wrongly blocks scheduling.
+      // Renaming maps an unmapped source on its first read, so a repeat of it
+      // allocates nothing: count each unmapped source register once.
       const auto& sources = rob_it->source_registers;
       unsigned long sources_to_allocate = 0;
       for (auto src_it = std::begin(sources); src_it != std::end(sources); ++src_it) {
@@ -759,7 +765,7 @@ long O3_CPU::execute_instruction_impl(champsim::core_context& c, champsim::bandw
   for (auto rob_it = std::begin(c.ROB); rob_it != std::end(c.ROB) && exec_bw.has_remaining(); ++rob_it) {
     if (rob_it->scheduled && !rob_it->executed && rob_it->ready_time <= current_time) {
       bool ready = std::all_of(std::begin(rob_it->source_registers), std::end(rob_it->source_registers),
-                               [this](auto srcreg) { return shared_prf->isValid(srcreg); });
+                               [&alloc = std::as_const(*shared_prf)](auto srcreg) { return alloc.isValid(srcreg); });
       if (ready) {
         do_execution(c, *rob_it);
         exec_bw.consume();
@@ -945,10 +951,13 @@ bool O3_CPU::execute_load(const LSQ_ENTRY& lq_entry)
   data_packet.ip = lq_entry.ip;
   data_packet.asid[0] = lq_entry.asid[0];
   data_packet.asid[1] = lq_entry.asid[1];
-  // The load names itself as the only waiter on this request. The returned block
-  // echoes this token end-to-end, so handle_memory_return can complete exactly
-  // this LQ entry, even when another address space's load shares the same
-  // virtual block. This is independent of instr_depend_on_me, which stays the
+  // The load names itself as the only waiter on this request, and the memory
+  // system echoes the token end-to-end. Nothing reads it yet:
+  // handle_memory_return completes every issued LQ entry, in every context,
+  // whose virtual block and asid match (master's same-block broadcast), and
+  // completing only the named waiter would change one-context results. The id
+  // comes from a per-context counter, so it is unique only within this context.
+  // This is independent of instr_depend_on_me, which stays the
   // instruction-fetch dependency set.
   data_packet.load_waiters = {lq_entry.load_waiter_id};
 
@@ -1265,7 +1274,7 @@ void O3_CPU::print_deadlock()
   fmt::print("DEADLOCK! CPU {} cycle {}\n", cpu, current_time.time_since_epoch() / clock_period);
 
   auto instr_pack = [period = clock_period, this](const auto& entry) {
-return std::tuple{entry.instr_id, entry.fetch_issued, entry.fetch_completed, entry.scheduled, entry.executed, entry.completed,
+    return std::tuple{entry.instr_id, entry.fetch_issued, entry.fetch_completed, entry.scheduled, entry.executed, entry.completed,
                       // Until do_scheduling renames an entry its operands are architectural IDs.
                       entry.scheduled ? std::to_string(shared_prf->count_reg_dependencies(entry)) : std::string{"-"},
                       entry.num_mem_ops() - entry.completed_mem_ops, entry.ready_time.time_since_epoch() / period};
@@ -1277,7 +1286,7 @@ return std::tuple{entry.instr_id, entry.fetch_issued, entry.fetch_completed, ent
   champsim::range_print_deadlock(ctx().DISPATCH_BUFFER, "cpu" + std::to_string(cpu) + "_DISPATCH", instr_fmt, instr_pack);
   champsim::range_print_deadlock(ctx().ROB, "cpu" + std::to_string(cpu) + "_ROB", instr_fmt, instr_pack);
 
-  // print the RATs, then the occupied physical registers
+  // print the RATs, then every physical register
   ctx().print_deadlock();
   shared_prf->print_deadlock();
 

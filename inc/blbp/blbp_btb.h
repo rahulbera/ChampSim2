@@ -74,7 +74,7 @@ struct direct_predictor {
     auto tag() const
     {
       using namespace champsim::data::data_literals;
-      return ip_tag.slice_upper<2_b>().to<uint64_t>() ^ champsim::asid_word(asid);
+      return std::pair{ip_tag.slice_upper<2_b>(), asid};
     }
   };
 
@@ -212,7 +212,11 @@ public:
       // this flag overrides the direction predictor for whatever aliases here,
       // and basic_btb reports true unconditionally on this path). The ASID is
       // folded into the PC index exactly as basic_btb folds it into its gshare
-      // target cache; in N=1 it is a numeric no-op.
+      // target cache; the fold is a hash, not an identity: the vendored
+      // predictor sees only the folded PC, so two (PC, asid) pairs with the same
+      // fold share entries. That is sound only while one instance serves one
+      // address space, which require_single_core guarantees. In N=1 it is a
+      // numeric no-op.
       const auto t = blbp_.predict(ip.to<uint64_t>() ^ champsim::asid_word(asid));
       if (!t.has_value()) {
         return {champsim::address{}, true};

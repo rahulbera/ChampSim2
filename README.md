@@ -42,6 +42,73 @@ caches exist and how they are wired -- is C++ in `src/static_environment.cc`,
 and `NUM_CPUS`, `BLOCK_SIZE` and `PAGE_SIZE` are in `inc/defs.h`. Changing
 either is a code edit and a rebuild; multi-core is a separate binary by design.
 
+# Download SPEC CPU 2026 traces
+
+32 SimPoint slices of 14 SPEC CPU 2026 workloads, traced in the v2 record
+format, are hosted in a public Cloudflare R2 bucket at
+`https://traces.rbera.com/champsim2/spec26/`, taking 38 GiB in compressed form.
+Each slice is 300 million instructions long. Run them with `--trace-version 2`.
+
+The bucket cannot be listed by opening its base URL in a browser. Instead,
+[`manifest.txt`](https://traces.rbera.com/champsim2/spec26/manifest.txt) is the
+index of the dataset: it lists every file with its path, size, last-modified
+time, upload etag and SHA-256. Downloading needs no prior knowledge of the
+layout -- the manifest supplies it.
+
+To download a single trace, append its `path` column to the base URL:
+
+```
+$ wget https://traces.rbera.com/champsim2/spec26/708.sqlite_r.sp0.champsim2.zst
+$ bin/champsim --trace-version 2 -w 50000000 -i 200000000 -- 708.sqlite_r.sp0.champsim2.zst
+```
+
+To download everything, turn the manifest into a URL list:
+
+```bash
+BASE=https://traces.rbera.com/champsim2/spec26
+
+# 1. Fetch the index
+curl -sO $BASE/manifest.txt
+
+# 2. Build a URL list (skip the '#' preamble and the header row)
+grep -v '^#' manifest.txt | tail -n +2 | cut -f1 | sed "s|^|$BASE/|" > urls.txt
+
+# 3. Download. --cut-dirs=2 drops the leading champsim2/spec26/, so traces land
+#    in the current directory and SimPoint files in simpoints/. -c resumes an
+#    interrupted run, so re-running the same command picks up where it left off.
+wget -x -nH --cut-dirs=2 -c -i urls.txt
+
+# 4. Check every file against its SHA-256
+sha256sum -c SHA256SUMS
+```
+
+To fetch one workload, filter the `path` column first -- e.g. the three
+`708.sqlite_r` slices and their SimPoint file:
+
+```bash
+grep -v '^#' manifest.txt | tail -n +2 | cut -f1 | grep -E '^(simpoints/)?708\.sqlite_r\.' \
+  | sed "s|^|$BASE/|" > sqlite.txt
+wget -x -nH --cut-dirs=2 -c -i sqlite.txt
+```
+
+The workloads are `706.stockfish_r`, `707.ntest_r`, `708.sqlite_r`,
+`710.omnetpp_r`, `714.cpython_r`, `721.gcc_r`, `723.llvm_r`, `727.cppcheck_r`,
+`729.abc_r`, `734.vpr_r`, `735.gem5_r`, `750.sealcrypto_r`, `753.ns3_r` and
+`777.zstd_r`. A trace is named `<workload>.sp<N>.champsim2.zst`, where `N` is its
+SimPoint cluster. Each workload was clustered into at most three clusters of
+300M-instruction intervals, and clusters covering less than 5% of the execution
+were dropped, which is why a workload has one to three slices.
+
+**SimPoint weights live in `simpoints/<workload>.simpoints.json`, not in the
+file name.** Each kept slice carries its `weight` and where it starts
+(`skip_instructions`); `dropped` lists the clusters left out, and `kept_weight`
+is the sum of the kept weights -- between 0.92 and 1.0, since dropped weight is
+not redistributed. Aggregate in two levels: combine a workload's slices with
+weights `weight / kept_weight` (as a weighted mean of a per-instruction metric
+such as CPI or MPKI), then average across workloads unweighted. Never average
+all slices flat: that counts a workload with three slices three times as much as
+one with a single slice.
+
 # How to create traces
 
 Program traces are available in a variety of locations, however, many ChampSim users wish to trace their own programs for research purposes.

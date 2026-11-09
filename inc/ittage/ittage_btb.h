@@ -92,7 +92,7 @@ struct direct_predictor {
     auto tag() const
     {
       using namespace champsim::data::data_literals;
-      return ip_tag.slice_upper<2_b>().to<uint64_t>() ^ champsim::asid_word(asid);
+      return std::pair{ip_tag.slice_upper<2_b>(), asid};
     }
   };
 
@@ -258,9 +258,12 @@ public:
 
     if (btb_entry->type == direct_predictor::branch_info::INDIRECT) {
       // The ASID is folded into the PC index exactly as basic_btb folds it into
-      // its gshare target cache (btb/basic_btb/indirect_predictor.cc): two
-      // address spaces never share an indirect-target entry. In N=1 asid is
-      // {0,0}, so the fold is a numeric no-op.
+      // its gshare target cache (btb/basic_btb/indirect_predictor.cc). The fold
+      // is a hash, not an identity: the vendored predictor sees only the folded
+      // PC, so two (PC, asid) pairs with the same fold share entries. That is
+      // sound only while one instance serves one address space, which
+      // require_single_core guarantees. In N=1 asid is {0,0}, so the fold is a
+      // numeric no-op.
       const uint64_t target = predictor.GetPrediction(ip.to<uint64_t>() ^ champsim::asid_word(asid));
       // Failure mode 1: never let an unseeded entry's sentinel escape as a real
       // target. Reporting "no prediction" takes the misprediction honestly.

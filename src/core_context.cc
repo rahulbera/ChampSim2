@@ -17,7 +17,8 @@ PHYSICAL_REGISTER_ID champsim::core_context::rename_dest_register(int16_t reg, c
   PHYSICAL_REGISTER_ID phys_reg = reg_allocator->free_registers.front();
   reg_allocator->free_registers.pop();
   frontend_RAT[reg] = phys_reg;
-  reg_allocator->physical_register_file.at(phys_reg) = {(uint16_t)reg, producer_id, false, true, this->ctx_index}; // arch_reg_index, valid, busy, context
+  reg_allocator->physical_register_file.at(phys_reg) = {(uint16_t)reg, producer_id, false, true,
+                                                        this->ctx_index}; // arch_reg_index, producing_inst_id, valid, busy, context
 
   return phys_reg;
 }
@@ -33,7 +34,7 @@ PHYSICAL_REGISTER_ID champsim::core_context::rename_src_register(int16_t reg)
     phys = reg_allocator->free_registers.front();
     reg_allocator->free_registers.pop();
     frontend_RAT[reg] = phys;
-    backend_RAT[reg] = phys;                                              // we assume this register's last write has been committed
+    backend_RAT[reg] = phys;                                                                          // we assume this register's last write has been committed
     reg_allocator->physical_register_file.at(phys) = {(uint16_t)reg, 0, true, true, this->ctx_index}; // arch_reg_index, producing_inst_id, valid, busy, context
   } else {
     // An already-mapped source must have been allocated by this thread's own
