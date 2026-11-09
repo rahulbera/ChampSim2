@@ -19,7 +19,7 @@
 #include "mocks.hpp"
 #include "ooo_cpu.h"
 
-// Stage 3.3, capability matrix. How a module stores its state with respect to a
+// Capability matrix. How a module stores its state with respect to a
 // core's hardware contexts, advertised either explicitly (a `static constexpr
 // smt_capability capability` member) or by the conservative default
 // (`single_context`, so an SMT-unsafe module is refused rather than silently
@@ -64,8 +64,8 @@ TEST_CASE("The per-context BTBs advertise per_context capability")
 
 TEST_CASE("The ASID-keyed per-core modules advertise shared capability")
 {
-  // Stage 3.6 classification: these hold one per-core table whose index/hash
-  // folds ASID (Stage 2.5), while any per-thread branch history (the GHR, RAS and
+  // These hold one per-core table whose index/hash
+  // folds ASID, while any per-thread branch history (the GHR, RAS and
   // indirect conditional history) is replicated per context. They are `shared`,
   // not per_context: replicating the whole table would waste state the ASID
   // keying already separates.

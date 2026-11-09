@@ -39,7 +39,7 @@ $ make
 
 There is no JSON configuration script. The simulated machine's *shape* -- which
 caches exist and how they are wired -- is C++ in `src/static_environment.cc`,
-and `NUM_CPUS`, `BLOCK_SIZE` and `PAGE_SIZE` are in `inc/defs.h`. Changing
+and `NUM_CPUS`, `max_contexts`, `BLOCK_SIZE` and `PAGE_SIZE` are in `inc/defs.h`. Changing
 either is a code edit and a rebuild; multi-core is a separate binary by design.
 
 # Download SPEC CPU 2026 traces

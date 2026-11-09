@@ -7,7 +7,7 @@
 #include "defaults.hpp"
 #include "mocks.hpp"
 
-// Stage 3.7 item 1: the complete loop that 419 left open. 419 proves only that a
+// The complete loop that 419 left open. 419 proves only that a
 // sibling's untranslated load is *admitted* past a peer's TLB-miss burst; its
 // translator is never answered, so it cannot show that the sibling's walk comes
 // back, that the miss is filled, or that the response returns. Here both the

@@ -94,18 +94,18 @@ public:
   // The one decoded-instruction buffer, shared by every context. Its key is the
   // (asid, ip) pair, so two contexts in different address spaces never share a
   // decoded window; with one context asid is {0,0}, so a hit compares equal
-  // exactly when the original ip-only tag did. The per-context DIB was removed
-  // in Stage 3.5.
+  // exactly when the original ip-only tag did. The per-context DIB was
+  // removed.
   champsim::dib_type DIB;
 
-  // Front-end arbitration state (Stage 3.4). `fetch_round_robin` picks which
+  // Front-end arbitration state. `fetch_round_robin` picks which
   // context a shared front-end width serves first this cycle (fetch/decode/DIB);
   // `dispatch_owner` names the context that owns the dispatch round. Both advance
-  // once per operate(); see the D4 per-site table in SMT-experiment/stage3-plan.md.
+  // once per operate(); see the stage rules summarised above O3_CPU::operate().
   std::size_t fetch_round_robin = 0;
   std::size_t dispatch_owner = 0;
 
-  // Back-end arbitration state (Stage 3.5). `backend_round_robin` picks which
+  // Back-end arbitration state. `backend_round_robin` picks which
   // context the shared back-end widths (schedule/retire/LSQ) serve first this
   // cycle; execute and complete issue by global age instead, so they read the
   // dispatch sequence rather than the rotation. `next_dispatch_sequence` is the
@@ -156,7 +156,7 @@ public:
   long handle_memory_return();
   long retire_rob();
 
-  // Stage 3.4: per-context bodies behind each budget-point wrapper. They take a
+  // Per-context bodies behind each budget-point wrapper. They take a
   // reference to the one shared `champsim::bandwidth` for the site, consume from
   // it, and return the progress they contributed, so a wrapper can iterate
   // contexts and sum. The single-context `if constexpr` path calls these directly.

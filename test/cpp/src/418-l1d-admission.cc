@@ -5,7 +5,7 @@
 #include "defaults.hpp"
 #include "mocks.hpp"
 
-// Stage 3.6 item 1: L1D admission made explicit. The core's data channel
+// L1D admission made explicit. The core's data channel
 // (core_to_l1d) is SHARED by every hardware context -- there is deliberately no
 // per-context channel -- and L1D has exactly two upper channels (ptw_to_l1d +
 // core_to_l1d) with max_tag_check == 2. CACHE::operate splits the tag bandwidth

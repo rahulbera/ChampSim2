@@ -11,7 +11,7 @@
 #include "mocks.hpp"
 #include "ooo_cpu.h"
 
-// Stage 3.5: capacity quotas. The builder still names whole-core totals
+// Capacity quotas. The builder still names whole-core totals
 // (rob_size, lq_size, ...); O3_CPU::make_quota divides each by the context count
 // and refuses a total that does not divide equally, and the pipeline gates read
 // the per-context quota rather than the whole-core *_SIZE constant. The one DIB

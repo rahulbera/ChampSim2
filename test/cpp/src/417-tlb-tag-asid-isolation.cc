@@ -5,7 +5,7 @@
 #include "mocks.hpp"
 #include "vmem.h"
 
-// Step 3.2: the TLB tag array is keyed by address space as well as address. Two
+// The TLB tag array is keyed by address space as well as address. Two
 // address spaces that map the same virtual page to the same physical page must
 // occupy two distinct TLB entries; a hit in one address space must not satisfy a
 // lookup in the other. The cache under test is the TLB itself (vmem != nullptr),

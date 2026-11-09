@@ -5,7 +5,7 @@
 #include "defaults.hpp"
 #include "mocks.hpp"
 
-// Stage 3.7: the L1D translation stash is gated in equal shares across hardware
+// The L1D translation stash is gated in equal shares across hardware
 // contexts. An untranslated entry is admitted only while the stash as a whole is
 // under MSHR_SIZE and, with more than one context, while the entry's own address
 // space is under its equal share. The counts are taken before the drain and

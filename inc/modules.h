@@ -255,7 +255,7 @@ struct replacement : public bound_to<CACHE> {
 };
 
 // ---------------------------------------------------------------------------
-// SMT capability matrix (Stage 3.3). How a module's state is stored with
+// SMT capability matrix. How a module's state is stored with
 // respect to a core's hardware contexts. The environment consults this at
 // configuration time and refuses a module that cannot serve the requested
 // context count -- instead of discovering it at initialize time, after --knobs

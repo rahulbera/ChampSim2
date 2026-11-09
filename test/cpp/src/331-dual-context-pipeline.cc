@@ -13,7 +13,7 @@
 #include "mocks.hpp"
 #include "ooo_cpu.h"
 
-// Stage 3.7 item 2: the live-sibling paths that a single-context replay cannot
+// The live-sibling paths that a single-context replay cannot
 // touch. Each case drives both hardware contexts at once and asserts the
 // per-context architectural result, so a shared structure that silently served
 // only one context (or one context that leaked into the other's pipeline) fails

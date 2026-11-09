@@ -10,7 +10,7 @@
 #include "mocks.hpp"
 #include "ooo_cpu.h"
 
-// Stage 3.7 item 3: the six dual-context criteria that only a real two-context
+// The six dual-context criteria that only a real two-context
 // case can pin. Each TEST_CASE drives both contexts live and asserts the per-context
 // architectural result, so a cross-context age key or a per-context structure that
 // silently fell back to a single shared one fails here rather than passing on a

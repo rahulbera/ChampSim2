@@ -9,7 +9,7 @@
 #include "../../../btb/basic_btb/basic_btb.h"
 #include "instruction.h"
 
-// Stage 3.6: the branch direction predictors keep their global history (and
+// The branch direction predictors keep their global history (and
 // basic_btb its return stack and indirect conditional history) per hardware
 // context, while the predictor/table storage stays one shared per-core
 // instance whose index folds the asid. Interleaving a second context's activity

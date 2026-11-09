@@ -349,7 +349,7 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .perfect(cfg.value<bool>(itlb + ".perfect", false))
                             .virtual_memory(&vmem));
 
-    // Stage 3.6, explicit L1D admission. L1D has exactly two upper channels, each
+    // Explicit L1D admission. L1D has exactly two upper channels, each
     // with a declared source:
     //   * ptw_to_l1d  -- the PTW's page-walk reads. The PTW is one component per
     //     physical core, not per context, so this is a single channel.
@@ -513,7 +513,7 @@ void champsim::static_environment::select_modules(const runtime_config& cfg)
     }
     core.btb_module_pimpl->impl_configure(cfg, key + "." + btb);
 
-    // Stage 3.3: refuse an SMT-unsafe module at configuration time, not at
+    // Refuse an SMT-unsafe module at configuration time, not at
     // initialize time (which is after --knobs and the unconsulted-key check).
     const auto num_contexts = core.contexts.size();
     if (num_contexts > champsim::defs::max_contexts) {

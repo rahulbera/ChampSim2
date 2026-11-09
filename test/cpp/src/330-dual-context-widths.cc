@@ -10,7 +10,7 @@
 #include "mocks.hpp"
 #include "ooo_cpu.h"
 
-// Stage 3.7: the pipeline widths are one shared per-core budget, not a per-context
+// The pipeline widths are one shared per-core budget, not a per-context
 // budget. Each case backlogs both contexts past one width and makes a single call;
 // the call must move exactly the width in total, so a width that silently became
 // per-context (each context getting the full budget) would move twice as much and

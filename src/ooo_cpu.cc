@@ -65,6 +65,26 @@ champsim::context_quota O3_CPU::make_quota(uint32_t cpu, std::size_t num_context
   return quota;
 }
 
+// Per-cycle stage order and the arbitration rule each shared stage follows. With
+// one hardware context every rule reduces to the single-context walk (each stage
+// drains its context's buffer), so the `max_contexts == 1` fast paths below are
+// byte-identical to the pre-SMT core.
+//
+//   fetch .. promote_to_decode   rotating start (fetch_round_robin), greedy: each
+//                                site drains its whole shared width from the
+//                                starting context before the sibling runs.
+//   dispatch                      one dispatch owner per cycle (dispatch_owner),
+//                                yielding its remaining width to the sibling only
+//                                when it dispatches nothing.
+//   schedule                      rotating start (backend_round_robin) under one
+//                                shared SCHEDULER_SIZE reservation-station cap.
+//   execute / complete            by dispatch_sequence, the core-wide age key, not
+//                                a rotating walk (oldest ready first).
+//   operate_lsq / retire          rotating start (backend_round_robin).
+//
+// The three round-robin counters (fetch_round_robin, dispatch_owner,
+// backend_round_robin) advance together, once per cycle, at the foot of this
+// method, so no stage advances one on its own.
 long O3_CPU::operate()
 {
   long progress{0};
@@ -84,8 +104,8 @@ long O3_CPU::operate()
   initialize_instruction();
 
   // Advance the front-end round-robin start and the dispatch-owner pointer once
-  // per cycle (Stage 3.4), and the back-end round-robin start once per cycle
-  // (Stage 3.5). Each budget-point wrapper reads these to decide which context a
+  // per cycle, and the back-end round-robin start once per cycle. Each
+  // budget-point wrapper reads these to decide which context a
   // shared width serves first; they must not advance per site.
   fetch_round_robin = (fetch_round_robin + 1) % contexts.size();
   dispatch_owner = (dispatch_owner + 1) % contexts.size();
@@ -342,7 +362,7 @@ long O3_CPU::fetch_instruction()
       l1i_req_begin = std::find_if(l1i_req_end, std::end(ctx().IFETCH_BUFFER), fetch_ready);
     }
   } else {
-    // Stage 3.4: share L1I_BANDWIDTH across contexts with a rotating start,
+    // Share L1I_BANDWIDTH across contexts with a rotating start,
     // work-conserving like the other fetch-budget sites.
     champsim::bandwidth l1i_bw{L1I_BANDWIDTH};
     for (std::size_t i = 0; i < contexts.size() && l1i_bw.has_remaining(); ++i) {
@@ -660,7 +680,7 @@ long O3_CPU::schedule_instruction()
 
     return progress;
   } else {
-    // Shared scheduler (Stage 3.5): SCHEDULER_SIZE is the reservation-station
+    // Shared scheduler: SCHEDULER_SIZE is the reservation-station
     // capacity, i.e. the aggregate count of instructions scheduled but not yet
     // executed. The per-cycle search budget the single-context path uses only
     // bounds this count there; across contexts a shared scan budget would let
@@ -751,7 +771,7 @@ long O3_CPU::execute_instruction()
     champsim::bandwidth exec_bw{EXEC_WIDTH};
     return execute_instruction_impl(ctx(), exec_bw);
   } else {
-    // Shared scheduler (Stage 3.5): issue by global age, not by a rotating
+    // Shared scheduler: issue by global age, not by a rotating
     // per-context walk. The reservation station is shared, so this cycle's
     // EXEC_WIDTH issue slots go to the globally oldest ready instructions,
     // keyed on dispatch_sequence -- the core-wide age key. instr_id is
@@ -1064,7 +1084,7 @@ long O3_CPU::complete_inflight_instruction()
     champsim::bandwidth complete_bw{EXEC_WIDTH};
     return complete_inflight_instruction_impl(ctx(), complete_bw);
   } else {
-    // Shared scheduler (Stage 3.5): complete by global age, mirroring execute's
+    // Shared scheduler: complete by global age, mirroring execute's
     // oldest-first issue. The writeback width is shared, so the globally oldest
     // executed instruction completes first, keyed on dispatch_sequence. With a
     // single context this is the in-order walk bit-for-bit.
@@ -1147,7 +1167,7 @@ long O3_CPU::handle_memory_return()
       }
     }
   } else {
-    // Stage 3.4: a returned L1I line names its dependents by instr_id, which may
+    // A returned L1I line names its dependents by instr_id, which may
     // live in any context's IFETCH_BUFFER; search them all. FETCH_WIDTH and
     // L1I_BANDWIDTH stay shared across contexts.
     for (champsim::bandwidth fetch_bw{FETCH_WIDTH}, l1i_bw{L1I_BANDWIDTH};

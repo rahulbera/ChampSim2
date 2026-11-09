@@ -4,16 +4,16 @@
 #include "mocks.hpp"
 #include "ooo_cpu.h"
 
-// Stage 3.1: the identity asserts added at the pipeline hand-off points are
+// The identity asserts added at the pipeline hand-off points are
 // exercised here with a NON-identity address-space mapping, so they cannot be
 // satisfied by the N=1 all-zeros coincidence.
 //
-// Non-identity mapping chosen: an address-space value disjoint from the identity
-// (option 2 of the three in the plan). asid {250,250} is neither the N=1 value
-// {0,0} nor the core/context index 0, so any hand-off that threaded the wrong
-// identity (cpu index, a hardcoded 0, the trace index) instead of the address
-// space would trip an assert. A response or request that lost its asid would
-// arrive here as the default {255,255} and likewise fail.
+// Non-identity mapping chosen: an address-space value disjoint from the identity.
+// asid {250,250} is neither the N=1 value {0,0} nor the core/context index 0, so
+// any hand-off that threaded the wrong identity (cpu index, a hardcoded 0, the
+// trace index) instead of the address space would trip an assert. A response or
+// request that lost its asid would arrive here as the default {255,255} and
+// likewise fail.
 
 namespace
 {

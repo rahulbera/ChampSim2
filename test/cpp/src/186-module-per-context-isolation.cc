@@ -12,7 +12,7 @@
 #include "ooo_cpu.h"
 #include "runtime_config.h"
 
-// Stage 3.3, module-level per-context and per-core isolation. BLBP and ITTAGE
+// Module-level per-context and per-core isolation. BLBP and ITTAGE
 // replicate their state in a std::array indexed by champsim::context_index, so
 // training one hardware context's direct BTB must not be visible to another.
 // These tests drive the module hooks directly with two distinct context indices

@@ -540,7 +540,7 @@ long CACHE::operate()
                                                                     - (long)std::size(inflight_tag_check)};
   champsim::bandwidth initiate_tag_bw{std::clamp(bandwidth_from_tag_checks, champsim::bandwidth::maximum_type{0}, MAX_TAG)};
   CHAMPSIM_ASSERT(initiate_tag_bw.amount_remaining() >= 0);
-  // Partition the translation stash by address space (Stage 3.7). An untranslated
+  // Partition the translation stash by address space. An untranslated
   // entry is admitted only while the stash as a whole is under MSHR_SIZE and, with
   // more than one hardware context, while the entry's own address space is under
   // its equal share (MSHR_SIZE / NUM_CONTEXTS). The counts are taken before the
@@ -603,7 +603,7 @@ long CACHE::operate()
     std::rotate(upper_levels.begin(), upper_levels.begin() + 1, upper_levels.end());
   }
 
-  // Explicit admission policy (Stage 3.6). The translation stash initiates first
+  // Explicit admission policy. The translation stash initiates first
   // and consumes its share of the tag-check bandwidth; the uppers then share the
   // bandwidth the stash leaves, split across channels with a floor of one, and
   // each queue of an upper (WQ, then RQ, then PQ) may initiate up to that
