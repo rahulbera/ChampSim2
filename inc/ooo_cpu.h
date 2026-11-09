@@ -216,12 +216,13 @@ public:
     virtual void impl_configure(const champsim::runtime_config& cfg, std::string_view prefix) = 0;
 
     virtual void impl_initialize_branch_predictor() = 0;
-    virtual void impl_last_branch_result(champsim::address ip, champsim::address target, bool taken, uint8_t branch_type, champsim::address_space_id asid) = 0;
+    virtual void impl_last_branch_result(champsim::address ip, champsim::address target, bool taken, uint8_t branch_type, champsim::context_index context,
+                                         champsim::address_space_id asid) = 0;
     virtual bool impl_predict_branch(champsim::address ip, champsim::address predicted_target, bool always_taken, uint8_t branch_type,
-                                     champsim::address_space_id asid) = 0;
+                                     champsim::context_index context, champsim::address_space_id asid) = 0;
     virtual void impl_branch_predictor_final_stats() = 0;
     virtual void impl_branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type,
-                                             champsim::address_space_id asid) = 0;
+                                             champsim::context_index context, champsim::address_space_id asid) = 0;
     virtual void impl_branch_decode_notify(uint64_t instr_id, uint8_t arch_dst_reg) = 0;
     virtual void impl_branch_execute_notify(uint64_t instr_id, bool has_value, uint64_t value) = 0;
 
@@ -250,12 +251,13 @@ public:
     void impl_configure(const champsim::runtime_config& cfg, std::string_view prefix) final;
 
     void impl_initialize_branch_predictor() final;
-    void impl_last_branch_result(champsim::address ip, champsim::address target, bool taken, uint8_t branch_type, champsim::address_space_id asid) final;
+    void impl_last_branch_result(champsim::address ip, champsim::address target, bool taken, uint8_t branch_type, champsim::context_index context,
+                                 champsim::address_space_id asid) final;
     [[nodiscard]] bool impl_predict_branch(champsim::address ip, champsim::address predicted_target, bool always_taken, uint8_t branch_type,
-                                           champsim::address_space_id asid) final;
+                                           champsim::context_index context, champsim::address_space_id asid) final;
     void impl_branch_predictor_final_stats() final;
     void impl_branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type,
-                                     champsim::address_space_id asid) final;
+                                     champsim::context_index context, champsim::address_space_id asid) final;
     void impl_branch_decode_notify(uint64_t instr_id, uint8_t arch_dst_reg) final;
     void impl_branch_execute_notify(uint64_t instr_id, bool has_value, uint64_t value) final;
 
@@ -290,12 +292,13 @@ public:
 
   // NOLINTBEGIN(readability-make-member-function-const): legacy modules use non-const hooks
   void impl_initialize_branch_predictor() const;
-  void impl_last_branch_result(champsim::address ip, champsim::address target, bool taken, uint8_t branch_type, champsim::address_space_id asid) const;
+  void impl_last_branch_result(champsim::address ip, champsim::address target, bool taken, uint8_t branch_type, champsim::context_index context,
+                               champsim::address_space_id asid) const;
   [[nodiscard]] bool impl_predict_branch(champsim::address ip, champsim::address predicted_target, bool always_taken, uint8_t branch_type,
-                                         champsim::address_space_id asid) const;
+                                         champsim::context_index context, champsim::address_space_id asid) const;
   void impl_branch_predictor_final_stats() const;
   void impl_branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type,
-                                   champsim::address_space_id asid) const;
+                                   champsim::context_index context, champsim::address_space_id asid) const;
   void impl_branch_decode_notify(uint64_t instr_id, uint8_t arch_dst_reg) const;
   void impl_branch_execute_notify(uint64_t instr_id, bool has_value, uint64_t value) const;
 
@@ -376,12 +379,16 @@ void O3_CPU::branch_module_model<Bs...>::impl_initialize_branch_predictor()
 
 template <typename... Bs>
 void O3_CPU::branch_module_model<Bs...>::impl_branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address branch_target, bool taken,
-                                                                     uint8_t branch_type, champsim::address_space_id asid)
+                                                                     uint8_t branch_type, champsim::context_index context, champsim::address_space_id asid)
 {
   auto process_one = [&](auto& b) {
     using namespace champsim::modules;
-    if constexpr (branch_predictor::has_execute_resolve<decltype(b), uint64_t, champsim::address, champsim::address, bool, uint8_t,
+    /* Per-context modules: context index between branch type and asid */
+    if constexpr (branch_predictor::has_execute_resolve<decltype(b), uint64_t, champsim::address, champsim::address, bool, uint8_t, champsim::context_index,
                                                         champsim::address_space_id>) {
+      b.branch_execute_resolve(instr_id, ip, branch_target, taken, branch_type, context, asid);
+    } else if constexpr (branch_predictor::has_execute_resolve<decltype(b), uint64_t, champsim::address, champsim::address, bool, uint8_t,
+                                                               champsim::address_space_id>) {
       b.branch_execute_resolve(instr_id, ip, branch_target, taken, branch_type, asid);
     }
     /* Without asid, for modules written before the hook took one */
@@ -434,21 +441,27 @@ void O3_CPU::branch_module_model<Bs...>::impl_branch_predictor_final_stats()
 
 template <typename... Bs>
 void O3_CPU::branch_module_model<Bs...>::impl_last_branch_result(champsim::address ip, champsim::address target, bool taken, uint8_t branch_type,
-                                                                 champsim::address_space_id asid)
+                                                                 champsim::context_index context, champsim::address_space_id asid)
 {
   [[maybe_unused]] auto process_one = [&](auto& b) {
     using namespace champsim::modules;
+    constexpr bool context_asid = branch_predictor::has_last_branch_result<decltype(b), champsim::address, champsim::address, bool, uint8_t,
+                                                                           champsim::context_index, champsim::address_space_id>;
     constexpr bool raw_asid = branch_predictor::has_last_branch_result<decltype(b), uint64_t, uint64_t, bool, uint8_t, champsim::address_space_id>;
     constexpr bool strong_asid =
         branch_predictor::has_last_branch_result<decltype(b), champsim::address, champsim::address, bool, uint8_t, champsim::address_space_id>;
-    if constexpr (raw_asid)
+    /* Per-context modules: context index between branch type and asid */
+    if constexpr (context_asid)
+      b.last_branch_result(ip, target, taken, branch_type, context, asid);
+    if constexpr (!context_asid && raw_asid)
       b.last_branch_result(ip.to<uint64_t>(), target.to<uint64_t>(), taken, branch_type, asid);
-    if constexpr (strong_asid)
+    if constexpr (!context_asid && strong_asid)
       b.last_branch_result(ip, target, taken, branch_type, asid);
     /* Without asid, for modules written before the hook took one */
-    if constexpr (!raw_asid && !strong_asid && branch_predictor::has_last_branch_result<decltype(b), uint64_t, uint64_t, bool, uint8_t>)
+    if constexpr (!context_asid && !raw_asid && !strong_asid && branch_predictor::has_last_branch_result<decltype(b), uint64_t, uint64_t, bool, uint8_t>)
       b.last_branch_result(ip.to<uint64_t>(), target.to<uint64_t>(), taken, branch_type);
-    if constexpr (!raw_asid && !strong_asid && branch_predictor::has_last_branch_result<decltype(b), champsim::address, champsim::address, bool, uint8_t>)
+    if constexpr (!context_asid && !raw_asid && !strong_asid
+                  && branch_predictor::has_last_branch_result<decltype(b), champsim::address, champsim::address, bool, uint8_t>)
       b.last_branch_result(ip, target, taken, branch_type);
   };
 
@@ -457,11 +470,16 @@ void O3_CPU::branch_module_model<Bs...>::impl_last_branch_result(champsim::addre
 
 template <typename... Bs>
 bool O3_CPU::branch_module_model<Bs...>::impl_predict_branch(champsim::address ip, champsim::address predicted_target, bool always_taken, uint8_t branch_type,
-                                                             champsim::address_space_id asid)
+                                                             champsim::context_index context, champsim::address_space_id asid)
 {
   using return_type = bool;
   [[maybe_unused]] auto process_one = [&](auto& b) {
     using namespace champsim::modules;
+    /* Per-context modules: context index between branch type and asid */
+    if constexpr (branch_predictor::has_predict_branch<decltype(b), champsim::address, champsim::address, bool, uint8_t, champsim::context_index,
+                                                       champsim::address_space_id>)
+      return return_type{b.predict_branch(ip, predicted_target, always_taken, branch_type, context, asid)};
+
     /* Strong addresses, full size */
     if constexpr (branch_predictor::has_predict_branch<decltype(b), champsim::address, champsim::address, bool, uint8_t, champsim::address_space_id>)
       return return_type{b.predict_branch(ip, predicted_target, always_taken, branch_type, asid)};

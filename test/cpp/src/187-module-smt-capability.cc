@@ -64,10 +64,11 @@ TEST_CASE("The per-context BTBs advertise per_context capability")
 
 TEST_CASE("The ASID-keyed per-core modules advertise shared capability")
 {
-  // Stage 3.4 classification: these hold one instance per core whose tables fold
-  // ASID into the index/hash (Stage 2.5), so two hardware contexts of different
-  // address spaces land in disjoint entries. They are `shared`, not per_context:
-  // replicating them would waste state the ASID keying already isolates.
+  // Stage 3.6 classification: these hold one per-core table whose index/hash
+  // folds ASID (Stage 2.5), while any per-thread branch history (the GHR, RAS and
+  // indirect conditional history) is replicated per context. They are `shared`,
+  // not per_context: replicating the whole table would waste state the ASID
+  // keying already separates.
   REQUIRE(smt_capability_of<basic_btb>::value == smt_capability::shared);
   REQUIRE(smt_capability_of<hashed_perceptron>::value == smt_capability::shared);
   REQUIRE(smt_capability_of<bimodal>::value == smt_capability::shared);

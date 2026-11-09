@@ -26,8 +26,8 @@ class bimodal : champsim::modules::branch_predictor
 public:
   using branch_predictor::branch_predictor;
 
-  // SMT: single per-core instance, keyed by ASID (hash folds asid_word), so two
-  // contexts on one core share it safely rather than replicating per context.
+  // SMT: one shared per-core table whose hash folds the asid (the fold is a hash
+  // that can alias); bimodal holds no per-context history to replicate.
   static constexpr champsim::modules::smt_capability capability = champsim::modules::smt_capability::shared;
 
   // void initialize_branch_predictor();

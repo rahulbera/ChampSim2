@@ -10,7 +10,7 @@
 
 #include "instruction.h"
 
-std::pair<champsim::address, bool> basic_btb::btb_prediction(champsim::address ip, champsim::address_space_id asid)
+std::pair<champsim::address, bool> basic_btb::btb_prediction(champsim::address ip, champsim::context_index context, champsim::address_space_id asid)
 {
   // use BTB for all other branches + direct calls
   auto btb_entry = direct.check_hit(ip, asid);
@@ -20,29 +20,30 @@ std::pair<champsim::address, bool> basic_btb::btb_prediction(champsim::address i
     return {champsim::address{}, false};
 
   if (btb_entry->type == direct_predictor::branch_info::RETURN)
-    return ras.prediction();
+    return ras.at(context.value).prediction();
 
   if (btb_entry->type == direct_predictor::branch_info::INDIRECT)
-    return indirect.prediction(ip, asid);
+    return indirect.at(context.value).prediction(ip, asid);
 
   return {btb_entry->target, btb_entry->type != direct_predictor::branch_info::CONDITIONAL};
 }
 
-void basic_btb::update_btb(champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type, champsim::address_space_id asid)
+void basic_btb::update_btb(champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type, champsim::context_index context,
+                           champsim::address_space_id asid)
 {
   // add something to the RAS
   if (branch_type == BRANCH_DIRECT_CALL || branch_type == BRANCH_INDIRECT_CALL)
-    ras.push(ip);
+    ras.at(context.value).push(ip);
 
   // updates for indirect branches
   if ((branch_type == BRANCH_INDIRECT) || (branch_type == BRANCH_INDIRECT_CALL))
-    indirect.update_target(ip, branch_target, asid);
+    indirect.at(context.value).update_target(ip, branch_target, asid);
 
   if (branch_type == BRANCH_CONDITIONAL)
-    indirect.update_direction(taken);
+    indirect.at(context.value).update_direction(taken);
 
   if (branch_type == BRANCH_RETURN)
-    ras.calibrate_call_size(branch_target);
+    ras.at(context.value).calibrate_call_size(branch_target);
 
   direct.update(ip, branch_target, branch_type, asid);
 }
