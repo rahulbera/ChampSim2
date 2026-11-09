@@ -260,30 +260,41 @@ struct replacement : public bound_to<CACHE> {
 // configuration time and refuses a module that cannot serve the requested
 // context count -- instead of discovering it at initialize time, after --knobs
 // and the unconsulted-key check have already passed.
+//
+// The enum is ordered most-restrictive first, so min_smt_capability (below)
+// can fold a tuple of modules down to its weakest member by taking the smaller
+// value. Two axes matter: which core may run the module (cpu0 only, or any
+// core) and how many hardware contexts one instance can serve (one, or many).
 // ---------------------------------------------------------------------------
 enum class smt_capability {
-  unsupported, // namespace-scope / function-local singleton: one core, one context
-  per_context, // state replicated per hardware context (member or static array)
-  shared,      // single instance correctly shared across contexts (e.g. a read-only table)
+  global_state,   // process-wide static storage: cpu0 only, one context
+  single_context, // one instance per core that cannot be replicated: any core, one context (the default)
+  per_context,    // state replicated per hardware context (member or static array)
+  shared,         // one instance per core, correctly shared across contexts (ASID keying keeps each context's history disjoint)
 };
 
 // The distinction that decides `shared` vs `per_context` is *how the state is
 // keyed*, not how many instances exist. A module that folds ASID into its table
 // index/hash (so two hardware contexts of different address spaces land in
 // disjoint entries) is `shared`: one per-core instance is safe because ASID does
-// the isolation. A module whose tables are keyed only by IP -- and that must
-// therefore keep a private copy per hardware context to avoid aliasing two
-// threads' histories -- is `per_context`. Do NOT label an ASID-keyed single
-// instance `per_context` to replicate it: that wastes state and defeats the
-// sharing the module already provides.
+// the isolation, and the module still keeps per-context history. A module whose
+// tables are keyed only by IP -- and that must therefore keep a private copy
+// per hardware context to avoid aliasing two threads' histories -- is
+// `per_context`. Do NOT label an ASID-keyed single instance `per_context` to
+// replicate it: that wastes state and defeats the sharing the module already
+// provides.
 
-// A module opts into a non-unsupported capability with a
+// A module opts out of the single_context default with a
 // `static constexpr smt_capability capability` member. The default is
-// `unsupported` -- the conservative choice, so a module that reaches into the
-// core but has not declared otherwise is refused for SMT rather than silently
-// sharing state. Safe per-instance modules are required to opt in. The
-// overload set below is SFINAE over that member, so a module without one falls
-// to the `long` overload instead of failing to compile.
+// `single_context` -- one instance per core that cannot serve a second
+// hardware context -- so a module that reaches into the core but has declared
+// nothing is refused for SMT rather than silently sharing its single copy.
+// Modules that are safe per context (per_context), safe shared (shared), or
+// that keep process-wide static state (global_state) are required to opt in.
+// Static state in particular must be declared, because it is the only case
+// that also restricts which core may run the module. The overload set below is
+// SFINAE over that member, so a module without one falls to the `long`
+// overload instead of failing to compile.
 template <typename T>
 constexpr auto capability_value_impl(int) -> decltype(static_cast<smt_capability>(T::capability))
 {
@@ -292,7 +303,7 @@ constexpr auto capability_value_impl(int) -> decltype(static_cast<smt_capability
 template <typename>
 constexpr auto capability_value_impl(long) -> smt_capability
 {
-  return smt_capability::unsupported;
+  return smt_capability::single_context;
 }
 
 template <typename T>
@@ -308,13 +319,27 @@ constexpr smt_capability min_smt_capability(smt_capability a, smt_capability b)
 }
 
 // The configuration-time guard, shared by the environment's select_modules and
-// its unit test. An `unsupported` module's state is a process-wide singleton,
-// so it is refused for a second hardware context and for a second core. The
-// caller names the module; the environment prefixes the configuration key.
-inline void check_smt_capability(smt_capability cap, std::size_t cpu_index, std::size_t num_contexts, std::string_view module_name)
+// its unit test. `global_state` keeps its state in process-wide static storage,
+// so it is refused off cpu0 and past one context; `single_context` keeps one
+// instance per core and is refused past one context (on any core). The caller
+// passes the configuration key and the module name so the error names both.
+inline void check_smt_capability(smt_capability cap, std::size_t cpu_index, std::size_t num_contexts, std::string_view key, std::string_view module_name)
 {
-  if (cap == smt_capability::unsupported && (cpu_index != 0 || num_contexts > 1)) {
-    throw std::runtime_error{std::string{module_name} + " keeps its state in namespace-scope globals and cannot be used on more than one core or context"};
+  if (cap == smt_capability::global_state) {
+    if (cpu_index != 0) {
+      throw std::runtime_error{"runtime config: " + std::string{key} + " = " + std::string{module_name}
+                               + ": this module keeps its state in process-wide static storage, which every core would share, so it can run only on cpu0"};
+    }
+    if (num_contexts > 1) {
+      throw std::runtime_error{"runtime config: " + std::string{key} + " = " + std::string{module_name}
+                               + ": this module keeps its state in process-wide static storage, so it cannot serve the " + std::to_string(num_contexts)
+                               + " hardware contexts of this core"};
+    }
+  } else if (cap == smt_capability::single_context && num_contexts > 1) {
+    throw std::runtime_error{
+        "runtime config: " + std::string{key} + " = " + std::string{module_name}
+        + ": this module declares neither smt_capability::per_context nor smt_capability::shared, so its one instance per core cannot serve the "
+        + std::to_string(num_contexts) + " hardware contexts of this core"};
   }
 }
 } // namespace champsim::modules

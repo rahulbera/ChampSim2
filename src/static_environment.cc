@@ -519,8 +519,8 @@ void champsim::static_environment::select_modules(const runtime_config& cfg)
       throw std::runtime_error{"configuration requests " + std::to_string(num_contexts) + " hardware contexts on " + key +
                                " but this binary is compiled for at most " + std::to_string(champsim::defs::max_contexts)};
     }
-    champsim::modules::check_smt_capability(core.branch_module_pimpl->capability(), cpu, num_contexts, key + ".branch_predictor");
-    champsim::modules::check_smt_capability(core.btb_module_pimpl->capability(), cpu, num_contexts, key + ".btb");
+    champsim::modules::check_smt_capability(core.branch_module_pimpl->capability(), cpu, num_contexts, key + ".branch_predictor", bp);
+    champsim::modules::check_smt_capability(core.btb_module_pimpl->capability(), cpu, num_contexts, key + ".btb", btb);
   }
 
   for (auto& cache : caches) {

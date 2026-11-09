@@ -269,7 +269,7 @@ public:
 
   // Runtime module selection: the generated environment constructor replaces
   // the baked pimpl before any hook has fired. Safe exactly then -- module
-  // state (including function-local statics in the CBP6/BLBP wrappers) is
+  // state (including function-local statics in the CBP6 wrappers) is
   // created by hook calls, none of which have happened yet.
   void install_branch_module(std::unique_ptr<branch_module_concept> mod) { branch_module_pimpl = std::move(mod); }
   void install_btb_module(std::unique_ptr<btb_module_concept> mod) { btb_module_pimpl = std::move(mod); }
