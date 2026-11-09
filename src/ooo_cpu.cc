@@ -17,11 +17,13 @@
 #include "ooo_cpu.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstring>
 #include <numeric>
 #include <stdexcept>
+#include <string_view>
 #include <fmt/chrono.h>
 #include <fmt/core.h>
 #include <fmt/ranges.h>
@@ -34,6 +36,34 @@
 #include "event_listeners.h"
 #include "instruction.h"
 #include "util/span.h"
+
+champsim::context_quota O3_CPU::make_quota(uint32_t cpu, std::size_t num_contexts, std::array<std::size_t, 7> sizes)
+{
+  if (num_contexts == 0 || num_contexts > champsim::defs::max_contexts) {
+    throw std::invalid_argument{fmt::format("cpu{}: {} hardware contexts requested; a core supports 1 to {}", cpu, num_contexts, champsim::defs::max_contexts)};
+  }
+
+  static constexpr std::array<std::string_view, 7> keys = {
+      "ifetch_buffer_size", "decode_buffer_size", "dib.hit_buffer_size", "dispatch_buffer_size", "rob_size", "lq_size", "sq_size"};
+
+  champsim::context_quota quota{};
+  for (std::size_t i = 0; i < sizes.size(); ++i) {
+    if (sizes[i] % num_contexts != 0) {
+      throw std::invalid_argument{fmt::format("runtime config: ooo_cpu.cpu{}.{} = {} cannot be divided equally between {} hardware contexts; each "
+                                              "context holds a fixed quota of {} / {}, so the size must be a multiple of the context count",
+                                              cpu, keys[i], sizes[i], num_contexts, keys[i], num_contexts)};
+    }
+  }
+
+  quota.ifetch_buffer = sizes[0] / num_contexts;
+  quota.decode_buffer = sizes[1] / num_contexts;
+  quota.dib_hit_buffer = sizes[2] / num_contexts;
+  quota.dispatch_buffer = sizes[3] / num_contexts;
+  quota.rob = sizes[4] / num_contexts;
+  quota.lq = sizes[5] / num_contexts;
+  quota.sq = sizes[6] / num_contexts;
+  return quota;
+}
 
 long O3_CPU::operate()
 {
@@ -116,7 +146,7 @@ void O3_CPU::initialize_instruction_impl(champsim::core_context& c, champsim::co
 {
   champsim::bandwidth instrs_to_read_this_cycle{
       std::min(champsim::bandwidth::maximum_type{fetch_bw.amount_remaining()},
-               champsim::bandwidth::maximum_type{static_cast<long>(IFETCH_BUFFER_SIZE - std::size(c.IFETCH_BUFFER))})};
+               champsim::bandwidth::maximum_type{static_cast<long>(quota.ifetch_buffer - std::size(c.IFETCH_BUFFER))})};
 
   bool stop_fetch = false;
   while (current_time >= c.fetch_resume_time && instrs_to_read_this_cycle.has_remaining() && !stop_fetch && !std::empty(c.input_queue)) {
@@ -249,7 +279,7 @@ void O3_CPU::do_check_dib(ooo_model_instr& instr) { do_check_dib(ctx(), instr); 
 void O3_CPU::do_check_dib(champsim::core_context& c, ooo_model_instr& instr)
 {
   // Check DIB to see if we recently fetched this line
-  auto dib_result = c.DIB.check_hit({instr.ip, instr.asid});
+  auto dib_result = DIB.check_hit({instr.ip, instr.asid});
 
   // Every instruction is checked exactly once -- `dib_checked` below gates
   // re-entry -- so this is the only site that charges a DIB lookup, and the
@@ -386,8 +416,8 @@ long O3_CPU::promote_to_decode_impl(champsim::core_context& c, champsim::bandwid
 
   champsim::bandwidth available_fetch_bandwidth{
       std::min(champsim::bandwidth::maximum_type{fetch_bw.amount_remaining()},
-               std::min(champsim::bandwidth::maximum_type{static_cast<long>(DIB_HIT_BUFFER_SIZE - std::size(c.DIB_HIT_BUFFER))},
-                        champsim::bandwidth::maximum_type{static_cast<long>(DECODE_BUFFER_SIZE - std::size(c.DECODE_BUFFER))}))};
+               std::min(champsim::bandwidth::maximum_type{static_cast<long>(quota.dib_hit_buffer - std::size(c.DIB_HIT_BUFFER))},
+                        champsim::bandwidth::maximum_type{static_cast<long>(quota.decode_buffer - std::size(c.DECODE_BUFFER))}))};
 
   auto fetched_check_end = std::find_if(std::begin(c.IFETCH_BUFFER), std::end(c.IFETCH_BUFFER), [](const ooo_model_instr& x) { return !x.fetch_completed; });
   // find the first not fetch completed
@@ -449,7 +479,7 @@ long O3_CPU::decode_instruction_impl(champsim::core_context& c, champsim::bandwi
   // and this context's remaining dispatch-buffer space.
   champsim::bandwidth available_dib_inorder_bandwidth{
       std::min(champsim::bandwidth::maximum_type{inorder_bw.amount_remaining()},
-               champsim::bandwidth::maximum_type{static_cast<long>(DISPATCH_BUFFER_SIZE - std::size(c.DISPATCH_BUFFER))})};
+               champsim::bandwidth::maximum_type{static_cast<long>(quota.dispatch_buffer - std::size(c.DISPATCH_BUFFER))})};
 
   // conditions choose how many instructions sent to dispatch_buffer
   while (dib_hit_buffer_end != std::end(c.DIB_HIT_BUFFER) && decode_buffer_end != std::end(c.DECODE_BUFFER) && available_dib_inorder_bandwidth.has_remaining()
@@ -527,7 +557,7 @@ long O3_CPU::decode_instruction_impl(champsim::core_context& c, champsim::bandwi
 
 void O3_CPU::do_dib_update(const ooo_model_instr& instr) { do_dib_update(ctx(), instr); }
 
-void O3_CPU::do_dib_update(champsim::core_context& c, const ooo_model_instr& instr) { c.DIB.fill({instr.ip, instr.asid}); }
+void O3_CPU::do_dib_update(champsim::core_context& /*c*/, const ooo_model_instr& instr) { DIB.fill({instr.ip, instr.asid}); }
 
 long O3_CPU::dispatch_instruction()
 {
@@ -556,10 +586,10 @@ long O3_CPU::dispatch_instruction_impl(champsim::core_context& c, champsim::band
   const long before = dispatch_bw.amount_consumed();
 
   // dispatch DISPATCH_WIDTH instructions into the ROB
-  while (dispatch_bw.has_remaining() && !std::empty(c.DISPATCH_BUFFER) && c.DISPATCH_BUFFER.front().ready_time <= current_time && std::size(c.ROB) != ROB_SIZE
+  while (dispatch_bw.has_remaining() && !std::empty(c.DISPATCH_BUFFER) && c.DISPATCH_BUFFER.front().ready_time <= current_time && std::size(c.ROB) != quota.rob
          && ((std::size_t)std::count_if(std::begin(c.LQ), std::end(c.LQ), [](const auto& lq_entry) { return !lq_entry.has_value(); })
              >= std::size(c.DISPATCH_BUFFER.front().source_memory))
-         && ((std::size(c.DISPATCH_BUFFER.front().destination_memory) + std::size(c.SQ)) <= SQ_SIZE)) {
+         && ((std::size(c.DISPATCH_BUFFER.front().destination_memory) + std::size(c.SQ)) <= quota.sq)) {
     c.ROB.push_back(std::move(c.DISPATCH_BUFFER.front()));
     c.DISPATCH_BUFFER.pop_front();
     do_memory_scheduling(c, c.ROB.back());

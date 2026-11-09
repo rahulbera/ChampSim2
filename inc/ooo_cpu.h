@@ -22,6 +22,7 @@
 #undef CHAMPSIM_MODULE
 #endif
 
+#include <array>
 #include <bitset>
 #include <deque>
 #include <memory>
@@ -77,12 +78,25 @@ public:
   // hold raw pointers to it and must never dangle.
   std::unique_ptr<RegisterAllocator> shared_prf;
 
+  // The per-context shares of the capacity knobs below. make_quota() divides
+  // each whole-core total by the context count and refuses a total that does not
+  // divide equally; the pipeline gates read quota.* while the *_SIZE constants
+  // below stay the whole-core totals.
+  const champsim::context_quota quota;
+
   // Per-hardware-context pipeline state: the builder's num_contexts of them,
   // built in place by make_contexts(), and nothing resizes the vector
   // afterwards. core_context is move-only, so a reallocation would move each
   // context: the references inside a context (SQ entries to LQ slots) survive
   // that, but a reference to a context itself does not.
   std::vector<champsim::core_context> contexts;
+
+  // The one decoded-instruction buffer, shared by every context. Its key is the
+  // (asid, ip) pair, so two contexts in different address spaces never share a
+  // decoded window; with one context asid is {0,0}, so a hit compares equal
+  // exactly when the original ip-only tag did. The per-context DIB was removed
+  // in Stage 3.5.
+  champsim::dib_type DIB;
 
   // Front-end arbitration state (Stage 3.4). `fetch_round_robin` picks which
   // context a shared front-end width serves first this cycle (fetch/decode/DIB);
@@ -292,22 +306,31 @@ public:
                                                                       champsim::address_space_id asid) const;
   // NOLINTEND(readability-make-member-function-const)
 
+  // Divides the whole-core capacity totals into per-context quotas, refusing a
+  // context count outside 1..max_contexts or a total that does not divide
+  // equally. Defined in src/ooo_cpu.cc; sizes is {ifetch, decode, dib.hit,
+  // dispatch, rob, lq, sq}.
+  static champsim::context_quota make_quota(uint32_t cpu, std::size_t num_contexts, std::array<std::size_t, 7> sizes);
+
   // Builds the contexts in place. std::vector's fill and initializer_list
   // constructors copy their elements, and core_context cannot be copied.
-  static std::vector<champsim::core_context> make_contexts(std::size_t num_contexts, RegisterAllocator* shared_prf, std::size_t lq_size, std::size_t dib_set,
-                                                           std::size_t dib_way, unsigned long dib_window)
+  static std::vector<champsim::core_context> make_contexts(std::size_t num_contexts, RegisterAllocator* shared_prf, std::size_t lq_quota)
   {
     std::vector<champsim::core_context> result;
     result.reserve(num_contexts);
     for (std::size_t i = 0; i < num_contexts; ++i)
-      result.emplace_back(shared_prf, lq_size, dib_set, dib_way, dib_window);
+      result.emplace_back(shared_prf, lq_quota);
     return result;
   }
 
   template <typename... Bs, typename... Ts>
   explicit O3_CPU(champsim::core_builder<champsim::core_builder_module_type_holder<Bs...>, champsim::core_builder_module_type_holder<Ts...>> b)
       : champsim::operable(b.m_clock_period), cpu(b.m_cpu), shared_prf(std::make_unique<RegisterAllocator>(b.m_register_file_size)),
-        contexts(make_contexts(b.m_num_contexts, shared_prf.get(), b.m_lq_size, b.m_dib_set, b.m_dib_way, b.m_dib_window)),
+        quota(make_quota(
+            b.m_cpu, b.m_num_contexts,
+            {b.m_ifetch_buffer_size, b.m_decode_buffer_size, b.m_dib_hit_buffer_size, b.m_dispatch_buffer_size, b.m_rob_size, b.m_lq_size, b.m_sq_size})),
+        contexts(make_contexts(b.m_num_contexts, shared_prf.get(), quota.lq)),
+        DIB(b.m_dib_set, b.m_dib_way, {champsim::data::bits{champsim::lg2(b.m_dib_window)}}, {champsim::data::bits{champsim::lg2(b.m_dib_window)}}),
         IFETCH_BUFFER_SIZE(b.m_ifetch_buffer_size), DISPATCH_BUFFER_SIZE(b.m_dispatch_buffer_size), DECODE_BUFFER_SIZE(b.m_decode_buffer_size),
         REGISTER_FILE_SIZE(b.m_register_file_size), ROB_SIZE(b.m_rob_size), SQ_SIZE(b.m_sq_size), DIB_HIT_BUFFER_SIZE(b.m_dib_hit_buffer_size),
         FETCH_WIDTH(b.m_fetch_width), DECODE_WIDTH(b.m_decode_width), DISPATCH_WIDTH(b.m_dispatch_width), SCHEDULER_SIZE(b.m_schedule_width),

@@ -54,19 +54,23 @@ struct backend_fixture {
 
   do_nothing_MRC dual_l1i, dual_l1d;
   O3_CPU dual{champsim::core_builder{}
-                 .fetch_queues(&dual_l1i.queues)
-                 .data_queues(&dual_l1d.queues)
-                 .num_contexts(2)
-                 .rob_size(16)
-                 .register_file_size(128)
-                 .lq_size(8)
-                 .sq_size(8)
-                 .schedule_width(champsim::bandwidth::maximum_type{SCHED_W})
-                 .execute_width(champsim::bandwidth::maximum_type{EXEC_W})
-                 .retire_width(champsim::bandwidth::maximum_type{RETIRE_W})
-                 .dispatch_width(champsim::bandwidth::maximum_type{DISPATCH_W})
-                 .execute_latency(0)
-                 .schedule_latency(0)};
+                  .fetch_queues(&dual_l1i.queues)
+                  .data_queues(&dual_l1d.queues)
+                  .num_contexts(2)
+                  .rob_size(16)
+                  .register_file_size(128)
+                  .lq_size(8)
+                  .sq_size(8)
+                  .ifetch_buffer_size(2)
+                  .decode_buffer_size(2)
+                  .dib_hit_buffer_size(2)
+                  .dispatch_buffer_size(2)
+                  .schedule_width(champsim::bandwidth::maximum_type{SCHED_W})
+                  .execute_width(champsim::bandwidth::maximum_type{EXEC_W})
+                  .retire_width(champsim::bandwidth::maximum_type{RETIRE_W})
+                  .dispatch_width(champsim::bandwidth::maximum_type{DISPATCH_W})
+                  .execute_latency(0)
+                  .schedule_latency(0)};
 
   backend_fixture()
   {

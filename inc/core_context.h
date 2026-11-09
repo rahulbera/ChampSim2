@@ -85,6 +85,21 @@ struct dib_tag {
 
 using dib_type = champsim::msl::lru_table<dib_entry, dib_index, dib_tag>;
 
+// The per-hardware-context share of each capacity knob. The builder still names
+// the whole-core totals (rob_size, lq_size, ...); O3_CPU::make_quota divides
+// each by the context count, refusing a total that does not divide equally, and
+// the pipeline gates read these quotas instead of the totals. The one DIB is
+// shared, so it has no quota here.
+struct context_quota {
+  std::size_t ifetch_buffer;
+  std::size_t decode_buffer;
+  std::size_t dib_hit_buffer;
+  std::size_t dispatch_buffer;
+  std::size_t rob;
+  std::size_t lq;
+  std::size_t sq;
+};
+
 struct core_context {
   using stats_type = cpu_stats;
 
@@ -102,8 +117,6 @@ struct core_context {
   // Monotonic source of the per-LQ-entry load_waiter_id token. Each context
   // counts from zero, so ids repeat across contexts and across cores.
   uint64_t next_load_waiter_id = 0;
-
-  dib_type DIB;
 
   // The hardware-context index of this thread. It is what keys the producer
   // identity assertions in rename/retire: registers are private to a thread, so
@@ -151,16 +164,14 @@ struct core_context {
   long long last_heartbeat_instr = 0;
 
   // Minimal context bound to a shared physical register file. Tests use this to
-  // exercise the RAT methods directly; the DIB geometry is irrelevant there.
-  explicit core_context(RegisterAllocator* shared_prf) : DIB(1, 1), reg_allocator(shared_prf)
+  // exercise the RAT methods directly; the load/store queues stay empty.
+  explicit core_context(RegisterAllocator* shared_prf) : reg_allocator(shared_prf)
   {
     frontend_RAT.fill(-1); // default value for no mapping
     backend_RAT.fill(-1);
   }
 
-  core_context(RegisterAllocator* shared_prf, std::size_t lq_size, std::size_t dib_set, std::size_t dib_way, unsigned long dib_window)
-      : LQ(lq_size), DIB(dib_set, dib_way, {champsim::data::bits{champsim::lg2(dib_window)}}, {champsim::data::bits{champsim::lg2(dib_window)}}),
-        reg_allocator(shared_prf)
+  core_context(RegisterAllocator* shared_prf, std::size_t lq_quota) : LQ(lq_quota), reg_allocator(shared_prf)
   {
     frontend_RAT.fill(-1); // default value for no mapping
     backend_RAT.fill(-1);
