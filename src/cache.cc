@@ -38,10 +38,10 @@ CACHE::CACHE(CACHE&& other)
 
       upper_levels(std::move(other.upper_levels)), lower_level(std::move(other.lower_level)), lower_translate(std::move(other.lower_translate)),
 
-      cpu(other.cpu), NAME(std::move(other.NAME)), NUM_SET(other.NUM_SET), NUM_WAY(other.NUM_WAY), MSHR_SIZE(other.MSHR_SIZE), PQ_SIZE(other.PQ_SIZE),
-      HIT_LATENCY(other.HIT_LATENCY), FILL_LATENCY(other.FILL_LATENCY), OFFSET_BITS(other.OFFSET_BITS), block(std::move(other.block)), MAX_TAG(other.MAX_TAG),
-      MAX_FILL(other.MAX_FILL), prefetch_as_load(other.prefetch_as_load), match_offset_bits(other.match_offset_bits), virtual_prefetch(other.virtual_prefetch),
-      perfect(other.perfect), vmem(other.vmem), pref_activate_mask(std::move(other.pref_activate_mask)),
+      cpu(other.cpu), NAME(std::move(other.NAME)), NUM_SET(other.NUM_SET), NUM_WAY(other.NUM_WAY), MSHR_SIZE(other.MSHR_SIZE), NUM_CONTEXTS(other.NUM_CONTEXTS),
+      PQ_SIZE(other.PQ_SIZE), HIT_LATENCY(other.HIT_LATENCY), FILL_LATENCY(other.FILL_LATENCY), OFFSET_BITS(other.OFFSET_BITS), block(std::move(other.block)),
+      MAX_TAG(other.MAX_TAG), MAX_FILL(other.MAX_FILL), prefetch_as_load(other.prefetch_as_load), match_offset_bits(other.match_offset_bits),
+      virtual_prefetch(other.virtual_prefetch), perfect(other.perfect), vmem(other.vmem), pref_activate_mask(std::move(other.pref_activate_mask)),
 
       sim_stats(std::move(other.sim_stats)), roi_stats(std::move(other.roi_stats)),
 
@@ -67,6 +67,7 @@ auto CACHE::operator=(CACHE&& other) -> CACHE&
   this->NUM_WAY = other.NUM_WAY;
   ;
   this->MSHR_SIZE = other.MSHR_SIZE;
+  this->NUM_CONTEXTS = other.NUM_CONTEXTS;
   ;
   this->PQ_SIZE = other.PQ_SIZE;
   this->HIT_LATENCY = other.HIT_LATENCY;
@@ -538,19 +539,56 @@ long CACHE::operate()
                                                                     - (long)std::size(inflight_tag_check)};
   champsim::bandwidth initiate_tag_bw{std::clamp(bandwidth_from_tag_checks, champsim::bandwidth::maximum_type{0}, MAX_TAG)};
   CHAMPSIM_ASSERT(initiate_tag_bw.amount_remaining() >= 0);
-  // Partition the translation stash by address space (Stage 3.6 item 2). An
-  // untranslated entry is admissible while fewer than MSHR_SIZE of ITS OWN
-  // address space are already stashed, so one context's burst of TLB misses can
-  // fill only its own share and never blocks a sibling's untranslated load. The
-  // stash is not mutated during this admission loop (entries leave it only once
-  // translated), so the per-asid count is stable. Under a single context every
-  // entry carries that one trace's asid, making the per-asid count equal the
-  // total and this gate byte-identical to the former global size check.
-  auto can_translate = [this](const auto& entry) {
+  // Partition the translation stash by address space (Stage 3.7). An untranslated
+  // entry is admitted only while the stash as a whole is under MSHR_SIZE and, with
+  // more than one hardware context, while the entry's own address space is under
+  // its equal share (MSHR_SIZE / NUM_CONTEXTS). The counts are taken before the
+  // drain and include the stash plus the still-untranslated inflight_tag_check
+  // entries, any of which may return to the stash; a refused head still blocks
+  // everything behind it because the gate stops the scan in place. Under a single
+  // context the per-asid count equals the total, so this gate is the former
+  // start-of-cycle size check.
+  const bool stash_has_room = std::size(translation_stash) < static_cast<std::size_t>(MSHR_SIZE);
+  std::size_t admitted_total = std::size(translation_stash);
+  std::vector<std::pair<std::pair<uint8_t, uint8_t>, std::size_t>> admitted_by_asid{};
+  if (NUM_CONTEXTS > 1) {
+    auto count_one = [&admitted_by_asid](const tag_lookup_type& s) {
+      const auto key = std::pair{s.asid[0], s.asid[1]};
+      auto it = std::find_if(std::begin(admitted_by_asid), std::end(admitted_by_asid), [&key](const auto& p) { return p.first == key; });
+      if (it == std::end(admitted_by_asid))
+        admitted_by_asid.emplace_back(key, 1);
+      else
+        ++it->second;
+    };
+    std::for_each(std::begin(translation_stash), std::end(translation_stash), count_one);
+    std::for_each(std::begin(inflight_tag_check), std::end(inflight_tag_check), [&](const tag_lookup_type& s) {
+      if (!s.is_translated) {
+        ++admitted_total;
+        count_one(s);
+      }
+    });
+  }
+  const auto num_contexts = NUM_CONTEXTS;
+  const auto mshr_capacity = static_cast<std::size_t>(MSHR_SIZE);
+  const auto per_context_share = mshr_capacity / num_contexts;
+  auto can_translate = [&admitted_total, &admitted_by_asid, stash_has_room, num_contexts, mshr_capacity, per_context_share](const auto& entry) {
     if (entry.is_translated)
       return true;
-    auto same_asid = [&entry](const auto& s) { return s.asid[0] == entry.asid[0] && s.asid[1] == entry.asid[1]; };
-    return std::count_if(std::begin(translation_stash), std::end(translation_stash), same_asid) < static_cast<std::ptrdiff_t>(MSHR_SIZE);
+    if (num_contexts == 1)
+      return stash_has_room;
+    if (admitted_total >= mshr_capacity)
+      return false;
+    const auto key = std::pair{entry.asid[0], entry.asid[1]};
+    auto it = std::find_if(std::begin(admitted_by_asid), std::end(admitted_by_asid), [&key](const auto& p) { return p.first == key; });
+    const std::size_t this_asid = (it == std::end(admitted_by_asid)) ? 0 : it->second;
+    if (this_asid >= per_context_share)
+      return false;
+    ++admitted_total;
+    if (it == std::end(admitted_by_asid))
+      admitted_by_asid.emplace_back(key, 1);
+    else
+      ++it->second;
+    return true;
   };
   long stash_bandwidth_consumed = 0;
   if (!translation_stash.empty() && initiate_tag_bw.amount_remaining() > 0) {

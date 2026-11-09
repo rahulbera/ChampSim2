@@ -1,7 +1,6 @@
-#include <catch.hpp>
-
 #include <algorithm>
 #include <array>
+#include <catch.hpp>
 
 #include "address.h"
 #include "channel.h"
@@ -29,7 +28,8 @@ TEST_CASE("A sibling's untranslated load completes its translation and fill afte
                 .lower_translate(&mock_translator.queues)
                 .hit_latency(1)
                 .tag_bandwidth(champsim::bandwidth::maximum_type{16})
-                .mshr_size(16)};
+                .mshr_size(16)
+                .num_contexts(2)};
 
   std::array<champsim::operable*, 3> elements{{&uut, &mock_ll, &mock_translator}};
   for (auto elem : elements) {
@@ -50,14 +50,15 @@ TEST_CASE("A sibling's untranslated load completes its translation and fill afte
     return req;
   };
 
-  // Context A floods the shared channel with MSHR_SIZE untranslated loads, filling
-  // A's whole stash share and issuing MSHR_SIZE page walks.
-  for (unsigned i = 0; i < 16; ++i)
+  // Context A floods the shared channel with its whole eight-entry share of
+  // untranslated loads, issuing eight page walks (MSHR_SIZE 16 split over two
+  // contexts).
+  for (unsigned i = 0; i < 8; ++i)
     REQUIRE(core_channel.add_rq(make_req(1, 0x1000 * (i + 1))));
   uut._operate();
   uut._operate();
   REQUIRE(core_channel.rq_occupancy() == 0);
-  REQUIRE(mock_translator.queues.rq_occupancy() == 16); // A's 16 walks are out
+  REQUIRE(mock_translator.queues.rq_occupancy() == 8); // A's eight walks are out
 
   // Context B issues one untranslated load. It must still be admitted (its own
   // stash share is empty), and its walk must go out too.

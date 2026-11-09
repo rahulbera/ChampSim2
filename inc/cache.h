@@ -162,6 +162,7 @@ public:
   uint32_t cpu = 0;
   std::string NAME;
   uint32_t NUM_SET, NUM_WAY, MSHR_SIZE;
+  std::size_t NUM_CONTEXTS;
   std::size_t PQ_SIZE;
   champsim::chrono::clock::duration HIT_LATENCY;
   champsim::chrono::clock::duration FILL_LATENCY;
@@ -351,12 +352,15 @@ public:
   template <typename... Ps, typename... Rs>
   explicit CACHE(champsim::cache_builder<champsim::cache_builder_module_type_holder<Ps...>, champsim::cache_builder_module_type_holder<Rs...>> b)
       : champsim::operable(b.m_clock_period), upper_levels(b.m_uls), lower_level(b.m_ll), lower_translate(b.m_lt), NAME(b.m_name), NUM_SET(b.get_num_sets()),
-        NUM_WAY(b.get_num_ways()), MSHR_SIZE(b.get_num_mshrs()), PQ_SIZE(b.m_pq_size), HIT_LATENCY(b.get_hit_latency() * b.m_clock_period),
-        FILL_LATENCY(b.get_fill_latency() * b.m_clock_period), OFFSET_BITS(b.m_offset_bits), MAX_TAG(b.get_tag_bandwidth()), MAX_FILL(b.get_fill_bandwidth()),
-        prefetch_as_load(b.m_pref_load), match_offset_bits(b.m_wq_full_addr), virtual_prefetch(b.m_va_pref), perfect(b.m_perfect), vmem(b.m_vmem),
-        pref_activate_mask(b.m_pref_act_mask), pref_module_pimpl(std::make_unique<prefetcher_module_model<Ps...>>(this)),
-        repl_module_pimpl(std::make_unique<replacement_module_model<Rs...>>(this))
+        NUM_WAY(b.get_num_ways()), MSHR_SIZE(b.get_num_mshrs()), NUM_CONTEXTS(b.m_num_contexts), PQ_SIZE(b.m_pq_size),
+        HIT_LATENCY(b.get_hit_latency() * b.m_clock_period), FILL_LATENCY(b.get_fill_latency() * b.m_clock_period), OFFSET_BITS(b.m_offset_bits),
+        MAX_TAG(b.get_tag_bandwidth()), MAX_FILL(b.get_fill_bandwidth()), prefetch_as_load(b.m_pref_load), match_offset_bits(b.m_wq_full_addr),
+        virtual_prefetch(b.m_va_pref), perfect(b.m_perfect), vmem(b.m_vmem), pref_activate_mask(b.m_pref_act_mask),
+        pref_module_pimpl(std::make_unique<prefetcher_module_model<Ps...>>(this)), repl_module_pimpl(std::make_unique<replacement_module_model<Rs...>>(this))
   {
+    if (NUM_CONTEXTS == 0 || MSHR_SIZE % NUM_CONTEXTS != 0)
+      throw std::invalid_argument(NAME + ": " + std::to_string(MSHR_SIZE) + " MSHRs cannot be shared equally by " + std::to_string(NUM_CONTEXTS)
+                                  + " hardware contexts");
   }
 
   CACHE(const CACHE&) = delete;
