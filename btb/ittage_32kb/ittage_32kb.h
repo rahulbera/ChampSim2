@@ -15,6 +15,7 @@
 #define BTB_ITTAGE_32KB_H
 
 #include <cstdint>
+#include <memory>
 #include <string_view>
 #include <utility>
 
@@ -24,13 +25,23 @@
 
 class ittage_32kb : champsim::modules::btb
 {
+  struct storage;
+  struct storage_deleter {
+    void operator()(storage* s) const;
+  };
+  static std::unique_ptr<storage, storage_deleter> make_storage();
+
+  std::unique_ptr<storage, storage_deleter> state = make_storage();
+
 public:
   using btb::btb;
   ittage_32kb() : btb(nullptr) {}
 
-  // ITTAGE's vendored predictor relies on static zero-initialisation, so the
-  // per-context storage is a function-local static array rather than a member
-  // (see the .cc). The capability advertises per-context isolation.
+  // ITTAGE's vendored predictor relies on zero-initialisation before its
+  // constructor runs, so the per-context storage is heap-allocated behind a
+  // pimpl: make_storage() value-initialises the aggregate (see the .cc), and
+  // each instance -- each core -- gets its own. The capability advertises
+  // per-context isolation.
   static constexpr champsim::modules::smt_capability capability = champsim::modules::smt_capability::per_context;
 
   // Only the direct predictor is settable; this module's own tables are

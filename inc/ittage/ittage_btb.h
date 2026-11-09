@@ -28,9 +28,9 @@
  *      feeding that to the history injects a constant into every subsequent
  *      index. The caller passes the architectural next PC instead.
  *   3. Initialisation. The vendored reinit() is called from initialize(), and
- *      the copy fixes the reference's uninitialised-ghist bug, but the predictor
- *      is still held at static storage duration by the module shell, matching
- *      the CBP6 tenants.
+ *      the copy fixes the reference's uninitialised-ghist bug. The predictor is
+ *      held in a value-initialised pimpl (zeroed before the vendored constructor
+ *      runs), one adapter per core, each keeping its own per-context storage.
  *   4. Direct-BTB gating. ITTAGE is only consulted when the direct predictor
  *      already knows this PC is an indirect branch. Measured on
  *      710.omnetpp_r.sp0: a perfect indirect oracle still leaves 3.8% of
@@ -225,7 +225,10 @@ public:
   // A caveat this cannot enforce: a comparison against another BTB arm is
   // honest only while every arm's direct path is identical. Changing this on one
   // arm and not another measures two things at once. The defaults are the
-  // geometry the write-ups pin, so leaving these keys alone is always safe.
+  // geometry the write-ups pin, so leaving these keys alone is always safe. One
+  // difference geometry cannot equalise: this adapter keeps one direct table per
+  // hardware context, while basic_btb keeps one table set per core and shares it
+  // across contexts by ASID keying.
   void configure_direct(const champsim::runtime_config& cfg, std::string_view prefix)
   {
     // positive_value: lru_table validates sets itself but never ways, and a
@@ -262,9 +265,9 @@ public:
       // its gshare target cache (btb/basic_btb/indirect_predictor.cc). The fold
       // is a hash, not an identity: the vendored predictor sees only the folded
       // PC, so two (PC, asid) pairs with the same fold share entries. That is
-      // sound only while one instance serves one address space, which
-      // require_single_core guarantees. In N=1 asid is {0,0}, so the fold is a
-      // numeric no-op.
+      // sound only while one instance serves one address space, which holds
+      // because each core and context has its own adapter. In N=1 asid is
+      // {0,0}, so the fold is a numeric no-op.
       const uint64_t target = predictor.GetPrediction(ip.to<uint64_t>() ^ champsim::asid_word(asid));
       // Failure mode 1: never let an unseeded entry's sentinel escape as a real
       // target. Reporting "no prediction" takes the misprediction honestly.
