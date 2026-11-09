@@ -1,8 +1,6 @@
 #include <catch.hpp>
 #include <stdexcept>
 
-#include "instruction.h" // BRANCH_* constants, needed by the BTB headers below
-
 #include "../../../branch/bimodal/bimodal.h"
 #include "../../../branch/cbp6_ddtage/cbp6_ddtage.h"
 #include "../../../branch/cbp6_runlts_norv/cbp6_runlts_norv.h"
@@ -16,6 +14,7 @@
 #include "../../../btb/blbp_64kb_tuned/blbp_64kb_tuned.h"
 #include "../../../btb/ittage_32kb/ittage_32kb.h"
 #include "../../../btb/ittage_64kb/ittage_64kb.h"
+#include "instruction.h"
 #include "mocks.hpp"
 #include "ooo_cpu.h"
 

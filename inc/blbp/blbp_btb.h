@@ -35,6 +35,7 @@
 #include "address.h"
 #include "blbp/blbp.h"
 #include "champsim.h"
+#include "instruction.h"
 #include "msl/bits.h"
 #include "msl/lru_table.h"
 #include "runtime_config.h"

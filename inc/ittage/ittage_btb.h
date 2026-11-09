@@ -52,6 +52,7 @@
 
 #include "address.h"
 #include "champsim.h"
+#include "instruction.h"
 #include "ittage/ittage.hpp"
 #include "msl/bits.h"
 #include "msl/lru_table.h"

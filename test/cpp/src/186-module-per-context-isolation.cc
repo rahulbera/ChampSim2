@@ -1,12 +1,11 @@
 #include <catch.hpp>
 #include <cstdint>
 
-#include "instruction.h" // BRANCH_* constants, needed by the BTB headers below
-
 #include "../../../btb/blbp_64kb/blbp_64kb.h"
 #include "../../../btb/blbp_64kb_tuned/blbp_64kb_tuned.h"
 #include "../../../btb/ittage_32kb/ittage_32kb.h"
 #include "../../../btb/ittage_64kb/ittage_64kb.h"
+#include "instruction.h"
 
 // Stage 3.3, module-level per-context isolation. BLBP and ITTAGE replicate their
 // state in a std::array indexed by champsim::context_index, so training one
