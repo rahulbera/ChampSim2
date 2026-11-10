@@ -48,6 +48,7 @@
 namespace champsim
 {
 std::vector<phase_stats> main(environment& env, std::vector<phase_info>& phases, std::vector<tracereader>& traces, const simulation_knobs& knobs);
+std::vector<std::vector<std::size_t>> context_trace_index(const std::vector<std::reference_wrapper<O3_CPU>>& cpus);
 }
 
 #ifndef CHAMPSIM_TEST_BUILD
@@ -381,28 +382,8 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   }
 
   try {
-    std::vector<champsim::tracereader> traces;
-    std::transform(std::begin(trace_names), std::end(trace_names), std::back_inserter(traces),
-                   [knob_cloudsuite, trace_version, repeat = simulation_given, i = uint8_t(0)](auto name) mutable {
-                     return get_tracereader(name, i++, knob_cloudsuite, repeat, trace_version);
-                   });
-
-    // One trace per (core, context) pair, keyed [core][context] in the same
-    // row-major order the positional arguments were read (core-major,
-    // context-minor): trace 0 -> (core0, ctx0), trace 1 -> (core0, ctx1), ...
-    // The tracereader stamped each trace's instructions with asid {position,
-    // position}, so this table is the whole of the asid landing point.
-    std::vector<std::vector<std::size_t>> trace_index;
-    trace_index.reserve(std::size(gen_environment.cpu_view()));
-    std::size_t next_trace = 0;
-    for (const O3_CPU& cpu : gen_environment.cpu_view()) {
-      std::vector<std::size_t> core_row;
-      core_row.reserve(std::size(cpu.contexts));
-      for (std::size_t c = 0; c < std::size(cpu.contexts); ++c) {
-        core_row.push_back(next_trace++);
-      }
-      trace_index.push_back(std::move(core_row));
-    }
+    auto traces = get_tracereaders(trace_names, knob_cloudsuite, simulation_given, trace_version);
+    const auto trace_index = champsim::context_trace_index(gen_environment.cpu_view());
 
     std::vector<champsim::phase_info> phases{
         {champsim::phase_info{"Warmup", true, warmup_instructions, trace_index, trace_names},

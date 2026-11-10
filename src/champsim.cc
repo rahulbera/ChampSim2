@@ -38,6 +38,27 @@ std::chrono::seconds elapsed_time() { return std::chrono::duration_cast<std::chr
 
 namespace champsim
 {
+std::vector<std::vector<std::size_t>> context_trace_index(const std::vector<std::reference_wrapper<O3_CPU>>& cpus)
+{
+  // One trace per (core, context) pair, keyed [core][context] in the same
+  // row-major order the positional arguments were read (core-major,
+  // context-minor): trace 0 -> (core0, ctx0), trace 1 -> (core0, ctx1), ...
+  // The tracereader stamped each trace's instructions with asid {position,
+  // position}, so this table is the whole of the asid landing point.
+  std::vector<std::vector<std::size_t>> trace_index;
+  trace_index.reserve(std::size(cpus));
+  std::size_t next_trace = 0;
+  for (const O3_CPU& cpu : cpus) {
+    std::vector<std::size_t> core_row;
+    core_row.reserve(std::size(cpu.contexts));
+    for (std::size_t c = 0; c < std::size(cpu.contexts); ++c) {
+      core_row.push_back(next_trace++);
+    }
+    trace_index.push_back(std::move(core_row));
+  }
+  return trace_index;
+}
+
 long do_cycle(std::vector<std::reference_wrapper<operable>>& operables, const std::vector<std::reference_wrapper<O3_CPU>>& cpus,
               std::vector<tracereader>& traces, const std::vector<std::vector<std::size_t>>& trace_index, champsim::chrono::clock& global_clock)
 {

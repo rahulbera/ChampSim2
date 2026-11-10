@@ -1,6 +1,10 @@
+#include <array>
 #include <catch.hpp>
-
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <unistd.h>
 #include <vector>
 
 #include "environment.h"
@@ -13,6 +17,7 @@ namespace champsim
 long do_cycle(std::vector<std::reference_wrapper<champsim::operable>>&, const std::vector<std::reference_wrapper<O3_CPU>>&, std::vector<tracereader>&,
               const std::vector<std::vector<std::size_t>>&, chrono::clock&);
 phase_stats do_phase(const phase_info&, environment&, std::vector<tracereader>&, chrono::clock&, const simulation_knobs&);
+std::vector<std::vector<std::size_t>> context_trace_index(const std::vector<std::reference_wrapper<O3_CPU>>& cpus);
 }
 
 // Stage 4.2: do_cycle feeds each hardware context its own trace, keyed by
@@ -171,4 +176,85 @@ TEST_CASE("do_phase names every context by its core and context")
   REQUIRE(stats.roi_cpu_stats.at(0).name == "CPU 0 ctx 0");
   REQUIRE(stats.roi_cpu_stats.at(1).name == "CPU 0 ctx 1");
   REQUIRE(stats.roi_cpu_stats.at(2).name == "CPU 1");
+}
+
+TEST_CASE("do_cycle keys trace_index by each core's index and context, whatever the order of cores and traces")
+{
+  // The cores are listed core1 before core0 and the trace table's rows are not
+  // in positional order either. The key is cpu.cpu, not the vector's position,
+  // so a stride over the cpus vector (or a flattened core * 2 + c) mis-feeds
+  // both cores here.
+  O3_CPU core0{context_core(0, 2)};
+  O3_CPU core1{context_core(1, 2)};
+  std::vector<std::reference_wrapper<O3_CPU>> cpus{core1, core0};
+  std::vector<std::reference_wrapper<champsim::operable>> operables{};
+  std::vector<champsim::tracereader> traces;
+  traces.push_back(trace_with_asid(40));
+  traces.push_back(trace_with_asid(41));
+  traces.push_back(trace_with_asid(42));
+  traces.push_back(trace_with_asid(43));
+  champsim::chrono::clock clock;
+
+  // trace_index[cpu.cpu][context]: core0 reads traces 3 and 1, core1 reads 0
+  // and 2.
+  std::vector<std::vector<std::size_t>> trace_index{{3, 1}, {0, 2}};
+  champsim::do_cycle(operables, cpus, traces, trace_index, clock);
+
+  REQUIRE(!core0.contexts[0].input_queue.empty());
+  REQUIRE(!core0.contexts[1].input_queue.empty());
+  REQUIRE(!core1.contexts[0].input_queue.empty());
+  REQUIRE(!core1.contexts[1].input_queue.empty());
+  for (const auto& instr : core0.contexts[0].input_queue) {
+    CHECK(instr.asid == champsim::address_space_id{43, 43});
+  }
+  for (const auto& instr : core0.contexts[1].input_queue) {
+    CHECK(instr.asid == champsim::address_space_id{41, 41});
+  }
+  for (const auto& instr : core1.contexts[0].input_queue) {
+    CHECK(instr.asid == champsim::address_space_id{40, 40});
+  }
+  for (const auto& instr : core1.contexts[1].input_queue) {
+    CHECK(instr.asid == champsim::address_space_id{42, 42});
+  }
+}
+
+TEST_CASE("main()'s trace table numbers the traces core-major and context-minor")
+{
+  O3_CPU core0_1{context_core(0, 1)};
+  O3_CPU core0_2{context_core(0, 2)};
+  O3_CPU core1_1{context_core(1, 1)};
+  O3_CPU core1_2{context_core(1, 2)};
+
+  // {1} -> {{0}}; {2,1} -> {{0,1},{2}}; {1,2} -> {{0},{1,2}}; {2,2} ->
+  // {{0,1},{2,3}}. The counter walks cores then contexts, so a flat
+  // cpu * max_contexts + context stride would mis-number the {2,1} and {1,2}
+  // machines.
+  REQUIRE(champsim::context_trace_index({core0_1}) == std::vector<std::vector<std::size_t>>{{0}});
+  REQUIRE(champsim::context_trace_index({core0_2, core1_1}) == std::vector<std::vector<std::size_t>>{{0, 1}, {2}});
+  REQUIRE(champsim::context_trace_index({core0_1, core1_2}) == std::vector<std::vector<std::size_t>>{{0}, {1, 2}});
+  REQUIRE(champsim::context_trace_index({core0_2, core1_2}) == std::vector<std::vector<std::size_t>>{{0, 1}, {2, 3}});
+}
+
+TEST_CASE("get_tracereaders opens trace k in address space {k, k}")
+{
+  // Two-record v1 files, named by pid so parallel runs do not collide, removed
+  // afterwards. get_tracereaders numbers each reader by its command-line
+  // position, and get_tracereader stamps every record with {position, position}.
+  const std::string stem = (std::filesystem::temp_directory_path() / ("champsim-505-" + std::to_string(::getpid()) + "-")).string();
+  std::array<std::string, 3> names{stem + "0.trace", stem + "1.trace", stem + "2.trace"};
+  for (const auto& name : names) {
+    std::ofstream out{name, std::ios::binary};
+    input_instr recs[2]{};
+    out.write(reinterpret_cast<const char*>(recs), static_cast<std::streamsize>(sizeof(recs)));
+    out.close();
+  }
+
+  auto traces = get_tracereaders({names[0], names[1], names[2]}, false, false, 1);
+  for (std::size_t k = 0; k < std::size(traces); ++k) {
+    CHECK(traces.at(k)().asid == champsim::address_space_id{static_cast<uint8_t>(k), static_cast<uint8_t>(k)});
+  }
+
+  for (const auto& name : names) {
+    std::filesystem::remove(name);
+  }
 }

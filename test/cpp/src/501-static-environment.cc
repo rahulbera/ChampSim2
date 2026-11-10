@@ -541,3 +541,60 @@ TEST_CASE("Every parameter the deleted JSON configuration carried is still a kno
   INFO("no longer configurable: " << fmt::format("{}", fmt::join(unreachable, ", ")));
   REQUIRE(std::empty(unreachable));
 }
+
+TEST_CASE("ooo_cpu.cpuN.num_contexts is consulted for every core and builds that many contexts")
+{
+  // The key is read for every core even when unset, recorded as "1"; a
+  // max_contexts override on cpu0 builds that many contexts there; and a value
+  // outside [1, max_contexts] is refused naming the key -- zero and negatives
+  // by positive_value, the upper bound by configured_num_contexts.
+  {
+    champsim::runtime_config cfg{};
+    champsim::static_environment env{cfg};
+    const auto consulted = cfg.consulted();
+    for (std::size_t cpu = 0; cpu < champsim::defs::num_cpus; ++cpu) {
+      const std::string key = "ooo_cpu.cpu" + std::to_string(cpu) + ".num_contexts";
+      const auto found = std::find_if(std::begin(consulted), std::end(consulted), [&key](const auto& kv) { return kv.first == key; });
+      REQUIRE(found != std::end(consulted));
+      REQUIRE(found->second == "1");
+    }
+  }
+
+  {
+    champsim::runtime_config cfg{};
+    cfg.set("ooo_cpu.cpu0.num_contexts=2");
+    champsim::static_environment env{cfg};
+    REQUIRE(std::size(env.cpu_view().front().get().contexts) == 2);
+  }
+
+  const std::vector<std::string> refused{"0", "-1", std::to_string(champsim::defs::max_contexts + 1)};
+  for (const auto& value : refused) {
+    DYNAMIC_SECTION("num_contexts = " << value)
+    {
+      champsim::runtime_config cfg{};
+      cfg.set("ooo_cpu.cpu0.num_contexts=" + value);
+      REQUIRE_THROWS_WITH(champsim::static_environment{cfg}, Catch::Matchers::ContainsSubstring("ooo_cpu.cpu0.num_contexts"));
+    }
+  }
+}
+
+TEST_CASE("A module with one copy of its state is refused through the environment once its core runs two contexts")
+{
+  // cbp6_tagescl64 keeps its predictor in process-wide statics (global_state)
+  // and perfect_btb declares no capability (single_context): neither can serve
+  // two hardware contexts, and each is refused at configuration time, naming
+  // the key that selected it.
+  {
+    champsim::runtime_config cfg{};
+    cfg.set("ooo_cpu.cpu0.num_contexts=2");
+    cfg.set("ooo_cpu.cpu0.branch_predictor=cbp6_tagescl64");
+    REQUIRE_THROWS_WITH(champsim::static_environment{cfg}, Catch::Matchers::ContainsSubstring("ooo_cpu.cpu0.branch_predictor"));
+  }
+
+  {
+    champsim::runtime_config cfg{};
+    cfg.set("ooo_cpu.cpu0.num_contexts=2");
+    cfg.set("ooo_cpu.cpu0.btb=perfect_btb");
+    REQUIRE_THROWS_WITH(champsim::static_environment{cfg}, Catch::Matchers::ContainsSubstring("ooo_cpu.cpu0.btb"));
+  }
+}
