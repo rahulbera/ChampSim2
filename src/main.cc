@@ -166,6 +166,16 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     return 1;
   }
 
+  // Fewer traces than cores is always wrong, whatever num_contexts turns out to
+  // be, and it is checkable before construction. This is what refuses a bare
+  // `--toml <trace>` (no `--` before the trace paths) with a trace-count error
+  // instead of letting output::plan() open the trace as a statistics path.
+  if (!list_knobs && std::size(trace_names) < NUM_CPUS) {
+    fmt::print(stderr, "ERROR: expected at least {} trace(s), got {}. Use -- before trace paths when omitting the --toml filename.\n", NUM_CPUS,
+               std::size(trace_names));
+    return 1;
+  }
+
   // A named --toml output is checked here, before a trace is opened, and
   // nothing is written to it or truncated until the run has succeeded: a
   // statistics path that cannot be written should cost nothing, and a startup
@@ -282,23 +292,6 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   }
   configured_environment& gen_environment = *built_environment;
 
-  // The trace count must equal the machine's total hardware-context count: one
-  // trace per (core, context) pair, i.e. num_cpus x num_contexts. num_contexts is
-  // a runtime knob read during construction, so the exact count is only known
-  // here -- which is why the CLI option now enforces only "at least one".
-  if (!list_knobs) {
-    std::size_t expected_traces = 0;
-    for (const O3_CPU& cpu : gen_environment.cpu_view()) {
-      expected_traces += cpu.contexts.size();
-    }
-    if (std::size(trace_names) != expected_traces) {
-      fmt::print(stderr, "ERROR: expected {} trace(s), one per hardware context (num_cpus x num_contexts), got {}. Use -- before trace paths when omitting the "
-                         "--toml filename.\n",
-                 expected_traces, std::size(trace_names));
-      return 1;
-    }
-  }
-
   // Every key the machine understands has now been read, so a key nothing
   // consulted is one this binary has no use for: a typo, or a knob aimed at a
   // component or module that is not part of this machine. This is the whole
@@ -314,6 +307,23 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
         fmt::print(stderr, "ERROR: {}\n", complaint);
       }
       fmt::print(stderr, "Run --knobs with no other configuration to list every key this binary accepts.\n");
+      return 1;
+    }
+  }
+
+  // The exact trace count is the sum of every core's hardware contexts, which is
+  // only known after construction. This follows key validation deliberately: a
+  // misspelt num_contexts is reported as the unknown key it is, not as a trace
+  // count.
+  if (!list_knobs) {
+    std::size_t expected_traces = 0;
+    for (const O3_CPU& cpu : gen_environment.cpu_view()) {
+      expected_traces += cpu.contexts.size();
+    }
+    if (std::size(trace_names) != expected_traces) {
+      fmt::print(stderr, "ERROR: expected {} trace(s), one per hardware context (the sum of ooo_cpu.cpuN.num_contexts over {} core(s)), got {}.{}\n",
+                 expected_traces, std::size(gen_environment.cpu_view()), std::size(trace_names),
+                 std::size(trace_names) < expected_traces ? " Use -- before trace paths when omitting the --toml filename." : "");
       return 1;
     }
   }
