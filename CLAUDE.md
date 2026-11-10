@@ -205,7 +205,8 @@ makefile). `501-static-environment.cc` pins 142 of them against the machine's
 consulted set, so a parameter cannot quietly stop being configurable; two had, and
 that test is why they were found. The 143rd, `sim.heartbeat_frequency`, is outside
 that list because `main()` reads it rather than the environment (`src/main.cc:213`)
-— nothing pins it, so it is the one knob that can still be dropped silently.
+— nothing pins it, so it is the one knob that can still be dropped silently. The same
+file pins `ooo_cpu.<cpu>.num_contexts`, which the JSON never had, in a case of its own.
 
 The two that needed more than a scalar lookup:
 
@@ -371,6 +372,12 @@ overlap a build, a test campaign or a profile with a timing run.
 [The benchmark tooling](tools/perf/README.md) has the procedure, the manifest
 hashing rule, and the harness's own tests, which `make pytest` does not reach.
 
+`ooo_cpu.<cpu>.num_contexts` is a key no older binary consults: against a binary
+without it (`bf574428`, feat/smt before #11), the comparison gate must drop exactly
+that key from the newer side, with every core at 1 (helper in PR #11's description).
+To strip a document for an older binary, use
+`sed -E '/^(ooo_cpu\.cpu[0-9]+\.)?num_contexts = 1$/d' run.toml > old.toml`.
+
 ### Tests
 
 ```bash
@@ -528,10 +535,11 @@ buffers, ROB/LQ/SQ, `frontend_RAT`/`backend_RAT` and renaming, fetch-stall state
 `contexts` vector holds one per hardware context. What the threads share stays on the
 core: the physical register file (`shared_prf`), the one DIB decoded-instruction buffer,
 sizes, widths, latencies, the L1I/L1D buses and the branch predictor and BTB modules.
-`ctx()` is `contexts.front()`, context 0; every core in this tree builds one context, and
-a multi-context module indexes `contexts[context.value]` (see Hardware contexts below).
-Instructions come from `tracereader` (`src/tracereader.cc`), which `do_cycle`
-pushes into `cpu.ctx().input_queue`. `CACHE` (`inc/cache.h`,
+`ctx()` is `contexts.front()`, context 0; `ooo_cpu.<cpu>.num_contexts` sets a core's
+contexts, and a multi-context module indexes `contexts[context.value]` (see Hardware
+contexts below). Instructions come from `tracereader` (`src/tracereader.cc`): each
+context is fed by its own tracereader, which `do_cycle` pushes into that context's
+input queue. `CACHE` (`inc/cache.h`,
 `src/cache.cc`) is the generic cache used for every level (L1I/L1D/L2C/LLC and TLBs);
 `PageTableWalker` (`ptw.cc`) + `VirtualMemory` (`vmem.cc`) handle address translation;
 `memory_backend` owns the selected legacy controller or native adapter;
@@ -540,18 +548,27 @@ into `sim_stats` (whole run) and `roi_stats` (region of interest / sim phase) pe
 
 ### Hardware contexts (SMT)
 
-A core can run `num_contexts` hardware contexts (SMT threads), bounded at compile time by
-`champsim::defs::max_contexts` (`inc/defs.h`, 2). Capacity quotas: the builder still names
+`ooo_cpu.<cpu>.num_contexts` selects how many hardware contexts (SMT threads) a core
+runs: 1 to `champsim::defs::max_contexts` (`inc/defs.h`, 2), default 1, refused naming
+the key outside that range. Traces are assigned core-major, context-minor: with two
+cores at two contexts, traces 0-1 feed cpu0 and 2-3 cpu1. The command line checks the
+trace count twice — at least `NUM_CPUS` before output planning, then exactly the sum of
+every core's `num_contexts` after construction. Trace position i runs in address space
+{i, i}, CloudSuite included. Naming is unchanged for one context; otherwise the core
+nests its contexts (`[phase.<name>.roi.core.cpu0.ctx1]`, `[phase.<name>.trace.cpu0].ctx1`,
+`CPU 0 ctx 1`, and the heartbeat's `(N contexts)`).
+
+Capacity quotas: the builder still names
 the whole-core totals (`rob_size`, `lq_size`, `sq_size`, the four buffer sizes);
 `O3_CPU::make_quota` divides each by the context count and refuses a total that does not
 divide equally or a count outside `1..max_contexts`. Each context's buffers and queues are
 then sized by its quota. What is shared: the physical register file and its free list, the
 one DIB (keyed `(asid, ip)`, so two address spaces never share a decoded window), the
-per-cycle widths, the L1I/L1D channels, and — with N > 1 contexts — the caches'
-translation stash: at most `MSHR_SIZE` entries in total and `MSHR_SIZE / N` per address
-space, counting the tag checks in flight and same-cycle admissions. With one context the
-per-asid count equals the total and the gate is `bf574428`'s start-of-cycle size check,
-not a cap.
+per-cycle widths, the L1I/L1D channels, and — with N > 1 contexts — the L1D, L1I and
+L2C translation stash: at most `MSHR_SIZE` entries in total and `MSHR_SIZE / N` per
+address space, counting the tag checks in flight and same-cycle admissions. With one
+context the per-asid count equals the total and the gate is `bf574428`'s start-of-cycle
+size check, not a cap.
 
 Arbitration: each stage's rule is summarised above `O3_CPU::operate()` (`src/ooo_cpu.cc`)
 — fetch through decode rotate a start and are work-conserving, dispatch runs one owner per
@@ -935,7 +952,9 @@ JSON in ways that matter to a parser:
   now per-CPU tables (`…roi.cache.cpu0_l1d.cpu0`), so key names do not change
   with the core count. The document root is `[meta]`, `[config]`,
   `[config_override]` and `[phase.<name>]`; `[config]` is emitted even when it is
-  empty, so a consumer can always index it.
+  empty, so a consumer can always index it. With several contexts a core's tables
+  nest per-context sub-tables (`…roi.core.cpu0.ctx1`, `…trace.cpu0.ctx1`), one per
+  hardware context.
 - **Only the region of interest is emitted by default.** With a single ROI the
   whole-run section is a byte-identical copy of it, so `sim` is opt-in via
   `--toml-sim-stats`; `[meta].sim_stats` records which, so its absence is never
