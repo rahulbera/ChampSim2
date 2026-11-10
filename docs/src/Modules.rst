@@ -298,6 +298,25 @@ A prefetcher issues a prefetch by calling ``prefetch_line`` on the cache it is b
    :return: true if the prefetch was queued, false if the queue was full.
 
 -----------------------------------
+Prefetchers with several hardware contexts
+-----------------------------------
+
+A cache that translates its prefetches reads the address space the prefetch is
+issued in: one configured with ``virtual_prefetch`` (L1I's default) or an
+asid-keyed TLB (any cache given ``virtual_memory``). With more than one hardware
+context on a core, the origin-less ``prefetch_line(pf_addr, fill_this_level,
+prefetch_metadata)`` and the six-argument ``prefetcher_cache_operate`` cannot
+know which context's address space to translate in, so the cache refuses them at
+run time rather than walk the prefetch in another context's page table. A
+prefetcher whose ``prefetcher_cache_operate`` takes no ``asid`` and ``cpu`` is
+refused the same way at configuration time; implement the
+``prefetcher_cache_operate(..., asid, cpu)`` overload instead.
+
+One prefetcher instance -- and its training state -- serves every hardware
+context of its core. A prefetcher that needs per-context state must key it by the
+``asid`` passed to ``prefetcher_cache_operate``.
+
+-----------------------------------
 Replacement Policies
 -----------------------------------
 

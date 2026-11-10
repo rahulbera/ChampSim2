@@ -510,6 +510,16 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                            .dib_hit_buffer_size(cfg.positive_value<std::size_t>(key + ".dib.hit_buffer_size", 32)));
   }
 
+  // Each cache serves one core's contexts; the LLC serves every core, so it
+  // takes the maximum. Prefetch-origin checks key on this count (S4-04).
+  for (std::size_t cpu = 0; cpu < defs::num_cpus; ++cpu) {
+    const auto contexts = std::size(cores.at(cpu).contexts);
+    for (std::size_t level = 0; level < 6; ++level) {
+      caches.at(1 + (cpu * 6) + level).contexts_per_core = contexts;
+    }
+    caches.at(0).contexts_per_core = std::max(caches.at(0).contexts_per_core, contexts);
+  }
+
   select_modules(cfg);
 }
 
@@ -552,6 +562,7 @@ void champsim::static_environment::select_modules(const runtime_config& cfg)
       cache.install_prefetcher_module(registry::make_prefetcher(pref, &cache));
     }
     cache.pref_module_pimpl->impl_configure(cfg, key + "." + pref);
+    cache.check_prefetch_origin(key + ".prefetcher", pref);
 
     const auto repl = cfg.value<std::string>(key + ".replacement", champsim::defs::default_replacement);
     if (repl != champsim::defs::default_replacement) {

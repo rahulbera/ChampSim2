@@ -42,6 +42,7 @@ CACHE::CACHE(CACHE&& other)
       PQ_SIZE(other.PQ_SIZE), HIT_LATENCY(other.HIT_LATENCY), FILL_LATENCY(other.FILL_LATENCY), OFFSET_BITS(other.OFFSET_BITS), block(std::move(other.block)),
       MAX_TAG(other.MAX_TAG), MAX_FILL(other.MAX_FILL), prefetch_as_load(other.prefetch_as_load), match_offset_bits(other.match_offset_bits),
       virtual_prefetch(other.virtual_prefetch), perfect(other.perfect), vmem(other.vmem), pref_activate_mask(std::move(other.pref_activate_mask)),
+      contexts_per_core(other.contexts_per_core),
 
       sim_stats(std::move(other.sim_stats)), roi_stats(std::move(other.roi_stats)),
 
@@ -83,6 +84,7 @@ auto CACHE::operator=(CACHE&& other) -> CACHE&
   this->perfect = other.perfect;
   this->vmem = other.vmem;
   this->pref_activate_mask = std::move(other.pref_activate_mask);
+  this->contexts_per_core = other.contexts_per_core;
 
   this->sim_stats = std::move(other.sim_stats);
   this->roi_stats = std::move(other.roi_stats);
@@ -732,14 +734,36 @@ long CACHE::invalidate_entry(champsim::address inval_addr)
   return std::distance(begin, inv_way);
 }
 
+champsim::address_space_id CACHE::origin_less_asid(std::string_view entry_point) const
+{
+  if (prefetch_origin_required()) {
+    throw std::runtime_error{
+        fmt::format("{}: {} names no address space, and this cache translates its prefetches for a core with {} hardware contexts; issue it with "
+                    "prefetch_line(pf_addr, fill_this_level, prefetch_metadata, asid, cpu)",
+                    NAME, entry_point, contexts_per_core)};
+  }
+  return {static_cast<uint8_t>(cpu), static_cast<uint8_t>(cpu)};
+}
+
+void CACHE::check_prefetch_origin(std::string_view key, std::string_view module_name) const
+{
+  if (prefetch_origin_required() && pref_module_pimpl->impl_operates_without_origin()) {
+    throw std::runtime_error{fmt::format(
+        "runtime config: {} = {}: its prefetcher_cache_operate takes no asid and cpu, and this cache translates its prefetches for a core with {} hardware "
+        "contexts; implement prefetcher_cache_operate(..., asid, cpu)",
+        key, module_name, contexts_per_core)};
+  }
+}
+
 bool CACHE::prefetch_line(champsim::address pf_addr, bool fill_this_level, uint32_t prefetch_metadata)
 {
-  // Origin-less entry point kept for backward compatibility. It stamps the
-  // last-writer cursor, and a prefetch is translated in the address space of
-  // the core it is issued for, {cpu, cpu}, the asid the trace reader gives that
-  // core's demand instructions. Left at the {255,255} default, a virtual
-  // prefetch would be walked in a page table of its own.
-  return prefetch_line(pf_addr, fill_this_level, prefetch_metadata, {static_cast<uint8_t>(cpu), static_cast<uint8_t>(cpu)}, cpu);
+  // Origin-less entry point kept for backward compatibility. It threads the
+  // last-writer cursor, and a cache that translates its prefetches for a core
+  // with more than one hardware context refuses the missing address space here,
+  // because the prefetch would otherwise be walked in another context's page
+  // table. Left at the {255,255} default, a virtual prefetch would be walked in
+  // a page table of its own.
+  return prefetch_line(pf_addr, fill_this_level, prefetch_metadata, origin_less_asid("prefetch_line(pf_addr, fill_this_level, prefetch_metadata)"), cpu);
 }
 
 bool CACHE::prefetch_line(champsim::address pf_addr, bool fill_this_level, uint32_t prefetch_metadata, champsim::address_space_id asid, uint32_t pf_cpu)
@@ -970,9 +994,11 @@ uint32_t CACHE::impl_prefetcher_cache_operate(champsim::address addr, champsim::
                                               uint32_t metadata_in) const
 {
   // Origin-less overload kept for direct callers (e.g. the va_ampm_lite
-  // benchmark): thread the last-writer cursor and its core's address space
-  // {cpu, cpu}, mirroring the origin-less prefetch_line entry point.
-  return impl_prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata_in, {static_cast<uint8_t>(cpu), static_cast<uint8_t>(cpu)}, cpu);
+  // benchmark): thread the last-writer cursor and, like the origin-less
+  // prefetch_line entry point, refuse a cache that translates its prefetches for
+  // a core with more than one hardware context.
+  return impl_prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata_in,
+                                       origin_less_asid("impl_prefetcher_cache_operate without asid and cpu"), cpu);
 }
 
 uint32_t CACHE::impl_prefetcher_cache_operate(champsim::address addr, champsim::address ip, bool cache_hit, bool useful_prefetch, access_type type,
