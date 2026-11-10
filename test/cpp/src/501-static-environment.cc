@@ -598,3 +598,44 @@ TEST_CASE("A module with one copy of its state is refused through the environmen
     REQUIRE_THROWS_WITH(champsim::static_environment{cfg}, Catch::Matchers::ContainsSubstring("ooo_cpu.cpu0.btb"));
   }
 }
+
+TEST_CASE("The caches that translate share their stash among the contexts of their core")
+{
+  // The L1D, L1I and L2C translation stashes are divided equally among a core's
+  // hardware contexts, so only those three caches carry the core's context
+  // count; the TLBs, STLB and LLC stay at one. A stash size that cannot divide
+  // the count is refused, naming the key.
+  {
+    champsim::runtime_config cfg{};
+    champsim::static_environment env{cfg};
+    for (const CACHE& cache : env.cache_view()) {
+      INFO("one context: " << cache.NAME);
+      REQUIRE(cache.NUM_CONTEXTS == 1);
+    }
+  }
+
+  {
+    champsim::runtime_config cfg{};
+    cfg.set("ooo_cpu.cpu0.num_contexts=2");
+    champsim::static_environment env{cfg};
+    for (const CACHE& cache : env.cache_view()) {
+      INFO("two contexts: " << cache.NAME);
+      const bool translates = cache.NAME == "cpu0_L1D" || cache.NAME == "cpu0_L1I" || cache.NAME == "cpu0_L2C";
+      REQUIRE(cache.NUM_CONTEXTS == (translates ? 2 : 1));
+    }
+  }
+
+  {
+    champsim::runtime_config cfg{};
+    cfg.set("cache.cpu0_l1d.mshr_size=15");
+    REQUIRE_NOTHROW(champsim::static_environment{cfg});
+  }
+
+  {
+    champsim::runtime_config cfg{};
+    cfg.set("ooo_cpu.cpu0.num_contexts=2");
+    cfg.set("cache.cpu0_l1d.mshr_size=15");
+    REQUIRE_THROWS_WITH(champsim::static_environment{cfg},
+                        Catch::Matchers::ContainsSubstring("runtime config: cache.cpu0_l1d.mshr_size = 15 cannot be divided equally"));
+  }
+}

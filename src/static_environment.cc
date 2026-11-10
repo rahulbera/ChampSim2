@@ -177,8 +177,8 @@ std::size_t configured_register_file_size(const champsim::runtime_config& cfg, c
 // [1, champsim::defs::max_contexts]. max_contexts itself stays compile-time: the
 // single-context `if constexpr (champsim::defs::max_contexts == 1)` fast paths in
 // ooo_cpu.cc key on it, so it must remain a constant. positive_value rejects zero
-// and negatives; the upper bound is enforced here (and re-checked, redundantly but
-// harmlessly, by select_modules once per core).
+// and negatives; the upper bound is enforced here. Both errors name the key, the
+// walkers read it first, and O3_CPU and select_modules re-check without the key.
 std::size_t configured_num_contexts(const champsim::runtime_config& cfg, const std::string& key)
 {
   const auto value = cfg.positive_value<std::size_t>(key, 1);
@@ -332,6 +332,21 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
     const auto page_bits = champsim::lg2(PAGE_SIZE);
     const auto block_bits = champsim::lg2(BLOCK_SIZE);
 
+    // The L1D, L1I and L2C translation stashes are shared equally among the
+    // core's hardware contexts: each context may hold mshr_size / contexts of
+    // the stash's entries, so the size must divide the context count. stash_mshrs
+    // enforces that and names the offending key.
+    const auto contexts = configured_num_contexts(cfg, core_key(cpu) + ".num_contexts");
+    const auto stash_mshrs = [&cfg, contexts](const std::string& key, uint32_t fallback) {
+      const auto mshrs = cfg.value<uint32_t>(key + ".mshr_size", fallback);
+      if (mshrs % contexts != 0) {
+        throw std::runtime_error{"runtime config: " + key + ".mshr_size = " + std::to_string(mshrs) + " cannot be divided equally between "
+                                 + std::to_string(contexts) + " hardware contexts; each context may hold mshr_size / " + std::to_string(contexts)
+                                 + " translation-stash entries, so the size must be a multiple of the context count"};
+      }
+      return mshrs;
+    };
+
     caches.emplace_back(champsim::cache_builder{champsim::defaults::default_dtlb}
                             .name(cache_name(cpu, "DTLB"))
                             .upper_levels({&channels.at(chan(cpu, l1d_to_dtlb))})
@@ -390,7 +405,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .sets(cfg.positive_value<uint32_t>(l1d + ".sets", 64))
                             .ways(cfg.positive_value<uint32_t>(l1d + ".ways", 12))
                             .pq_size(cfg.value<uint32_t>(l1d + ".pq_size", 8))
-                            .mshr_size(cfg.value<uint32_t>(l1d + ".mshr_size", 16))
+                            .mshr_size(stash_mshrs(l1d, 16))
+                            .num_contexts(contexts)
                             .latency(cfg.value<uint64_t>(l1d + ".latency", 5))
                             .tag_bandwidth(configured_bandwidth(cfg, l1d + ".max_tag_check", 2))
                             .fill_bandwidth(configured_bandwidth(cfg, l1d + ".max_fill", 2))
@@ -409,7 +425,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .sets(cfg.positive_value<uint32_t>(l1i + ".sets", 64))
                             .ways(cfg.positive_value<uint32_t>(l1i + ".ways", 8))
                             .pq_size(cfg.value<uint32_t>(l1i + ".pq_size", 32))
-                            .mshr_size(cfg.value<uint32_t>(l1i + ".mshr_size", 8))
+                            .mshr_size(stash_mshrs(l1i, 8))
+                            .num_contexts(contexts)
                             .latency(cfg.value<uint64_t>(l1i + ".latency", 4))
                             .tag_bandwidth(configured_bandwidth(cfg, l1i + ".max_tag_check", 2))
                             .fill_bandwidth(configured_bandwidth(cfg, l1i + ".max_fill", 2))
@@ -428,7 +445,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .sets(cfg.positive_value<uint32_t>(l2c + ".sets", 1024))
                             .ways(cfg.positive_value<uint32_t>(l2c + ".ways", 8))
                             .pq_size(cfg.value<uint32_t>(l2c + ".pq_size", 16))
-                            .mshr_size(cfg.value<uint32_t>(l2c + ".mshr_size", 32))
+                            .mshr_size(stash_mshrs(l2c, 32))
+                            .num_contexts(contexts)
                             .latency(cfg.value<uint64_t>(l2c + ".latency", 10))
                             .tag_bandwidth(configured_bandwidth(cfg, l2c + ".max_tag_check", 1))
                             .fill_bandwidth(configured_bandwidth(cfg, l2c + ".max_fill", 1))
