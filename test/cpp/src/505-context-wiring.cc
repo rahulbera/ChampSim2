@@ -18,7 +18,7 @@ long do_cycle(std::vector<std::reference_wrapper<champsim::operable>>&, const st
               const std::vector<std::vector<std::size_t>>&, chrono::clock&);
 phase_stats do_phase(const phase_info&, environment&, std::vector<tracereader>&, chrono::clock&, const simulation_knobs&);
 std::vector<std::vector<std::size_t>> context_trace_index(const std::vector<std::reference_wrapper<O3_CPU>>& cpus);
-}
+} // namespace champsim
 
 // do_cycle feeds each hardware context its own trace, keyed by
 // trace_index[core][context] (structural, not a flattened stride). The
@@ -27,7 +27,12 @@ std::vector<std::vector<std::size_t>> context_trace_index(const std::vector<std:
 // Before Stage 4 context 1 was never fed; these tests pin that it now is.
 namespace
 {
-champsim::tracereader trace_with_asid(uint8_t asid) { return champsim::tracereader{[asid] { return ooo_model_instr{asid, input_instr{}}; }}; }
+champsim::tracereader trace_with_asid(uint8_t asid)
+{
+  return champsim::tracereader{[asid] {
+    return ooo_model_instr{asid, input_instr{}};
+  }};
+}
 
 // A core with `contexts` hardware contexts. Each partitioned capacity is a
 // multiple of the context count, as a core with several contexts requires.

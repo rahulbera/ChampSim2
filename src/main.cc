@@ -385,9 +385,8 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     auto traces = get_tracereaders(trace_names, knob_cloudsuite, simulation_given, trace_version);
     const auto trace_index = champsim::context_trace_index(gen_environment.cpu_view());
 
-    std::vector<champsim::phase_info> phases{
-        {champsim::phase_info{"Warmup", true, warmup_instructions, trace_index, trace_names},
-         champsim::phase_info{"Simulation", false, simulation_instructions, trace_index, trace_names}}};
+    std::vector<champsim::phase_info> phases{{champsim::phase_info{"Warmup", true, warmup_instructions, trace_index, trace_names},
+                                              champsim::phase_info{"Simulation", false, simulation_instructions, trace_index, trace_names}}};
 
     fmt::print(
         "\n*** ChampSim Multicore Out-of-Order Simulator ***\nWarmup Instructions: {}\nSimulation Instructions: {}\nNumber of CPUs: {}\nPage size: {}\n\n",

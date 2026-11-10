@@ -9,7 +9,6 @@
 #include "../../../prefetcher/no/no.h"
 #include "../../../prefetcher/spp_dev/spp_dev.h"
 #include "../../../prefetcher/va_ampm_lite/va_ampm_lite.h"
-
 #include "cache.h"
 #include "defaults.hpp"
 #include "runtime_config.h"
@@ -57,8 +56,8 @@ TEST_CASE("check_prefetch_origin refuses an origin-less prefetcher on a translat
   CACHE virtual_two{champsim::cache_builder{champsim::defaults::default_l1i}.name("cpu0_L1I").virtual_prefetch(true).prefetcher<origin_less_prefetcher>()};
   virtual_two.contexts_per_core = 2;
   REQUIRE_THROWS_WITH(virtual_two.check_prefetch_origin("cache.cpu0_l1i.prefetcher", "origin_less_prefetcher"),
-                      Catch::Matchers::StartsWith("runtime config: cache.cpu0_l1i.prefetcher = origin_less_prefetcher: ") &&
-                          Catch::Matchers::ContainsSubstring("2 hardware contexts"));
+                      Catch::Matchers::StartsWith("runtime config: cache.cpu0_l1i.prefetcher = origin_less_prefetcher: ")
+                          && Catch::Matchers::ContainsSubstring("2 hardware contexts"));
 
   // One context: the origin-less prefetcher is unambiguous, so it passes.
   CACHE virtual_one{champsim::cache_builder{champsim::defaults::default_l1i}.name("cpu0_L1I").virtual_prefetch(true).prefetcher<origin_less_prefetcher>()};
