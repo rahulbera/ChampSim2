@@ -35,7 +35,7 @@ PageTableWalker::PageTableWalker(champsim::ptw_builder b)
       MSHR_SIZE(b.m_mshr_size.value_or(std::lround(b.m_mshr_factor * std::floor(std::size(upper_levels))))),
       MAX_READ(b.m_max_tag_check.value_or(champsim::bandwidth::maximum_type{b.scaled_by_ul_size(b.m_bandwidth_factor)})),
       MAX_FILL(b.m_max_fill.value_or(champsim::bandwidth::maximum_type{b.scaled_by_ul_size(b.m_bandwidth_factor)})),
-      HIT_LATENCY(b.m_clock_period * b.m_latency), vmem(b.m_vmem),
+      HIT_LATENCY(b.m_clock_period * b.m_latency), vmem(b.m_vmem), CR3_asid(b.m_asid),
       CR3_addr(b.m_fixed_latency ? champsim::address{} : b.m_vmem->get_pte_pa(b.m_asid, champsim::page_number{}, b.m_vmem->pt_levels).first)
 {
   if (fixed_latency.has_value()) {
@@ -50,8 +50,16 @@ PageTableWalker::PageTableWalker(champsim::ptw_builder b)
   std::sort(std::begin(local_pscl_dims), std::end(local_pscl_dims), std::greater{});
 
   for (auto [level, sets, ways] : local_pscl_dims) {
-    pscl.emplace_back(sets, ways, pscl_indexer{b.m_vmem->shamt(level)}, pscl_indexer{b.m_vmem->shamt(level)});
+    pscl.emplace_back(sets, ways, pscl_indexer{b.m_vmem->shamt(level)}, pscl_tagger{b.m_vmem->shamt(level)});
   }
+}
+
+champsim::address PageTableWalker::root_of(champsim::address_space_id asid) const
+{
+  if (asid == CR3_asid) {
+    return CR3_addr;
+  }
+  return vmem->get_pte_pa(asid, champsim::page_number{}, vmem->pt_levels).first; // allocated on that space's first walk
 }
 
 PageTableWalker::mshr_type::mshr_type(const request_type& req, std::size_t level)
@@ -64,7 +72,8 @@ PageTableWalker::mshr_type::mshr_type(const request_type& req, std::size_t level
 
 auto PageTableWalker::handle_read(const request_type& handle_pkt, channel_type* ul) -> std::optional<mshr_type>
 {
-  pscl_entry walk_init = {handle_pkt.v_address, CR3_addr, std::size(pscl)};
+  const champsim::address_space_id asid{handle_pkt.asid[0], handle_pkt.asid[1]};
+  pscl_entry walk_init = {handle_pkt.v_address, root_of(asid), std::size(pscl), asid};
   std::vector<std::optional<pscl_entry>> pscl_hits;
   std::transform(std::begin(pscl), std::end(pscl), std::back_inserter(pscl_hits), [walk_init](auto& x) { return x.check_hit(walk_init); });
   walk_init =
@@ -99,7 +108,7 @@ auto PageTableWalker::handle_fill(const mshr_type& fill_mshr) -> std::optional<m
   }
 
   const auto pscl_idx = std::size(pscl) - fill_mshr.translation_level;
-  pscl.at(pscl_idx).fill({fill_mshr.v_address, *fill_mshr.data, fill_mshr.translation_level});
+  pscl.at(pscl_idx).fill({fill_mshr.v_address, *fill_mshr.data, fill_mshr.translation_level, {fill_mshr.asid[0], fill_mshr.asid[1]}});
 
   mshr_type fwd_mshr = fill_mshr;
   fwd_mshr.address = *fill_mshr.data;

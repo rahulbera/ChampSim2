@@ -268,16 +268,20 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
            memory->size(), randomization(cfg))
 {
   ptws.reserve(defs::num_cpus);
+  std::size_t first_slot = 0;
   for (std::size_t cpu = 0; cpu < defs::num_cpus; ++cpu) {
     const auto key = ptw_key(cpu);
+    const auto slot = static_cast<uint8_t>(first_slot);
+    first_slot += configured_num_contexts(cfg, core_key(cpu) + ".num_contexts");
     ptws.emplace_back(champsim::ptw_builder{champsim::defaults::default_ptw}
                           .name(ptw_name(cpu))
                           .upper_levels({&channels.at(chan(cpu, stlb_to_ptw))})
                           .virtual_memory(&vmem)
                           .cpu(static_cast<uint32_t>(cpu))
-                          // The asid this core's trace stamps on its requests (ooo_model_instr), so
-                          // each core walks from its own page-table root, as master keys it by cpu.
-                          .asid({static_cast<uint8_t>(cpu), static_cast<uint8_t>(cpu)})
+                          // The asid of this core's first context: contexts are stamped with
+                          // consecutive trace slots, so the walker is built in the address space
+                          // its context 0 runs in.
+                          .asid({slot, slot})
                           .lower_level(&channels.at(chan(cpu, ptw_to_l1d)))
                           .mshr_size(cfg.value<uint32_t>(key + ".mshr_size", 5))
                           .tag_bandwidth(configured_bandwidth(cfg, key + ".max_read", 2))
