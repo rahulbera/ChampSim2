@@ -5,6 +5,7 @@
 #include <bitset>
 #include <deque>
 
+#include "defs.h"
 #include "modules.h"
 #include "msl/fwcounter.h"
 
@@ -34,6 +35,7 @@ struct perceptron : champsim::modules::branch_predictor {
    */
   struct perceptron_state {
     champsim::address ip{};
+    champsim::context_index context{};
     champsim::address_space_id asid{};
     bool prediction = false;                     // prediction: 1 for taken, 0 for not taken
     long long int output = 0;                    // perceptron output
@@ -42,14 +44,21 @@ struct perceptron : champsim::modules::branch_predictor {
 
   std::array<internal_perceptron<PERCEPTRON_HISTORY, PERCEPTRON_BITS>, NUM_PERCEPTRONS> perceptrons; // table of perceptrons
   std::deque<perceptron_state> perceptron_state_buf;                                                 // state for updating perceptron predictor
-  std::bitset<PERCEPTRON_HISTORY> spec_global_history;                                               // speculative global history - updated by predictor
-  std::bitset<PERCEPTRON_HISTORY> global_history;                                                    // real global history - updated when the predictor is
-                                                                                                     // updated
+  std::array<std::bitset<PERCEPTRON_HISTORY>, champsim::defs::max_contexts> spec_global_history{};   // speculative global history - updated by predictor
+  std::array<std::bitset<PERCEPTRON_HISTORY>, champsim::defs::max_contexts> global_history{};        // real global history - updated when the
+                                                                                                     // predictor is updated
 
   using branch_predictor::branch_predictor;
 
-  bool predict_branch(champsim::address ip, champsim::address predicted_target, bool always_taken, uint8_t branch_type, champsim::address_space_id asid);
-  void last_branch_result(champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type, champsim::address_space_id asid);
+  // SMT: the perceptron table is one shared per-core instance whose index folds
+  // the asid, while the state buffer matches on (ip, context, asid) and the two
+  // global history registers are kept per context.
+  static constexpr champsim::modules::smt_capability capability = champsim::modules::smt_capability::shared;
+
+  bool predict_branch(champsim::address ip, champsim::address predicted_target, bool always_taken, uint8_t branch_type, champsim::context_index context,
+                      champsim::address_space_id asid);
+  void last_branch_result(champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type, champsim::context_index context,
+                          champsim::address_space_id asid);
 };
 
 template <std::size_t HISTLEN, std::size_t BITS>

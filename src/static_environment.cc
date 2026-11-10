@@ -349,6 +349,20 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .perfect(cfg.value<bool>(itlb + ".perfect", false))
                             .virtual_memory(&vmem));
 
+    // Explicit L1D admission. L1D has exactly two upper channels, each
+    // with a declared source:
+    //   * ptw_to_l1d  -- the PTW's page-walk reads. The PTW is one component per
+    //     physical core, not per context, so this is a single channel.
+    //   * core_to_l1d -- the core's data loads (RQ) and stores (WQ). Every hardware
+    //     context SHARES this one channel; there is deliberately no per-context
+    //     core_to_l1d, because the two uppers share the tag-check bandwidth the
+    //     translation stash leaves, capping the core channel at one load and one
+    //     store per cycle regardless.
+    // With max_tag_check == 2 (below), CACHE::operate splits the tag bandwidth the
+    // stash leaves across the two uppers, so the core's data channel initiates at
+    // most one load and one store per cycle. That is an explicit admission policy,
+    // decoupled from lq_width (which only bounds how many requests the core pushes
+    // into this channel) and pinned by test/cpp/src/418-l1d-admission.cc.
     caches.emplace_back(champsim::cache_builder{champsim::defaults::default_l1d}
                             .name(cache_name(cpu, "L1D"))
                             .upper_levels({&channels.at(chan(cpu, ptw_to_l1d)), &channels.at(chan(cpu, core_to_l1d))})
@@ -498,6 +512,16 @@ void champsim::static_environment::select_modules(const runtime_config& cfg)
       core.install_btb_module(registry::make_btb(btb, &core));
     }
     core.btb_module_pimpl->impl_configure(cfg, key + "." + btb);
+
+    // Refuse an SMT-unsafe module at configuration time, not at
+    // initialize time (which is after --knobs and the unconsulted-key check).
+    const auto num_contexts = core.contexts.size();
+    if (num_contexts > champsim::defs::max_contexts) {
+      throw std::runtime_error{"configuration requests " + std::to_string(num_contexts) + " hardware contexts on " + key
+                               + " but this binary is compiled for at most " + std::to_string(champsim::defs::max_contexts)};
+    }
+    champsim::modules::check_smt_capability(core.branch_module_pimpl->capability(), cpu, num_contexts, key + ".branch_predictor", bp);
+    champsim::modules::check_smt_capability(core.btb_module_pimpl->capability(), cpu, num_contexts, key + ".btb", btb);
   }
 
   for (auto& cache : caches) {

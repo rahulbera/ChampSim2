@@ -62,9 +62,9 @@ What is not runtime-configurable
 ================================
 
 The machine's shape -- which components exist and how they are wired -- is
-C++ in ``src/static_environment.cc``. ``NUM_CPUS``, ``BLOCK_SIZE`` and
-``PAGE_SIZE`` are in ``inc/defs.h``. Changing either is a code edit and a
-rebuild; multi-core is a separate binary by design.
+C++ in ``src/static_environment.cc``. ``NUM_CPUS``, ``max_contexts``,
+``BLOCK_SIZE`` and ``PAGE_SIZE`` are in ``inc/defs.h``. Changing either is a
+code edit and a rebuild; multi-core is a separate binary by design.
 
 Provenance
 ==========

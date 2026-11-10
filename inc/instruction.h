@@ -97,6 +97,13 @@ struct program_ordered {
 
 struct ooo_model_instr : champsim::program_ordered<ooo_model_instr> {
   champsim::address ip{};
+  // Core-wide age, assigned exactly once at dispatch from a monotonic core
+  // counter. It is the key that orders two instructions across hardware
+  // contexts: instr_id is process-unique (a single static trace-read counter,
+  // never restarted), so it names a fetch for the L1I return and stays the
+  // program-order key within one context, but it does not order the dispatch
+  // time the shared scheduler ages by.
+  uint64_t dispatch_sequence = 0;
   champsim::chrono::clock::time_point ready_time{};
 
   bool is_branch = false;

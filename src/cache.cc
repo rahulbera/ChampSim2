@@ -38,10 +38,10 @@ CACHE::CACHE(CACHE&& other)
 
       upper_levels(std::move(other.upper_levels)), lower_level(std::move(other.lower_level)), lower_translate(std::move(other.lower_translate)),
 
-      cpu(other.cpu), NAME(std::move(other.NAME)), NUM_SET(other.NUM_SET), NUM_WAY(other.NUM_WAY), MSHR_SIZE(other.MSHR_SIZE), PQ_SIZE(other.PQ_SIZE),
-      HIT_LATENCY(other.HIT_LATENCY), FILL_LATENCY(other.FILL_LATENCY), OFFSET_BITS(other.OFFSET_BITS), block(std::move(other.block)), MAX_TAG(other.MAX_TAG),
-      MAX_FILL(other.MAX_FILL), prefetch_as_load(other.prefetch_as_load), match_offset_bits(other.match_offset_bits), virtual_prefetch(other.virtual_prefetch),
-      perfect(other.perfect), vmem(other.vmem), pref_activate_mask(std::move(other.pref_activate_mask)),
+      cpu(other.cpu), NAME(std::move(other.NAME)), NUM_SET(other.NUM_SET), NUM_WAY(other.NUM_WAY), MSHR_SIZE(other.MSHR_SIZE), NUM_CONTEXTS(other.NUM_CONTEXTS),
+      PQ_SIZE(other.PQ_SIZE), HIT_LATENCY(other.HIT_LATENCY), FILL_LATENCY(other.FILL_LATENCY), OFFSET_BITS(other.OFFSET_BITS), block(std::move(other.block)),
+      MAX_TAG(other.MAX_TAG), MAX_FILL(other.MAX_FILL), prefetch_as_load(other.prefetch_as_load), match_offset_bits(other.match_offset_bits),
+      virtual_prefetch(other.virtual_prefetch), perfect(other.perfect), vmem(other.vmem), pref_activate_mask(std::move(other.pref_activate_mask)),
 
       sim_stats(std::move(other.sim_stats)), roi_stats(std::move(other.roi_stats)),
 
@@ -67,6 +67,7 @@ auto CACHE::operator=(CACHE&& other) -> CACHE&
   this->NUM_WAY = other.NUM_WAY;
   ;
   this->MSHR_SIZE = other.MSHR_SIZE;
+  this->NUM_CONTEXTS = other.NUM_CONTEXTS;
   ;
   this->PQ_SIZE = other.PQ_SIZE;
   this->HIT_LATENCY = other.HIT_LATENCY;
@@ -173,6 +174,21 @@ auto CACHE::matches_address(champsim::address addr) const
 }
 
 template <typename T>
+auto CACHE::matches_tag(const T& pkt) const
+{
+  // A TLB caches virtual memory (vmem != nullptr): it must qualify the tag match
+  // by address space, because the same virtual page in two address spaces resolves
+  // independently. A physical cache (L1I/L1D/L2C/LLC) matches on the physical
+  // address alone, so its path short-circuits before touching the asid and stays
+  // byte-identical to matches_address. `keyed` is captured once so the physical
+  // path does not read the asid at all.
+  const bool keyed = (vmem != nullptr);
+  return [match = pkt.address.slice_upper(OFFSET_BITS), shamt = OFFSET_BITS, asid_0 = pkt.asid[0], asid_1 = pkt.asid[1], keyed](const auto& entry) {
+    return entry.address.slice_upper(shamt) == match && (!keyed || (entry.asid[0] == asid_0 && entry.asid[1] == asid_1));
+  };
+}
+
+template <typename T>
 champsim::address CACHE::module_address(const T& element) const
 {
   auto address = virtual_prefetch ? element.v_address : element.address;
@@ -242,6 +258,10 @@ bool CACHE::handle_fill(const fill_type& fill)
     }
 
     *way = fill_block(fill, metadata_thru);
+    if (vmem != nullptr) {
+      way->asid[0] = fill.asid[0];
+      way->asid[1] = fill.asid[1];
+    }
   }
 
   // COLLECT STATS
@@ -313,7 +333,7 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 
   // access cache
   auto [set_begin, set_end] = get_set_span(handle_pkt.address);
-  auto way = std::find_if(set_begin, set_end, [matcher = matches_address(handle_pkt.address)](const auto& x) { return x.valid && matcher(x); });
+  auto way = std::find_if(set_begin, set_end, [matcher = matches_tag(handle_pkt)](const auto& x) { return x.valid && matcher(x); });
   const auto hit = (way != set_end);
   const auto useful_prefetch = (hit && way->prefetch && !handle_pkt.prefetch_from_this);
 
@@ -325,7 +345,8 @@ bool CACHE::try_hit(const tag_lookup_type& handle_pkt)
 
   auto metadata_thru = handle_pkt.pf_metadata;
   if (should_activate_prefetcher(handle_pkt)) {
-    metadata_thru = impl_prefetcher_cache_operate(module_address(handle_pkt), handle_pkt.ip, hit, useful_prefetch, handle_pkt.type, metadata_thru);
+    metadata_thru = impl_prefetcher_cache_operate(module_address(handle_pkt), handle_pkt.ip, hit, useful_prefetch, handle_pkt.type, metadata_thru,
+                                                  {handle_pkt.asid[0], handle_pkt.asid[1]}, handle_pkt.cpu);
   }
 
   // update replacement policy
@@ -395,12 +416,12 @@ bool CACHE::handle_miss(const tag_lookup_type& handle_pkt)
   auto mshr_pkt = mshr_and_forward_packet(handle_pkt);
 
   // check mshr
-  auto fill_entry = std::find_if(std::begin(MSHR), std::end(MSHR), matches_address(handle_pkt.address));
+  auto fill_entry = std::find_if(std::begin(MSHR), std::end(MSHR), matches_tag(handle_pkt));
   bool mshr_full = (MSHR.size() == MSHR_SIZE);
 
   // check inflight fills
   if (fill_entry == MSHR.end()) {
-    fill_entry = std::find_if(inflight_fills.begin(), inflight_fills.end(), matches_address(handle_pkt.address));
+    fill_entry = std::find_if(inflight_fills.begin(), inflight_fills.end(), matches_tag(handle_pkt));
   }
 
   if (fill_entry != inflight_fills.end()) // miss or fill already inflight
@@ -519,8 +540,56 @@ long CACHE::operate()
                                                                     - (long)std::size(inflight_tag_check)};
   champsim::bandwidth initiate_tag_bw{std::clamp(bandwidth_from_tag_checks, champsim::bandwidth::maximum_type{0}, MAX_TAG)};
   CHAMPSIM_ASSERT(initiate_tag_bw.amount_remaining() >= 0);
-  auto can_translate = [avail = (std::size(translation_stash) < static_cast<std::size_t>(MSHR_SIZE))](const auto& entry) {
-    return avail || entry.is_translated;
+  // Partition the translation stash by address space. An untranslated
+  // entry is admitted only while the stash as a whole is under MSHR_SIZE and, with
+  // more than one hardware context, while the entry's own address space is under
+  // its equal share (MSHR_SIZE / NUM_CONTEXTS). The counts are taken before the
+  // drain and include the stash plus the still-untranslated inflight_tag_check
+  // entries, any of which may return to the stash; a refused head still blocks
+  // everything behind it because the gate stops the scan in place. Under a single
+  // context the per-asid count equals the total, so this gate is the former
+  // start-of-cycle size check.
+  const bool stash_has_room = std::size(translation_stash) < static_cast<std::size_t>(MSHR_SIZE);
+  std::size_t admitted_total = std::size(translation_stash);
+  std::vector<std::pair<std::pair<uint8_t, uint8_t>, std::size_t>> admitted_by_asid{};
+  if (NUM_CONTEXTS > 1) {
+    auto count_one = [&admitted_by_asid](const tag_lookup_type& s) {
+      const auto key = std::pair{s.asid[0], s.asid[1]};
+      auto it = std::find_if(std::begin(admitted_by_asid), std::end(admitted_by_asid), [&key](const auto& p) { return p.first == key; });
+      if (it == std::end(admitted_by_asid))
+        admitted_by_asid.emplace_back(key, 1);
+      else
+        ++it->second;
+    };
+    std::for_each(std::begin(translation_stash), std::end(translation_stash), count_one);
+    std::for_each(std::begin(inflight_tag_check), std::end(inflight_tag_check), [&](const tag_lookup_type& s) {
+      if (!s.is_translated) {
+        ++admitted_total;
+        count_one(s);
+      }
+    });
+  }
+  const auto num_contexts = NUM_CONTEXTS;
+  const auto mshr_capacity = static_cast<std::size_t>(MSHR_SIZE);
+  const auto per_context_share = mshr_capacity / num_contexts;
+  auto can_translate = [&admitted_total, &admitted_by_asid, stash_has_room, num_contexts, mshr_capacity, per_context_share](const auto& entry) {
+    if (entry.is_translated)
+      return true;
+    if (num_contexts == 1)
+      return stash_has_room;
+    if (admitted_total >= mshr_capacity)
+      return false;
+    const auto key = std::pair{entry.asid[0], entry.asid[1]};
+    auto it = std::find_if(std::begin(admitted_by_asid), std::end(admitted_by_asid), [&key](const auto& p) { return p.first == key; });
+    const std::size_t this_asid = (it == std::end(admitted_by_asid)) ? 0 : it->second;
+    if (this_asid >= per_context_share)
+      return false;
+    ++admitted_total;
+    if (it == std::end(admitted_by_asid))
+      admitted_by_asid.emplace_back(key, 1);
+    else
+      ++it->second;
+    return true;
   };
   long stash_bandwidth_consumed = 0;
   if (!translation_stash.empty() && initiate_tag_bw.amount_remaining() > 0) {
@@ -534,7 +603,13 @@ long CACHE::operate()
     std::rotate(upper_levels.begin(), upper_levels.begin() + 1, upper_levels.end());
   }
 
-  // upper levels get an equal portion of the remaining bandwidth
+  // Explicit admission policy. The translation stash initiates first
+  // and consumes its share of the tag-check bandwidth; the uppers then share the
+  // bandwidth the stash leaves, split across channels with a floor of one, and
+  // each queue of an upper (WQ, then RQ, then PQ) may initiate up to that
+  // per-upper amount, bounded by what is left. For L1D (two uppers,
+  // max_tag_check == 2) this yields the explicit "one load + one store per cycle"
+  // core admission, decoupled from lq_width.
   champsim::bandwidth::maximum_type per_upper_bandwidth =
       std::size(upper_levels) >= 1
           ? (champsim::bandwidth::maximum_type)std::max((size_t)initiate_tag_bw.amount_remaining() / std::size(upper_levels), size_t{1})
@@ -659,6 +734,16 @@ long CACHE::invalidate_entry(champsim::address inval_addr)
 
 bool CACHE::prefetch_line(champsim::address pf_addr, bool fill_this_level, uint32_t prefetch_metadata)
 {
+  // Origin-less entry point kept for backward compatibility. It stamps the
+  // last-writer cursor, and a prefetch is translated in the address space of
+  // the core it is issued for, {cpu, cpu}, the asid the trace reader gives that
+  // core's demand instructions. Left at the {255,255} default, a virtual
+  // prefetch would be walked in a page table of its own.
+  return prefetch_line(pf_addr, fill_this_level, prefetch_metadata, {static_cast<uint8_t>(cpu), static_cast<uint8_t>(cpu)}, cpu);
+}
+
+bool CACHE::prefetch_line(champsim::address pf_addr, bool fill_this_level, uint32_t prefetch_metadata, champsim::address_space_id asid, uint32_t pf_cpu)
+{
   ++sim_stats.pf_requested;
 
   if (std::size(internal_PQ) >= PQ_SIZE) {
@@ -668,13 +753,9 @@ bool CACHE::prefetch_line(champsim::address pf_addr, bool fill_this_level, uint3
   request_type pf_packet;
   pf_packet.type = access_type::PREFETCH;
   pf_packet.pf_metadata = prefetch_metadata;
-  pf_packet.cpu = cpu;
-  // A prefetch is translated in the address space of the core it is issued for,
-  // {cpu, cpu}, the asid the trace reader gives that core's demand instructions.
-  // Left at the {255,255} default, a virtual prefetch would be walked in a page
-  // table of its own.
-  pf_packet.asid[0] = static_cast<uint8_t>(cpu);
-  pf_packet.asid[1] = static_cast<uint8_t>(cpu);
+  pf_packet.cpu = pf_cpu;
+  pf_packet.asid[0] = asid[0];
+  pf_packet.asid[1] = asid[1];
   pf_packet.address = pf_addr;
   pf_packet.v_address = virtual_prefetch ? pf_addr : champsim::address{};
   pf_packet.is_translated = !virtual_prefetch;
@@ -700,7 +781,7 @@ bool CACHE::prefetch_line(uint64_t /*deprecated*/, uint64_t /*deprecated*/, uint
 void CACHE::finish_packet(const response_type& packet)
 {
   // check MSHR information
-  auto mshr_entry = std::find_if(std::begin(MSHR), std::end(MSHR), matches_address(packet.address));
+  auto mshr_entry = std::find_if(std::begin(MSHR), std::end(MSHR), matches_tag(packet));
 
   // sanity check
   if (mshr_entry == MSHR.end()) {
@@ -726,7 +807,8 @@ void CACHE::finish_translation(const response_type& packet)
   auto matches_vpage = [page_num = champsim::page_number{packet.v_address}, asid_0 = packet.asid[0], asid_1 = packet.asid[1]](const auto& entry) {
     return (champsim::page_number{entry.v_address} == page_num) && entry.asid[0] == asid_0 && entry.asid[1] == asid_1 && !entry.is_translated;
   };
-  auto mark_translated = [p_page = champsim::page_number{packet.data}, this](auto& entry) {
+  auto mark_translated = [p_page = champsim::page_number{packet.data}, asid_0 = packet.asid[0], asid_1 = packet.asid[1], this](auto& entry) {
+    CHAMPSIM_ASSERT((entry.asid[0] == asid_0 && entry.asid[1] == asid_1)); // TLB<->PTW handoff stays within one address space
     [[maybe_unused]] auto old_address = entry.address;
     entry.address = champsim::address{champsim::splice(p_page, champsim::page_offset{entry.v_address})}; // translated address
     entry.is_translated = true;                                                                          // This entry is now translated
@@ -887,7 +969,16 @@ void CACHE::impl_prefetcher_initialize() const { pref_module_pimpl->impl_prefetc
 uint32_t CACHE::impl_prefetcher_cache_operate(champsim::address addr, champsim::address ip, bool cache_hit, bool useful_prefetch, access_type type,
                                               uint32_t metadata_in) const
 {
-  return pref_module_pimpl->impl_prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata_in);
+  // Origin-less overload kept for direct callers (e.g. the va_ampm_lite
+  // benchmark): thread the last-writer cursor and its core's address space
+  // {cpu, cpu}, mirroring the origin-less prefetch_line entry point.
+  return impl_prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata_in, {static_cast<uint8_t>(cpu), static_cast<uint8_t>(cpu)}, cpu);
+}
+
+uint32_t CACHE::impl_prefetcher_cache_operate(champsim::address addr, champsim::address ip, bool cache_hit, bool useful_prefetch, access_type type,
+                                              uint32_t metadata_in, champsim::address_space_id asid, uint32_t triggering_cpu) const
+{
+  return pref_module_pimpl->impl_prefetcher_cache_operate(addr, ip, cache_hit, useful_prefetch, type, metadata_in, asid, triggering_cpu);
 }
 
 uint32_t CACHE::impl_prefetcher_cache_fill(champsim::address addr, long set, long way, bool prefetch, champsim::address evicted_addr,

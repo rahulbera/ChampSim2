@@ -36,15 +36,35 @@ One way to do this, if your module's constructor has an empty body, is to inheri
         using champsim::modules::prefetcher::prefetcher;
     };
 
-For branch predictors and BTBs, per-thread core state (input queue, instruction buffers, ROB, LQ/SQ, DIB, register alias tables, ``roi_stats``, ``sim_stats``) lives in a ``champsim::core_context`` (``inc/core_context.h``), reached as ``intern_->ctx()``, for example ``intern_->ctx().input_queue``.
-Each core currently has exactly one context.
+For branch predictors and BTBs, per-thread core state (input queue, instruction buffers, ROB, LQ/SQ, register alias tables, ``roi_stats``, ``sim_stats``) lives in a ``champsim::core_context`` (``inc/core_context.h``). The core's ``contexts`` vector holds one ``core_context`` per hardware context, reached as ``intern_->contexts``; ``intern_->ctx()`` is context 0 (``contexts.front()``), for example ``intern_->ctx().input_queue``. A module written for more than one context selects its slice with ``intern_->contexts[context.value]``.
+The decoded-instruction buffer is shared by every context, so it stays on the core as ``intern_->DIB`` rather than in a context.
 A module written as ``intern_->input_queue`` no longer compiles; insert ``ctx().``.
 The former ``reg_allocator`` is split into ``intern_->shared_prf`` (the physical register file) and the alias tables on ``intern_->ctx()``.
 
 A module may implement any of the listed member functions.
-If a member function has overloads listed, any of them may be implemented, and the simulator will select the first candidate overload in the list.
+If a member function has overloads listed, any of them may be implemented, and the simulator will select the first candidate overload in the list. A ``context_index`` overload is listed first and, when implemented, is called alone: the non-``context`` overloads are not also called.
 
 Several branch predictor and BTB hooks have overloads ending in a ``champsim::address_space_id asid`` parameter, which names the branch's address space so a module can keep address spaces apart. Each such hook also lists the overloads without it, which earlier ChampSim versions called. A module implementing none of a hook's ``asid`` overloads is called through one without it and does not see which address space a branch belongs to.
+
+---------------------------------------
+Hardware contexts and module capability
+---------------------------------------
+
+A core may run more than one hardware context (SMT thread). A module bound to a
+core states how its state is stored with respect to those contexts through a
+``static constexpr smt_capability capability`` member:
+
+* ``global_state``: process-wide static storage; cpu0 only, one context.
+* ``single_context``: one instance per core that cannot be replicated; any core, one context (the default).
+* ``per_context``: state replicated per hardware context.
+* ``shared``: one instance per core, correctly shared across contexts (ASID keying keeps each context's history disjoint).
+
+A module that declares no ``capability`` is ``single_context``. The core refuses,
+at configuration time, a module whose ``capability`` cannot serve the requested
+context count, naming the configuration key and the module: ``global_state`` off
+cpu0 or past one context, and ``single_context`` past one context. Only branch
+predictors and BTBs are refused this way; prefetchers and replacement policies
+are bound to a cache and are not checked.
 
 ----------------------------
 Branch Predictors
@@ -56,6 +76,7 @@ A branch predictor module may implement three functions.
 
    This function is called when the core is initialized. You can use it to initialize elements of dynamic structures, such as ``std::vector`` or ``std::map``.
 
+.. cpp:function:: bool predict_branch(champsim::address ip, champsim::address predicted_target, bool always_taken, uint8_t branch_type, champsim::context_index context, champsim::address_space_id asid)
 .. cpp:function:: bool predict_branch(champsim::address ip, champsim::address predicted_target, bool always_taken, uint8_t branch_type, champsim::address_space_id asid)
 .. cpp:function:: bool predict_branch(uint64_t ip, uint64_t predicted_target, bool always_taken, uint8_t branch_type, champsim::address_space_id asid)
 .. cpp:function:: bool predict_branch(champsim::address ip, champsim::address predicted_target, bool always_taken, uint8_t branch_type)
@@ -80,9 +101,11 @@ A branch predictor module may implement three functions.
      * ``BRANCH_RETURN``: A return to a calling procedure
      * ``BRANCH_OTHER``: If the branch type cannot be determined
 
+   :param context: The hardware context the branch belongs to; ``context.value`` indexes ``intern_->contexts``
    :param asid: The address space of the branch
    :return: This function must return true if the branch is predicted taken, and false otherwise.
 
+.. cpp:function:: void last_branch_result(champsim::address ip, champsim::address branch_target, uint8_t taken, uint8_t branch_type, champsim::context_index context, champsim::address_space_id asid)
 .. cpp:function:: void last_branch_result(champsim::address ip, champsim::address branch_target, uint8_t taken, uint8_t branch_type, champsim::address_space_id asid)
 .. cpp:function:: void last_branch_result(uint64_t ip, uint64_t branch_target, uint8_t taken, uint8_t branch_type, champsim::address_space_id asid)
 .. cpp:function:: void last_branch_result(champsim::address ip, champsim::address branch_target, uint8_t taken, uint8_t branch_type)
@@ -90,6 +113,7 @@ A branch predictor module may implement three functions.
 
    This function is called when a branch is resolved. The parameters are the same as in the previous hook, except that ``branch_target``, ``taken`` and ``branch_type`` are guaranteed to be correct.
 
+.. cpp:function:: void branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type, champsim::context_index context, champsim::address_space_id asid)
 .. cpp:function:: void branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type, champsim::address_space_id asid)
 .. cpp:function:: void branch_execute_resolve(uint64_t instr_id, champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type)
 
@@ -102,6 +126,7 @@ A branch predictor module may implement three functions.
    :param branch_target: The correct target of the branch, or a default-constructed address if the branch was not taken
    :param taken: A boolean value. This parameter will be nonzero if the branch was taken.
    :param branch_type: One of the branch types listed above
+   :param context: The hardware context the branch belongs to; ``context.value`` indexes ``intern_->contexts``
    :param asid: The address space of the branch
 
 .. cpp:function:: void branch_predictor_final_stats()
@@ -118,6 +143,7 @@ A BTB module may implement three functions.
 
    This function is called when the core is initialized. You can use it to initialize elements of dynamic structures, such as ``std::vector`` or ``std::map``.
 
+.. cpp:function:: std::pair<champsim::address, bool> btb_prediction(champsim::address ip, champsim::context_index context, champsim::address_space_id asid)
 .. cpp:function:: std::pair<champsim::address, bool> btb_prediction(champsim::address ip, champsim::address_space_id asid)
 .. cpp:function:: std::pair<champsim::address, bool> btb_prediction(champsim::address ip, uint8_t branch_type, champsim::address_space_id asid)
 .. cpp:function:: std::pair<champsim::address, bool> btb_prediction(champsim::address ip, uint8_t branch_type)
@@ -140,10 +166,12 @@ A BTB module may implement three functions.
      * ``BRANCH_RETURN``: A return to a calling procedure
      * ``BRANCH_OTHER``: If the branch type cannot be determined
 
+   :param context: The hardware context the branch belongs to; ``context.value`` indexes ``intern_->contexts``
    :param asid: The address space of the branch
    :return: The function should return a pair containing the predicted address and a boolean that describes if the branch is known to be always taken.
        If the prediction fails, the function should return a default-initialized address, e.g. ``champsim::address{}``.
 
+.. cpp:function:: void update_btb(champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type, champsim::context_index context, champsim::address_space_id asid)
 .. cpp:function:: void update_btb(champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type, champsim::address_space_id asid)
 .. cpp:function:: void update_btb(uint64_t ip, uint64_t branch_target, bool taken, uint8_t branch_type, champsim::address_space_id asid)
 .. cpp:function:: void update_btb(champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type)
@@ -164,6 +192,7 @@ A BTB module may implement three functions.
      * ``BRANCH_RETURN``: A return to a calling procedure
      * ``BRANCH_OTHER``: If the branch type cannot be determined
 
+   :param context: The hardware context the branch belongs to; ``context.value`` indexes ``intern_->contexts``
    :param asid: The address space of the branch
 
 -----------------------------------
@@ -176,6 +205,7 @@ A prefetcher module may implement five or six functions.
 
    This function is called when the cache is initialized. You can use it to initialize elements of dynamic structures, such as ``std::vector`` or ``std::map``.
 
+.. cpp:function:: uint32_t prefetcher_cache_operate(champsim::address addr, champsim::address ip, bool cache_hit, bool useful_prefetch, access_type type, uint32_t metadata_in, champsim::address_space_id asid, uint32_t cpu)
 .. cpp:function:: uint32_t prefetcher_cache_operate(champsim::address addr, champsim::address ip, bool cache_hit, bool useful_prefetch, access_type type, uint32_t metadata_in)
 .. cpp:function:: uint32_t prefetcher_cache_operate(champsim::address addr, champsim::address ip, bool cache_hit, bool useful_prefetch, uint8_t type, uint32_t metadata_in)
 .. cpp:function:: uint32_t prefetcher_cache_operate(uint64_t addr, uint64_t ip, bool cache_hit, uint8_t type, uint32_t metadata_in)
@@ -200,6 +230,8 @@ A prefetcher module may implement five or six functions.
      * ``access_type::TRANSLATION``
 
    :param metadata_in: the metadata carried along by the packet.
+   :param asid: the address space of the packet.
+   :param cpu: the core the demand was issued for.
 
    :return: The function should return metadata that will be stored alongside the block.
 
@@ -253,6 +285,17 @@ A prefetcher module may implement five or six functions.
      * ``BRANCH_OTHER``: If the branch type cannot be determined
 
    :param branch_target: The instruction pointer of the target
+
+A prefetcher issues a prefetch by calling ``prefetch_line`` on the cache it is bound to (``intern_->prefetch_line(...)``, or just ``prefetch_line(...)`` since the module inherits from ``champsim::modules::prefetcher``):
+
+.. cpp:function:: bool prefetch_line(champsim::address pf_addr, bool fill_this_level, uint32_t prefetch_metadata, champsim::address_space_id asid, uint32_t cpu)
+.. cpp:function:: bool prefetch_line(champsim::address pf_addr, bool fill_this_level, uint32_t prefetch_metadata)
+
+   The first form names the prefetch's origin explicitly: ``asid`` is the address space the prefetch will be translated in, and ``cpu`` the core it is issued for.
+   The second form stamps the last packet's ``{cpu, cpu}`` for both, mirroring the origin-less entry point.
+   ``fill_this_level`` says whether the prefetch is for this cache level; lower levels fill only if it is not.
+
+   :return: true if the prefetch was queued, false if the queue was full.
 
 -----------------------------------
 Replacement Policies

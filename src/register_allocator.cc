@@ -11,7 +11,7 @@ RegisterAllocator::RegisterAllocator(size_t num_physical_registers)
   for (size_t i = 0; i < num_physical_registers; ++i) {
     free_registers.push(static_cast<PHYSICAL_REGISTER_ID>(i));
   }
-  physical_register_file = std::vector<physical_register>(num_physical_registers, {0, 0, false, false});
+  physical_register_file = std::vector<physical_register>(num_physical_registers, {0, 0, false, false, {}});
 }
 
 void RegisterAllocator::complete_dest_register(PHYSICAL_REGISTER_ID physreg)
@@ -22,7 +22,7 @@ void RegisterAllocator::complete_dest_register(PHYSICAL_REGISTER_ID physreg)
 
 void RegisterAllocator::free_register(PHYSICAL_REGISTER_ID physreg)
 {
-  physical_register_file.at(physreg) = {255, 0, false, false}; // arch_reg_index, producing_inst_id, valid, busy
+  physical_register_file.at(physreg) = {255, 0, false, false, {}}; // arch_reg_index, producing_inst_id, valid, busy, context
   free_registers.push(physreg);
 }
 
@@ -41,13 +41,18 @@ int RegisterAllocator::count_reg_dependencies(const ooo_model_instr& instr) cons
   }));
 }
 
-void RegisterAllocator::print_deadlock()
+void RegisterAllocator::print_deadlock(bool with_context)
 {
   fmt::print("\nPhysical Register File\n");
   for (size_t i = 0; i < physical_register_file.size(); ++i) {
-    fmt::print("Phys reg: {:3}\t Arch reg: {:3}\t Producer: {}\t Valid: {}\t Busy: {}\n", static_cast<int>(i),
-               static_cast<int>(physical_register_file.at(i).arch_reg_index), physical_register_file.at(i).producing_instruction_id,
-               physical_register_file.at(i).valid, physical_register_file.at(i).busy);
+    const auto& reg = physical_register_file.at(i);
+    fmt::print("Phys reg: {:3}\t Arch reg: {:3}\t Producer: {}\t Valid: {}\t Busy: {}", static_cast<int>(i), static_cast<int>(reg.arch_reg_index),
+               reg.producing_instruction_id, reg.valid, reg.busy);
+    // With several contexts each busy register names the context that owns it;
+    // a free register has no owner, so the field is a dash.
+    if (with_context)
+      fmt::print("\t Context: {}", reg.busy ? std::to_string(reg.context.value) : std::string{"-"});
+    fmt::print("\n");
   }
   fmt::print("\n");
 }
