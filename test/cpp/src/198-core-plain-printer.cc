@@ -185,3 +185,26 @@ TEST_CASE("DIB lookups are reported as a total, a hit count, a miss count, and a
   const auto lines = champsim::plain_printer::format(given);
   REQUIRE_THAT(lines.at(1), Catch::Matchers::Equals("test_cpu DIB lookups: 1023 hits: 900 misses: 123 hit rate: 87.98%"));
 }
+
+TEST_CASE("A single-context phase reports its trace against the core label")
+{
+  champsim::phase_stats phase{};
+  phase.name = "Simulation";
+  phase.trace_names = {"a.xz"};
+
+  const auto lines = champsim::plain_printer::format(phase);
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"CPU 0 runs a.xz"}));
+}
+
+TEST_CASE("A multi-context phase labels each context's trace")
+{
+  champsim::phase_stats phase{};
+  phase.name = "Simulation";
+  phase.slots = {champsim::context_slot{0, 0, 2}, champsim::context_slot{0, 1, 2}, champsim::context_slot{1, 0, 1}};
+  phase.trace_names = {"a.xz", "b.xz", "c.xz"};
+
+  const auto lines = champsim::plain_printer::format(phase);
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"CPU 0 ctx 0 runs a.xz"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"CPU 0 ctx 1 runs b.xz"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"CPU 1 runs c.xz"}));
+}

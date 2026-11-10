@@ -193,8 +193,9 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
         }
 
         for (std::size_t c = 0; c < std::size(cpu.contexts); ++c) {
-          fmt::print("{} finished CPU {} instructions: {} cycles: {} cumulative IPC: {:.4g} (Simulation time: {:%H hr %M min %S sec})\n", phase_name, cpu.cpu,
-                     cpu.sim_instr(c), cpu.sim_cycle(c), std::ceil(cpu.sim_instr(c)) / std::ceil(cpu.sim_cycle(c)), elapsed_time());
+          fmt::print("{} finished {} instructions: {} cycles: {} cumulative IPC: {:.4g} (Simulation time: {:%H hr %M min %S sec})\n", phase_name,
+                     champsim::context_slot{cpu.cpu, c, std::size(cpu.contexts)}.label(), cpu.sim_instr(c), cpu.sim_cycle(c),
+                     std::ceil(cpu.sim_instr(c)) / std::ceil(cpu.sim_cycle(c)), elapsed_time());
         }
       }
     }
@@ -204,27 +205,24 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
 
   for (O3_CPU& cpu : cpus) {
     for (std::size_t c = 0; c < std::size(cpu.contexts); ++c) {
-      fmt::print("{} complete CPU {} instructions: {} cycles: {} cumulative IPC: {:.4g} (Simulation time: {:%H hr %M min %S sec})\n", phase_name, cpu.cpu,
-                 cpu.sim_instr(c), cpu.sim_cycle(c), std::ceil(cpu.sim_instr(c)) / std::ceil(cpu.sim_cycle(c)), elapsed_time());
+      fmt::print("{} complete {} instructions: {} cycles: {} cumulative IPC: {:.4g} (Simulation time: {:%H hr %M min %S sec})\n", phase_name,
+                 champsim::context_slot{cpu.cpu, c, std::size(cpu.contexts)}.label(), cpu.sim_instr(c), cpu.sim_cycle(c),
+                 std::ceil(cpu.sim_instr(c)) / std::ceil(cpu.sim_cycle(c)), elapsed_time());
     }
   }
 
   phase_stats stats;
   stats.name = phase.name;
 
-  for (const auto& core_row : trace_index) {
-    for (std::size_t trace_idx : core_row) {
-      stats.trace_names.push_back(trace_names.at(trace_idx));
-    }
-  }
-
-  // Per-context core statistics, flattened in [core][context] order. contexts
-  // with a single slot collapse this to one row per core, byte-identical to the
-  // previous ctx()-only transform.
+  // One row per (core, context): its naming slot, its trace, and that context's
+  // statistics, all pushed in the same order. One context collapses this to one
+  // row per core, byte-identical to the previous ctx()-only transform.
   for (const O3_CPU& cpu : cpus) {
-    for (const auto& c : cpu.contexts) {
-      stats.sim_cpu_stats.push_back(c.sim_stats);
-      stats.roi_cpu_stats.push_back(c.roi_stats);
+    for (std::size_t c = 0; c < std::size(cpu.contexts); ++c) {
+      stats.slots.push_back(champsim::context_slot{cpu.cpu, c, std::size(cpu.contexts)});
+      stats.trace_names.push_back(trace_names.at(trace_index.at(cpu.cpu).at(c)));
+      stats.sim_cpu_stats.push_back(cpu.contexts[c].sim_stats);
+      stats.roi_cpu_stats.push_back(cpu.contexts[c].roi_stats);
     }
   }
 

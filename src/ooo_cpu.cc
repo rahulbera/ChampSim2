@@ -132,9 +132,7 @@ void O3_CPU::begin_phase()
 
     // Record where the next phase begins
     stats_type stats;
-    stats.name = "CPU " + std::to_string(cpu);
-    if (contexts.size() > 1 && c.ctx_index.value > 0)
-      stats.name += " ctx " + std::to_string(c.ctx_index.value);
+    stats.name = champsim::context_slot{cpu, c.ctx_index.value, std::size(contexts)}.label();
     stats.begin_instrs = c.num_retired;
     stats.begin_cycles = c.begin_phase_time.time_since_epoch() / clock_period;
     c.sim_stats = stats;

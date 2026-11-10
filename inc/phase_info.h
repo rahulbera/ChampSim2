@@ -47,10 +47,15 @@ struct phase_info {
 struct phase_stats {
   std::string name;
   std::vector<std::string> trace_names;
+  std::vector<context_slot> slots; // one per row, in the same order as trace_names and the cpu_stats vectors
   std::vector<O3_CPU::stats_type> roi_cpu_stats, sim_cpu_stats;
   std::vector<CACHE::stats_type> roi_cache_stats, sim_cache_stats;
   std::vector<dram_stats> roi_dram_stats, sim_dram_stats;
   std::optional<ramulator2_statistics> roi_ramulator2{}, sim_ramulator2{};
+
+  // A hand-built phase_stats (tests) has no slots; fall back to the old
+  // position-derived name so it keeps working.
+  [[nodiscard]] context_slot slot(std::size_t i) const { return i < std::size(slots) ? slots.at(i) : context_slot{static_cast<uint32_t>(i), 0, 1}; }
 };
 
 } // namespace champsim

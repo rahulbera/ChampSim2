@@ -359,6 +359,9 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 
   init_event_listeners(requested_listeners);
   std::get<0>(listeners).instructions_between_printouts = heartbeat_frequency;
+  for (const O3_CPU& cpu : gen_environment.cpu_view()) {
+    std::get<0>(listeners).contexts_per_cpu.push_back(std::size(cpu.contexts));
+  }
 
   const bool warmup_given = (warmup_instr_option->count() > 0) || (deprec_warmup_instr_option->count() > 0);
   const bool simulation_given = (sim_instr_option->count() > 0) || (deprec_sim_instr_option->count() > 0);

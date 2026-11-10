@@ -810,3 +810,75 @@ TEST_CASE("Native run metadata archives the original YAML and complete driver pr
   REQUIRE(doc["config_override"]["ramulator2.config"].value<std::string>() == "original name.yaml");
   REQUIRE(doc["config"]["ramulator2"]["config"].value<std::string>() == "/tmp/original name.yaml");
 }
+
+TEST_CASE("A single-context slot reproduces the slot-less document byte for byte")
+{
+  // The slot(i) fallback names row i as {i,0,1}: one context, key "cpu<i>",
+  // label "CPU <i>". An explicit single-context slot must not change a thing,
+  // or a hand-built phase_stats (no slots) would drift from a real one-context
+  // run's document.
+  auto with_slot = one_of_everything();
+  with_slot.slots = {champsim::context_slot{0, 0, 1}};
+  auto without_slot = one_of_everything();
+
+  std::vector<champsim::phase_stats> a{with_slot};
+  std::vector<champsim::phase_stats> b{without_slot};
+  REQUIRE(champsim::toml_printer::format(a) == champsim::toml_printer::format(b));
+}
+
+TEST_CASE("A multi-context core nests every context, context 0 included")
+{
+  champsim::phase_stats phase{};
+  phase.name = "Simulation";
+  phase.slots = {champsim::context_slot{0, 0, 2}, champsim::context_slot{0, 1, 2}, champsim::context_slot{1, 0, 1}};
+  phase.trace_names = {"a.xz", "b.xz", "c.xz"};
+  phase.roi_cpu_stats = {cpu_stats{}, cpu_stats{}, cpu_stats{}};
+  phase.roi_cpu_stats.at(0).name = "CPU 0 ctx 0";
+  phase.roi_cpu_stats.at(1).name = "CPU 0 ctx 1";
+  phase.roi_cpu_stats.at(2).name = "CPU 1";
+  phase.sim_cpu_stats = phase.roi_cpu_stats;
+  std::vector<champsim::phase_stats> given{phase};
+
+  const auto lines = champsim::toml_printer::format(given);
+
+  // The core tables nest, context 0 included, and neither the flat multi-context
+  // core nor a phantom core 2 survives.
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"[phase.simulation.roi.core.cpu0.ctx0]"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"[phase.simulation.roi.core.cpu0.ctx1]"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"[phase.simulation.roi.core.cpu1]"}));
+  REQUIRE(std::find(std::begin(lines), std::end(lines), "[phase.simulation.roi.core.cpu0]") == std::end(lines));
+  REQUIRE(std::find(std::begin(lines), std::end(lines), "[phase.simulation.roi.core.cpu2]") == std::end(lines));
+
+  // The trace table splits the multi-context core into a per-core group and
+  // keeps the single-context core flat.
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"[phase.simulation.trace.cpu0]"}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"ctx0 = \"a.xz\""}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"ctx1 = \"b.xz\""}));
+  REQUIRE_THAT(lines, Catch::Matchers::Contains(std::string{"cpu1 = \"c.xz\""}));
+
+  // Parsed, the nesting is real and the multi-context core is a table with no
+  // scalar instructions of its own.
+  std::ostringstream output;
+  champsim::toml_printer{output}.print(given);
+  const auto doc = toml::parse(output.str());
+  const auto trace = doc["phase"]["simulation"]["trace"];
+  const auto roi = doc["phase"]["simulation"]["roi"];
+  REQUIRE(trace["cpu0"]["ctx0"]);
+  REQUIRE(trace["cpu0"]["ctx1"]);
+  REQUIRE(trace["cpu1"]);
+  REQUIRE(roi["core"]["cpu0"]["ctx0"]);
+  REQUIRE(roi["core"]["cpu0"]["ctx1"]);
+  REQUIRE(roi["core"]["cpu1"]);
+  REQUIRE_FALSE(roi["core"]["cpu0"]["instructions"]);
+
+  // The slot's own names agree with the document: the nesting key and the
+  // human label, for a multi-context core and a single-context one.
+  REQUIRE(phase.slots.at(0).core_key() == "cpu0");
+  REQUIRE(phase.slots.at(0).context_key() == "ctx0");
+  REQUIRE(phase.slots.at(0).path() == "cpu0.ctx0");
+  REQUIRE(phase.slots.at(0).label() == "CPU 0 ctx 0");
+  REQUIRE(phase.slots.at(1).path() == "cpu0.ctx1");
+  REQUIRE(phase.slots.at(1).label() == "CPU 0 ctx 1");
+  REQUIRE(phase.slots.at(2).path() == "cpu1");
+  REQUIRE(phase.slots.at(2).label() == "CPU 1");
+}
