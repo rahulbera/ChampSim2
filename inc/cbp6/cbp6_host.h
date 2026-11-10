@@ -40,11 +40,9 @@
 
 #include <cstdint>
 #include <cstdlib>
-#include <stdexcept>
 #include <unordered_map>
 
 #include "util/detect.h"
-#include <string>
 
 #include <cstdio>
 

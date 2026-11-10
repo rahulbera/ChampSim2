@@ -1,14 +1,15 @@
 #include <algorithm>
-#include <cstddef>
 #include <catch.hpp>
+#include <cstddef>
 
 #include "defaults.hpp"
 #include "instr.h"
 #include "mocks.hpp"
 #include "ooo_cpu.h"
 
-// Stage 3.4: front-end arbitration. With two hardware contexts the shared
-// front-end widths are partitioned each cycle by the D4 policy:
+// Front-end arbitration. With two hardware contexts the shared
+// front-end widths are partitioned each cycle by the stage rules above
+// O3_CPU::operate() (src/ooo_cpu.cc):
 //   * fetch/decode/DIB -- rotating start, work-conserving: a context that
 //     cannot use its share hands it to the sibling, so no width is wasted;
 //   * dispatch -- one context owns the round, but a stalled owner yields the

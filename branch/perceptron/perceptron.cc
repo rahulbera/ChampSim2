@@ -41,50 +41,58 @@
 #include <cmath>
 
 bool perceptron::predict_branch(champsim::address ip, champsim::address /*predicted_target*/, bool /*always_taken*/, uint8_t /*branch_type*/,
-                                champsim::address_space_id asid)
+                                champsim::context_index context, champsim::address_space_id asid)
 {
   // hash the address to get an index into the table of perceptrons
-  const auto index = (ip.to<uint64_t>() ^ champsim::asid_word(asid)) % NUM_PERCEPTRONS;
-  const auto output = perceptrons[index].predict(spec_global_history);
+  // NUM_PERCEPTRONS is not a power of two, so XOR-ing the asid in first would
+  // change which addresses share a perceptron; adding it after the modulus only
+  // rotates the table, and asid {0,0} leaves the index unchanged.
+  const auto index = (ip.to<uint64_t>() % NUM_PERCEPTRONS + champsim::asid_word(asid)) % NUM_PERCEPTRONS;
+  auto& spec_hist = spec_global_history.at(context.value);
+  const auto output = perceptrons[index].predict(spec_hist);
 
   bool prediction = (output >= 0);
 
   // record the various values needed to update the predictor
-  perceptron_state_buf.push_back({ip, asid, prediction, output, spec_global_history});
+  perceptron_state_buf.push_back({ip, context, asid, prediction, output, spec_hist});
   if (std::size(perceptron_state_buf) > NUM_UPDATE_ENTRIES)
     perceptron_state_buf.pop_front();
 
   // update the speculative global history register
-  spec_global_history <<= 1;
-  spec_global_history.set(0, prediction);
+  spec_hist <<= 1;
+  spec_hist.set(0, prediction);
   return prediction;
 }
 
 void perceptron::last_branch_result(champsim::address ip, champsim::address /*branch_target*/, bool taken, uint8_t /*branch_type*/,
-                                    champsim::address_space_id asid)
+                                    champsim::context_index context, champsim::address_space_id asid)
 {
-  auto state = std::find_if(std::begin(perceptron_state_buf), std::end(perceptron_state_buf), [ip, asid](auto x) { return x.ip == ip && x.asid == asid; });
+  auto state = std::find_if(std::begin(perceptron_state_buf), std::end(perceptron_state_buf),
+                            [ip, context, asid](auto x) { return x.ip == ip && x.context.value == context.value && x.asid == asid; });
   if (state == std::end(perceptron_state_buf))
     return; // Skip update because state was lost
 
-  auto [_ip, _asid, prediction, output, history] = *state;
+  auto [_ip, _context, _asid, prediction, output, history] = *state;
   perceptron_state_buf.erase(state);
 
+  auto& real_hist = global_history.at(context.value);
+  auto& spec_hist = spec_global_history.at(context.value);
+
   // update the real global history shift register
-  global_history <<= 1;
-  global_history.set(0, taken);
+  real_hist <<= 1;
+  real_hist.set(0, taken);
 
   // if this branch was mispredicted, restore the speculative history to the
   // last known real history
   if (prediction != taken)
-    spec_global_history = global_history;
+    spec_hist = real_hist;
 
   // if the output of the perceptron predictor is outside of the range
   // [-THETA,THETA] *and* the prediction was correct, then we don't need to
   // adjust the weights
   const auto THETA = std::lround(1.93 * PERCEPTRON_HISTORY + 14); // threshold for training
   if ((output <= THETA && output >= -THETA) || (prediction != taken)) {
-    const auto index = (ip.to<uint64_t>() ^ champsim::asid_word(asid)) % NUM_PERCEPTRONS;
+    const auto index = (ip.to<uint64_t>() % NUM_PERCEPTRONS + champsim::asid_word(asid)) % NUM_PERCEPTRONS;
     perceptrons[index].update(taken, history);
   }
 }

@@ -1,15 +1,14 @@
+#include <catch.hpp>
 #include <cstddef>
 #include <deque>
 #include <vector>
-
-#include <catch.hpp>
 
 #include "instr.h"
 #include "mocks.hpp"
 #include "ooo_cpu.h"
 
-// Stage 3.5: back-end arbitration. With two hardware contexts the shared back-end
-// widths are partitioned each cycle by the same D4 policy as the front end:
+// Back-end arbitration. With two hardware contexts the shared back-end
+// widths are partitioned each cycle by the same stage rules as the front end:
 //   * schedule/retire/LSQ -- rotating start, one shared width;
 //   * execute/complete -- issue by global age (dispatch_sequence), not rotation,
 //     because the reservation station is shared and age-priority is the standard
@@ -18,9 +17,9 @@
 //     instructions scheduled but not yet executed) that must never exceed
 //     SCHEDULER_SIZE, because a per-cycle search window that worked for one
 //     context would let two threads each fill it;
-//   * dispatch stamps a core-wide monotonic sequence number -- the only age key
-//     that orders two instructions across contexts, since instr_id restarts at 0
-//     in every trace.
+//   * dispatch stamps a core-wide monotonic sequence number -- the age key that
+//     orders two instructions across contexts (instr_id is process-unique but
+//     does not order dispatch time across contexts).
 //
 // The file pins three things: (L1) a context whose sibling is idle replays its
 // architectural event stream bit-for-bit against a solo core; (L2) the shared
@@ -38,35 +37,39 @@ constexpr long DISPATCH_W = 4;
 struct backend_fixture {
   do_nothing_MRC solo_l1i, solo_l1d;
   O3_CPU solo{champsim::core_builder{}
-                 .fetch_queues(&solo_l1i.queues)
-                 .data_queues(&solo_l1d.queues)
-                 .num_contexts(1)
-                 .rob_size(16)
-                 .register_file_size(128)
-                 .lq_size(8)
-                 .sq_size(8)
-                 .schedule_width(champsim::bandwidth::maximum_type{SCHED_W})
-                 .execute_width(champsim::bandwidth::maximum_type{EXEC_W})
-                 .retire_width(champsim::bandwidth::maximum_type{RETIRE_W})
-                 .dispatch_width(champsim::bandwidth::maximum_type{DISPATCH_W})
-                 .execute_latency(0)
-                 .schedule_latency(0)};
+                  .fetch_queues(&solo_l1i.queues)
+                  .data_queues(&solo_l1d.queues)
+                  .num_contexts(1)
+                  .rob_size(16)
+                  .register_file_size(128)
+                  .lq_size(8)
+                  .sq_size(8)
+                  .schedule_width(champsim::bandwidth::maximum_type{SCHED_W})
+                  .execute_width(champsim::bandwidth::maximum_type{EXEC_W})
+                  .retire_width(champsim::bandwidth::maximum_type{RETIRE_W})
+                  .dispatch_width(champsim::bandwidth::maximum_type{DISPATCH_W})
+                  .execute_latency(0)
+                  .schedule_latency(0)};
 
   do_nothing_MRC dual_l1i, dual_l1d;
   O3_CPU dual{champsim::core_builder{}
-                 .fetch_queues(&dual_l1i.queues)
-                 .data_queues(&dual_l1d.queues)
-                 .num_contexts(2)
-                 .rob_size(16)
-                 .register_file_size(128)
-                 .lq_size(8)
-                 .sq_size(8)
-                 .schedule_width(champsim::bandwidth::maximum_type{SCHED_W})
-                 .execute_width(champsim::bandwidth::maximum_type{EXEC_W})
-                 .retire_width(champsim::bandwidth::maximum_type{RETIRE_W})
-                 .dispatch_width(champsim::bandwidth::maximum_type{DISPATCH_W})
-                 .execute_latency(0)
-                 .schedule_latency(0)};
+                  .fetch_queues(&dual_l1i.queues)
+                  .data_queues(&dual_l1d.queues)
+                  .num_contexts(2)
+                  .rob_size(16)
+                  .register_file_size(128)
+                  .lq_size(8)
+                  .sq_size(8)
+                  .ifetch_buffer_size(2)
+                  .decode_buffer_size(2)
+                  .dib_hit_buffer_size(2)
+                  .dispatch_buffer_size(2)
+                  .schedule_width(champsim::bandwidth::maximum_type{SCHED_W})
+                  .execute_width(champsim::bandwidth::maximum_type{EXEC_W})
+                  .retire_width(champsim::bandwidth::maximum_type{RETIRE_W})
+                  .dispatch_width(champsim::bandwidth::maximum_type{DISPATCH_W})
+                  .execute_latency(0)
+                  .schedule_latency(0)};
 
   backend_fixture()
   {

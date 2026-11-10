@@ -37,7 +37,7 @@ auto champsim::ptw_builder::cpu(uint32_t cpu_) -> ptw_builder&
   return *this;
 }
 
-auto champsim::ptw_builder::asid(VirtualMemory::address_space_id asid_) -> ptw_builder&
+auto champsim::ptw_builder::asid(address_space_id asid_) -> ptw_builder&
 {
   m_asid = asid_;
   return *this;

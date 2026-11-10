@@ -35,6 +35,7 @@
 #include "address.h"
 #include "blbp/blbp.h"
 #include "champsim.h"
+#include "instruction.h"
 #include "msl/bits.h"
 #include "msl/lru_table.h"
 #include "runtime_config.h"
@@ -74,7 +75,7 @@ struct direct_predictor {
     auto tag() const
     {
       using namespace champsim::data::data_literals;
-      return ip_tag.slice_upper<2_b>().to<uint64_t>() ^ champsim::asid_word(asid);
+      return std::pair{ip_tag.slice_upper<2_b>(), asid};
     }
   };
 
@@ -184,7 +185,10 @@ public:
   // A caveat this cannot enforce: a comparison against another BTB arm is
   // honest only while every arm's direct path is identical. Changing this on one
   // arm and not another measures two things at once. The defaults are the
-  // geometry the write-ups pin, so leaving these keys alone is always safe.
+  // geometry the write-ups pin, so leaving these keys alone is always safe. One
+  // difference geometry cannot equalise: this adapter keeps one direct table per
+  // hardware context, while basic_btb keeps one table set per core and shares it
+  // across contexts by ASID keying.
   void configure_direct(const champsim::runtime_config& cfg, std::string_view prefix)
   {
     // positive_value: lru_table validates sets itself but never ways, and a
@@ -212,7 +216,11 @@ public:
       // this flag overrides the direction predictor for whatever aliases here,
       // and basic_btb reports true unconditionally on this path). The ASID is
       // folded into the PC index exactly as basic_btb folds it into its gshare
-      // target cache; in N=1 it is a numeric no-op.
+      // target cache; the fold is a hash, not an identity: the vendored
+      // predictor sees only the folded PC, so two (PC, asid) pairs with the same
+      // fold share entries. That is sound only while one instance serves one
+      // address space, which holds because each core and context has its own
+      // adapter. In N=1 it is a numeric no-op.
       const auto t = blbp_.predict(ip.to<uint64_t>() ^ champsim::asid_word(asid));
       if (!t.has_value()) {
         return {champsim::address{}, true};

@@ -1,5 +1,4 @@
 #include <catch.hpp>
-
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -171,11 +170,11 @@ TEST_CASE("A CBP6 tenant refuses to run on a second core or context")
   // Tenants keep their tables in namespace-scope globals, so every core's module
   // instance would share one predictor. This must fail loudly rather than
   // silently report wrong numbers for a multi-core run, or for a single core
-  // carrying more than one SMT hardware context. Their capability defaults to
-  // unsupported, which check_smt_capability refuses past one core/context.
-  constexpr auto unsupported = champsim::modules::smt_capability::unsupported;
-  REQUIRE_NOTHROW(champsim::modules::check_smt_capability(unsupported, 0, 1, "test_predictor"));
-  REQUIRE_THROWS_AS(champsim::modules::check_smt_capability(unsupported, 1, 1, "test_predictor"), std::runtime_error);
-  REQUIRE_THROWS_AS(champsim::modules::check_smt_capability(unsupported, 7, 1, "test_predictor"), std::runtime_error);
-  REQUIRE_THROWS_AS(champsim::modules::check_smt_capability(unsupported, 0, 2, "test_predictor"), std::runtime_error);
+  // carrying more than one SMT hardware context. They declare global_state,
+  // which check_smt_capability refuses off cpu0 or past one context.
+  constexpr auto global_state = champsim::modules::smt_capability::global_state;
+  REQUIRE_NOTHROW(champsim::modules::check_smt_capability(global_state, 0, 1, "ooo_cpu.cpu0.branch_predictor", "cbp6_tagescl64"));
+  REQUIRE_THROWS_AS(champsim::modules::check_smt_capability(global_state, 1, 1, "ooo_cpu.cpu1.branch_predictor", "cbp6_tagescl64"), std::runtime_error);
+  REQUIRE_THROWS_AS(champsim::modules::check_smt_capability(global_state, 7, 1, "ooo_cpu.cpu7.branch_predictor", "cbp6_tagescl64"), std::runtime_error);
+  REQUIRE_THROWS_AS(champsim::modules::check_smt_capability(global_state, 0, 2, "ooo_cpu.cpu0.branch_predictor", "cbp6_tagescl64"), std::runtime_error);
 }

@@ -46,7 +46,7 @@ struct fixed_ptw_fixture {
       walker()._operate();
     }
   }
-  void issue(uint64_t address = 0x12345000, VirtualMemory::address_space_id asid = {0, 0}, bool response = true)
+  void issue(uint64_t address = 0x12345000, champsim::address_space_id asid = {0, 0}, bool response = true)
   {
     champsim::channel::request_type packet;
     packet.address = champsim::address{address};

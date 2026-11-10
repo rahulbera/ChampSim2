@@ -1,28 +1,30 @@
 #include <algorithm>
+#include <catch.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <vector>
-
-#include <catch.hpp>
 
 #include "address.h"
 #include "instr.h"
 #include "mocks.hpp"
 #include "ooo_cpu.h"
 
-// Stage 3.7 item 3: the five dual-context criteria that only a real two-context
+// The six dual-context criteria that only a real two-context
 // case can pin. Each TEST_CASE drives both contexts live and asserts the per-context
 // architectural result, so a cross-context age key or a per-context structure that
 // silently fell back to a single shared one fails here rather than passing on a
-// replay against an empty sibling.
+// replay against an empty sibling. Cases (2) and (3) use ROB entries only: their
+// stuck memory instruction is placed in the ROB already scheduled, never renamed;
+// case (6) drives the register file directly.
 //
 //   (1) two contexts writing the same architectural register get independent RAT
 //       entries;
 //   (2) one context's outstanding miss does not block the other's issue or retire;
 //   (3) one context's unretired store is not mistaken for the other's ROB frontier;
 //   (4) oldest-first is fair: two live contexts both drain to retirement;
-//   (5) global oldest-first issues in a different order than a rotating walk.
+//   (5) global oldest-first issues in a different order than a rotating walk;
+//   (6) a read of a register the sibling is still writing is not a cross-context RAW.
 
 namespace
 {
@@ -34,19 +36,23 @@ constexpr long DISPATCH_W = 4;
 struct dual_criteria_fixture {
   do_nothing_MRC l1i, l1d;
   O3_CPU dual{champsim::core_builder{}
-                 .fetch_queues(&l1i.queues)
-                 .data_queues(&l1d.queues)
-                 .num_contexts(2)
-                 .rob_size(16)
-                 .register_file_size(128)
-                 .lq_size(8)
-                 .sq_size(8)
-                 .schedule_width(champsim::bandwidth::maximum_type{SCHED_W})
-                 .execute_width(champsim::bandwidth::maximum_type{EXEC_W})
-                 .retire_width(champsim::bandwidth::maximum_type{RETIRE_W})
-                 .dispatch_width(champsim::bandwidth::maximum_type{DISPATCH_W})
-                 .execute_latency(0)
-                 .schedule_latency(0)};
+                  .fetch_queues(&l1i.queues)
+                  .data_queues(&l1d.queues)
+                  .num_contexts(2)
+                  .rob_size(16)
+                  .register_file_size(128)
+                  .lq_size(8)
+                  .sq_size(8)
+                  .ifetch_buffer_size(2)
+                  .decode_buffer_size(2)
+                  .dib_hit_buffer_size(2)
+                  .dispatch_buffer_size(2)
+                  .schedule_width(champsim::bandwidth::maximum_type{SCHED_W})
+                  .execute_width(champsim::bandwidth::maximum_type{EXEC_W})
+                  .retire_width(champsim::bandwidth::maximum_type{RETIRE_W})
+                  .dispatch_width(champsim::bandwidth::maximum_type{DISPATCH_W})
+                  .execute_latency(0)
+                  .schedule_latency(0)};
 
   dual_criteria_fixture()
   {
@@ -172,7 +178,7 @@ TEST_CASE_METHOD(dual_criteria_fixture, "Oldest-first is fair: an older sibling 
   c1.dispatch_sequence = 0;
   dual.contexts[1].ROB = {c1};
   for (int i = 0; i < 4; ++i) {
-    auto c0 = ready_no_dest(100 + i);
+    auto c0 = ready_no_dest(static_cast<uint64_t>(100 + i));
     c0.dispatch_sequence = static_cast<uint64_t>(100 + i);
     dual.contexts[0].ROB.push_back(c0);
   }
@@ -212,4 +218,21 @@ TEST_CASE_METHOD(dual_criteria_fixture, "Global oldest-first issues in a differe
   }
 
   CHECK(order == std::vector<uint64_t>{10, 20, 21, 11});
+}
+
+TEST_CASE_METHOD(dual_criteria_fixture, "A read of a register the sibling is still writing is not a cross-context RAW")
+{
+  // Context 1 leaves architectural register 7 in flight (renamed, not completed);
+  // context 0 reads register 7. The read must map to context 0's own committed
+  // live-in, not context 1's speculative destination -- a shared RAT would make
+  // it a RAW dependency on the sibling's unfinished write.
+  const auto c1_dest = dual.contexts[1].rename_dest_register(7, 100);
+  const auto c0_src = dual.contexts[0].rename_src_register(7);
+
+  CHECK(c0_src != c1_dest);
+  CHECK(dual.contexts[0].frontend_RAT[7] == c0_src);
+  CHECK(dual.contexts[0].backend_RAT[7] == c0_src);
+  CHECK(dual.contexts[1].frontend_RAT[7] == c1_dest);
+  CHECK_FALSE(dual.shared_prf->isValid(c1_dest));
+  CHECK(dual.shared_prf->isValid(c0_src));
 }

@@ -76,7 +76,13 @@ namespace detail
 {
 template <typename Extent>
 struct splice_fold_wrapper;
-}
+
+// Out of line and cold, so the throw paths stay out of every inlined address_slice constructor.
+// With them inline, GCC 13 under -flto stopped inlining a constructor into
+// DRAM_ADDRESS_MAPPING::swizzle_bits, and the out-of-line copy of its extent argument is a
+// store-forwarding stall on every call.
+[[noreturn, gnu::cold, gnu::noinline]] inline void throw_unrepresentable_bound(const char* message) { throw std::invalid_argument{message}; }
+} // namespace detail
 
 /**
  * \class address_slice address.h inc/address.h
@@ -274,10 +280,10 @@ public:
   {
     if constexpr (!is_static) {
       if (ext.upper > bits) {
-        throw std::invalid_argument{"Upper bound is not representable in the underlying type"};
+        detail::throw_unrepresentable_bound("Upper bound is not representable in the underlying type");
       }
       if (ext.lower > bits) {
-        throw std::invalid_argument{"Lower bound is not representable in the underlying type"};
+        detail::throw_unrepresentable_bound("Lower bound is not representable in the underlying type");
       }
     }
   }
@@ -291,10 +297,10 @@ public:
   {
     if constexpr (!is_static) {
       if (ext.upper > bits) {
-        throw std::invalid_argument{"Upper bound is not representable in the underlying type"};
+        detail::throw_unrepresentable_bound("Upper bound is not representable in the underlying type");
       }
       if (ext.lower > bits) {
-        throw std::invalid_argument{"Lower bound is not representable in the underlying type"};
+        detail::throw_unrepresentable_bound("Lower bound is not representable in the underlying type");
       }
     }
   }

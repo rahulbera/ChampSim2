@@ -203,8 +203,8 @@ long PageTableWalker::operate_fixed()
   while (fill_bw.has_remaining() && !completed.empty() && completed.front().data.is_ready_at(current_time)) {
     const auto& entry = completed.front();
     for (auto* ret : entry.to_return) {
-      ret->emplace_back(entry.v_address, entry.v_address, *entry.data, entry.pf_metadata, entry.cpu, entry.asid[0], entry.asid[1],
-                        entry.instr_depend_on_me, entry.load_waiters);
+      ret->emplace_back(entry.v_address, entry.v_address, *entry.data, entry.pf_metadata, entry.cpu, entry.asid[0], entry.asid[1], entry.instr_depend_on_me,
+                        entry.load_waiters);
     }
     completed.pop_front();
     fill_bw.consume();

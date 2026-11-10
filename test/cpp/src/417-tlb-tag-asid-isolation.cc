@@ -5,12 +5,12 @@
 #include "mocks.hpp"
 #include "vmem.h"
 
-// Step 3.2: the TLB tag array is keyed by address space as well as address. Two
+// The TLB tag array is keyed by address space as well as address. Two
 // address spaces that map the same virtual page to the same physical page must
 // occupy two distinct TLB entries; a hit in one address space must not satisfy a
 // lookup in the other. The cache under test is the TLB itself (vmem != nullptr),
-// not the data cache that sits above it: a physical cache must deduplicate on the
-// physical address, which is exactly the behaviour this test must NOT assert.
+// not the data cache that sits above it: only a TLB (built with virtual memory) is
+// keyed, a physical cache matches the address alone.
 
 namespace
 {
@@ -95,4 +95,73 @@ TEST_CASE("Two address spaces aliasing one physical page do not share a TLB entr
   // The second address space must miss the first address space's entry and issue its
   // own lookup rather than hitting the aliased translation.
   REQUIRE(mock_stlb.request_count == 2);
+
+  // A repeat of the first address space hits its own entry and issues no further
+  // lookup: the control confirms the two entries are both still present.
+  REQUIRE(mock_ul.issue(make_req(250)));
+  run(50);
+  REQUIRE(mock_stlb.request_count == 2);
+}
+
+TEST_CASE("A physical cache matches a block on its physical address alone")
+{
+  aliasing_translator mock_stlb;
+  to_rq_MRP mock_ul{[](auto x, auto y) {
+    return x.address == y.address;
+  }};
+
+  CACHE uut{champsim::cache_builder{champsim::defaults::default_l2c}
+                .name("417-physical-cache")
+                .upper_levels({&mock_ul.queues})
+                .lower_level(&mock_stlb.queues)
+                .lower_translate(&mock_stlb.queues)
+                .hit_latency(10)
+                .fill_latency(3)
+                .tag_bandwidth(champsim::bandwidth::maximum_type{10})};
+
+  std::array<champsim::operable*, 3> elements{{&uut, &mock_ul, &mock_stlb}};
+  for (auto elem : elements) {
+    elem->initialize();
+    elem->warmup = false;
+    elem->begin_phase();
+  }
+
+  auto make_req = [](uint8_t asid0, bool write) {
+    champsim::channel::request_type req;
+    req.address = champsim::address{0xbeef000};
+    req.v_address = champsim::address{0xbeef000};
+    req.is_translated = true;
+    req.asid[0] = asid0;
+    req.asid[1] = asid0;
+    req.type = write ? access_type::WRITE : access_type::LOAD;
+    req.response_requested = !write;
+    req.cpu = 0;
+    return req;
+  };
+
+  auto run = [&](int cycles) {
+    for (int i = 0; i < cycles; ++i) {
+      for (auto elem : elements)
+        elem->_operate();
+    }
+  };
+
+  // A translated load in address space {0,0} misses the empty cache and fills a line
+  // keyed by the physical address 0xbeef000; its fill is the one lower packet.
+  REQUIRE(mock_ul.issue(make_req(0, false)));
+  run(50);
+  REQUIRE(uut.sim_stats.misses.value_or(std::pair{access_type::LOAD, 0u}, 0) == 1);
+  REQUIRE(mock_stlb.request_count == 1);
+
+  // A translated write with no address space (the {255,255} default) to the same
+  // physical address must hit the line: a physical cache keys on the address alone.
+  auto write_req = make_req(255, true);
+  REQUIRE(write_req.asid[0] == 255);
+  REQUIRE(write_req.asid[1] == 255);
+  REQUIRE(mock_ul.issue(write_req));
+  run(50);
+
+  CHECK(uut.sim_stats.hits.value_or(std::pair{access_type::WRITE, 0u}, 0) == 1);
+  CHECK(uut.sim_stats.misses.value_or(std::pair{access_type::WRITE, 0u}, 0) == 0);
+  CHECK(mock_stlb.request_count == 1);
 }

@@ -6,6 +6,7 @@
 #include <tuple>
 #include <vector>
 
+#include "defs.h"
 #include "folded_shift_register.h"
 #include "modules.h"
 #include "msl/bits.h"
@@ -28,11 +29,12 @@ class hashed_perceptron : champsim::modules::branch_predictor
   // tables of 8-bit weights
   std::array<std::array<champsim::msl::sfwcounter<8>, TABLE_SIZE>, NTABLES> tables{};
 
-  // words that store the global history
+  // words that store the global history, one set per hardware context
   using history_type = folded_shift_register<TABLE_INDEX_BITS>;
-  std::array<history_type, NTABLES> ghist_words = []() {
+  std::array<std::array<history_type, NTABLES>, champsim::defs::max_contexts> ghist_words = []() {
     decltype(ghist_words) retval;
-    std::transform(std::cbegin(history_lengths), std::cend(history_lengths), std::begin(retval), [](const auto len) { return history_type{len}; });
+    for (auto& words : retval)
+      std::transform(std::cbegin(history_lengths), std::cend(history_lengths), std::begin(words), [](const auto len) { return history_type{len}; });
     return retval;
   }();
 
@@ -49,12 +51,15 @@ class hashed_perceptron : champsim::modules::branch_predictor
 public:
   using branch_predictor::branch_predictor;
 
-  // SMT: single per-core instance, keyed by ASID (ghist table index folds
-  // asid_word), so two contexts on one core share it safely.
+  // SMT: the weight tables are one shared per-core instance whose index folds the
+  // asid (the fold is a hash that can alias), while the global history words are
+  // kept per context.
   static constexpr champsim::modules::smt_capability capability = champsim::modules::smt_capability::shared;
 
-  bool predict_branch(champsim::address pc, champsim::address predicted_target, bool always_taken, uint8_t branch_type, champsim::address_space_id asid);
-  void last_branch_result(champsim::address pc, champsim::address branch_target, bool taken, uint8_t branch_type, champsim::address_space_id asid);
+  bool predict_branch(champsim::address pc, champsim::address predicted_target, bool always_taken, uint8_t branch_type, champsim::context_index context,
+                      champsim::address_space_id asid);
+  void last_branch_result(champsim::address pc, champsim::address branch_target, bool taken, uint8_t branch_type, champsim::context_index context,
+                          champsim::address_space_id asid);
   void adjust_threshold(bool correct);
 };
 

@@ -50,13 +50,18 @@ sources for you to plagiarize.
 #include <numeric>
 
 bool hashed_perceptron::predict_branch(champsim::address pc, champsim::address /*predicted_target*/, bool /*always_taken*/, uint8_t /*branch_type*/,
-                                       champsim::address_space_id asid)
+                                       champsim::context_index context, champsim::address_space_id asid)
 {
-  auto get_index = [pc_slice = pc.slice_lower<TABLE_INDEX_BITS>().to<uint64_t>() ^ static_cast<uint64_t>(champsim::asid_word(asid))](const auto& hist) {
+  // The ASID word is 16 bits wide and a table index only TABLE_INDEX_BITS, so
+  // fold it to that width first; XOR-ing it in whole indexes past TABLE_SIZE once
+  // asid[1] >= 16. asid {0,0} folds to 0, leaving the index unchanged.
+  const auto asid_word = champsim::asid_word(asid);
+  const auto asid_fold = (asid_word ^ (asid_word >> champsim::to_underlying(TABLE_INDEX_BITS))) & champsim::msl::bitmask(TABLE_INDEX_BITS);
+  auto get_index = [pc_slice = pc.slice_lower<TABLE_INDEX_BITS>().to<uint64_t>() ^ asid_fold](const auto& hist) {
     return hist.value() ^ pc_slice; // seed in the PC to spread accesses around (like gshare) XOR in the last word
   };
   perceptron_result result;
-  std::transform(std::cbegin(ghist_words), std::cend(ghist_words), std::begin(result.indices), get_index);
+  std::transform(std::cbegin(ghist_words.at(context.value)), std::cend(ghist_words.at(context.value)), std::begin(result.indices), get_index);
 
   // add the selected weights to the perceptron sum
   result.yout = std::inner_product(std::begin(tables), std::end(tables), std::begin(result.indices), 0, std::plus<>{},
@@ -66,9 +71,9 @@ bool hashed_perceptron::predict_branch(champsim::address pc, champsim::address /
 }
 
 void hashed_perceptron::last_branch_result(champsim::address pc, champsim::address /*branch_target*/, bool taken, uint8_t /*branch_type*/,
-                                           champsim::address_space_id asid)
+                                           champsim::context_index context, champsim::address_space_id asid)
 {
-  for (auto& hist : ghist_words) {
+  for (auto& hist : ghist_words.at(context.value)) {
     hist.push_back(taken);
   }
 

@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <utility>
 
 #include "address.h"
 #include "champsim.h"
@@ -33,7 +34,7 @@ struct direct_predictor {
     auto tag() const
     {
       using namespace champsim::data::data_literals;
-      return ip_tag.slice_upper<2_b>().to<uint64_t>() ^ champsim::asid_word(asid);
+      return std::pair{ip_tag.slice_upper<2_b>(), asid};
     }
   };
 

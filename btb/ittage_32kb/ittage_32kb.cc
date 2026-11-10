@@ -7,6 +7,7 @@
 
 #include <array>
 #include <iterator>
+#include <memory>
 
 #include "defs.h"
 #include "ittage/ittage_btb.h"
@@ -32,22 +33,30 @@ using impl_type = champsim::ittage::btb_impl<config>;
 // storage this module is supposed to represent.
 static_assert(impl_type::entry_bits == 64, "entry layout changed; revisit the storage accounting");
 static_assert(impl_type::storage_bits == static_cast<long>(7 + 1) * (1L << 9) * 64, "storage budget drifted");
-
-// Static storage duration, as with the CBP6 tenants: the vendored predictor's
-// initialisation is not guaranteed to write every member, and static storage is
-// zero-initialised before construction. One independent predictor per hardware
-// context; the array stays function-local (rather than a member) so every element
-// still gets that zero-init-before-construct treatment.
-std::array<impl_type, champsim::defs::max_contexts>& shared()
-{
-  static std::array<impl_type, champsim::defs::max_contexts> instances;
-  return instances;
-}
 } // namespace
+
+// One independent predictor per hardware context. Held behind a pimpl so the
+// vendored impl_type -- and its size -- stays out of the header; the header
+// forward-declares `storage` and frees it through storage_deleter.
+struct ittage_32kb::storage {
+  std::array<impl_type, champsim::defs::max_contexts> contexts;
+};
+
+void ittage_32kb::storage_deleter::operator()(storage* s) const { delete s; }
+
+std::unique_ptr<ittage_32kb::storage, ittage_32kb::storage_deleter> ittage_32kb::make_storage()
+{
+  // new storage() -- parentheses included -- value-initialises the aggregate,
+  // which zero-initialises the contexts array before the vendored predictors'
+  // constructors run. The vendored constructor does not write every member, so
+  // reproducing that zero-init-before-construct guarantee is the reason the
+  // storage is heap-allocated here rather than a by-value member.
+  return std::unique_ptr<storage, storage_deleter>(new storage());
+}
 
 void ittage_32kb::configure(const champsim::runtime_config& cfg, std::string_view prefix)
 {
-  for (auto& inst : shared())
+  for (auto& inst : state->contexts)
     inst.configure_direct(cfg, prefix);
 }
 
@@ -55,13 +64,13 @@ void ittage_32kb::initialize_btb()
 {
   // initialize() is a no-op today, but run it per context so any future
   // per-instance initialisation stays correct.
-  for (auto& inst : shared())
+  for (auto& inst : state->contexts)
     inst.initialize();
 }
 
 std::pair<champsim::address, bool> ittage_32kb::btb_prediction(champsim::address ip, champsim::context_index context, champsim::address_space_id asid)
 {
-  return shared()[context.value].prediction(ip, asid);
+  return state->contexts[context.value].prediction(ip, asid);
 }
 
 void ittage_32kb::update_btb(champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type, champsim::context_index context,
@@ -79,5 +88,5 @@ void ittage_32kb::update_btb(champsim::address ip, champsim::address branch_targ
     next_pc = std::next(std::begin(intern_->contexts[context.value].input_queue))->ip;
   }
 
-  shared()[context.value].update(ip, branch_target, branch_type, next_pc, asid);
+  state->contexts[context.value].update(ip, branch_target, branch_type, next_pc, asid);
 }

@@ -44,8 +44,9 @@ SCENARIO("The virtual memory issues references to blocks within a page if they a
     WHEN("A full set of requests for PTE entries at level " + std::to_string(level) + " are called for")
     {
       std::vector<champsim::address> given_pages{};
-      std::transform(std::cbegin(req_pages), std::cend(req_pages), std::back_inserter(given_pages),
-                     [&](auto req_page) { return uut.get_pte_pa({0, 0}, req_page, level).first; });
+      std::transform(std::cbegin(req_pages), std::cend(req_pages), std::back_inserter(given_pages), [&](auto req_page) {
+        return uut.get_pte_pa({0, 0}, req_page, level).first;
+      });
       std::sort(std::begin(given_pages), std::end(given_pages));
 
       THEN("All entries are on the same page")

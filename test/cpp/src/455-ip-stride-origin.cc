@@ -1,7 +1,6 @@
-#include <catch.hpp>
-
 #include <algorithm>
 #include <array>
+#include <catch.hpp>
 #include <vector>
 
 #include "../../../prefetcher/ip_stride/ip_stride.h"
@@ -41,7 +40,7 @@ public:
 };
 } // namespace
 
-// Stage 3.6 item 3: prefetch_line's origin is now explicit. ip_stride is the one
+// prefetch_line's origin is now explicit. ip_stride is the one
 // prefetcher that defers its issue to prefetcher_cycle_operate, so before the fix
 // the prefetch it fired there inherited whatever context the cache had last
 // processed -- `CACHE::prefetch_line` stamped the last-writer cursor and left the

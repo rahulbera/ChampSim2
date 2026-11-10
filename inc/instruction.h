@@ -98,10 +98,11 @@ struct program_ordered {
 struct ooo_model_instr : champsim::program_ordered<ooo_model_instr> {
   champsim::address ip{};
   // Core-wide age, assigned exactly once at dispatch from a monotonic core
-  // counter. It is the only key that orders two instructions across hardware
-  // contexts: instr_id restarts at 0 in every context's trace (one-to-many), the
-  // same trap the per-LQ-entry load_waiter_id closed for memory completion.
-  // Within one context instr_id remains the program-order key.
+  // counter. It is the key that orders two instructions across hardware
+  // contexts: instr_id is process-unique (a single static trace-read counter,
+  // never restarted), so it names a fetch for the L1I return and stays the
+  // program-order key within one context, but it does not order the dispatch
+  // time the shared scheduler ages by.
   uint64_t dispatch_sequence = 0;
   champsim::chrono::clock::time_point ready_time{};
 
@@ -299,7 +300,9 @@ public:
   // A v2 record names every field the shared constructor reads, so classification
   // and operand extraction are identical to v1 by construction.
   ooo_model_instr(uint8_t cpu, const input_instr_v2& instr) : ooo_model_instr(instr, {cpu, cpu}) {}
-  ooo_model_instr(uint8_t /*cpu*/, const cloudsuite_instr& instr) : ooo_model_instr(instr, {instr.asid[0], instr.asid[1]}) {}
+  // A CloudSuite record's own asid is not an address-space identity here: the
+  // trace runs in its core's single address space, as v1 and v2 traces do.
+  ooo_model_instr(uint8_t cpu, const cloudsuite_instr& instr) : ooo_model_instr(instr, {cpu, cpu}) {}
 
   [[nodiscard]] std::size_t num_mem_ops() const { return std::size(destination_memory) + std::size(source_memory); }
 };

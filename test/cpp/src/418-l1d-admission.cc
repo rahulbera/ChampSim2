@@ -1,19 +1,19 @@
-#include <catch.hpp>
-
 #include <array>
+#include <catch.hpp>
 
 #include "channel.h"
 #include "defaults.hpp"
 #include "mocks.hpp"
 
-// Stage 3.6 item 1: L1D admission made explicit. The core's data channel
+// L1D admission made explicit. The core's data channel
 // (core_to_l1d) is SHARED by every hardware context -- there is deliberately no
 // per-context channel -- and L1D has exactly two upper channels (ptw_to_l1d +
-// core_to_l1d) with max_tag_check == 2. CACHE::operate therefore grants one tag
-// check per upper queue per cycle, so the core's data channel initiates at most
-// one load (RQ) and one store (WQ) per cycle, however many requests lq_width lets
-// the core push into the channel. This file pins that admission; the declaration
-// of the two channels' sources lives at the L1D wiring in src/static_environment.cc.
+// core_to_l1d) with max_tag_check == 2. CACHE::operate splits the tag bandwidth
+// the translation stash leaves across the two uppers, so the core's data channel
+// initiates at most one load (RQ) and one store (WQ) per cycle, however many
+// requests lq_width lets the core push into the channel. This file pins that
+// admission; the declaration of the two channels' sources lives at the L1D wiring
+// in src/static_environment.cc.
 
 TEST_CASE("L1D admits one load and one store per cycle from the shared core channel")
 {

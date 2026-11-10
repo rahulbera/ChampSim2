@@ -158,7 +158,7 @@ SCENARIO("An instruction's unmapped sources count against the free registers")
     do_nothing_MRC mock_L1I, mock_L1D;
     O3_CPU uut{core_with_registers(mock_L1I, mock_L1D, 3)};
 
-uut.ctx().ROB.push_back(ready_instruction(1, {}, {9}));
+    uut.ctx().ROB.push_back(ready_instruction(1, {}, {9}));
     uut.ctx().ROB.push_back(ready_instruction(2, {10, 11}, {12}));
 
     WHEN("The scheduler runs")
