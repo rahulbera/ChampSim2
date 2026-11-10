@@ -22,11 +22,27 @@ long do_cycle(std::vector<std::reference_wrapper<champsim::operable>>&, const st
 namespace
 {
 champsim::tracereader trace_with_asid(uint8_t asid) { return champsim::tracereader{[asid] { return ooo_model_instr{asid, input_instr{}}; }}; }
+
+// A core with `contexts` hardware contexts. Each partitioned capacity is a
+// multiple of the context count, as a core with several contexts requires.
+auto context_core(uint32_t index, std::size_t contexts)
+{
+  return champsim::core_builder{}
+      .index(index)
+      .num_contexts(contexts)
+      .ifetch_buffer_size(2)
+      .decode_buffer_size(2)
+      .dib_hit_buffer_size(2)
+      .dispatch_buffer_size(2)
+      .rob_size(2)
+      .lq_size(2)
+      .sq_size(2);
+}
 } // namespace
 
 TEST_CASE("do_cycle feeds two contexts of one core from two traces with distinct asids")
 {
-  O3_CPU cpu{champsim::core_builder{}.index(0).num_contexts(2)};
+  O3_CPU cpu{context_core(0, 2)};
   std::vector<std::reference_wrapper<O3_CPU>> cpus{cpu};
   std::vector<std::reference_wrapper<champsim::operable>> operables{};
   std::vector<champsim::tracereader> traces;
@@ -52,7 +68,7 @@ TEST_CASE("do_cycle keys trace_index by (core, context), not by a shared stride"
   // Non-uniform context counts: a flat core_index * num_contexts + context
   // stride has no single num_contexts to divide by, so it would mis-index this
   // machine. The structural [core][context] key does not.
-  O3_CPU core0{champsim::core_builder{}.index(0).num_contexts(2)};
+  O3_CPU core0{context_core(0, 2)};
   O3_CPU core1{champsim::core_builder{}.index(1).num_contexts(1)};
   std::vector<std::reference_wrapper<O3_CPU>> cpus{core0, core1};
   std::vector<std::reference_wrapper<champsim::operable>> operables{};
