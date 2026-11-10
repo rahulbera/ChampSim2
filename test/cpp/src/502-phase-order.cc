@@ -39,7 +39,9 @@ struct phase_environment : champsim::environment {
                   .rob_size(2)
                   .lq_size(2)
                   .sq_size(2)},
-        second{champsim::core_builder{}.index(1)} {}
+        second{champsim::core_builder{}.index(1)}
+  {
+  }
 
   struct component : champsim::operable {
     phase_environment& env;
@@ -148,7 +150,8 @@ TEST_CASE("A context's trace EOF does not end its core while a sibling context s
   champsim::phase_info phase{"Warmup", true, 100, {{0, 1}, {2}}, {"finite", "endless", "endless"}};
   champsim::do_phase(phase, env, traces, clock, {});
 
-  const std::vector<std::tuple<char, unsigned, long long>> expected_endings{{'S', 0, 100}, {'F', 0, 100}, {'M', 0, 100}, {'S', 1, 200}, {'F', 1, 200}, {'M', 1, 200}};
+  const std::vector<std::tuple<char, unsigned, long long>> expected_endings{{'S', 0, 100}, {'F', 0, 100}, {'M', 0, 100},
+                                                                            {'S', 1, 200}, {'F', 1, 200}, {'M', 1, 200}};
   CHECK(env.endings == expected_endings);
   CHECK(env.first.sim_instr(0) == 0);
   CHECK(env.first.sim_instr(1) == 200);
