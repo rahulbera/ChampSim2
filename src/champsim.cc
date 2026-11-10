@@ -162,23 +162,28 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
       abort();
     }
 
-    // Check for phase finish. A core is complete when every hardware context has
-    // either retired its share of the phase or exhausted its trace (EOF). An
-    // EOF'd context stops receiving input (do_cycle gates on !trace.eof()) and no
-    // longer participates in the retirement check, but its in-flight instructions
-    // still drain while its sibling keeps running. This merges the old two rules
-    // -- "retire length" and "any trace EOF ends everything" -- into one
-    // per-context predicate, so a short trace no longer cuts its sibling off
-    // mid-phase. contexts.size() == 1 collapses it to the old single-context
-    // union (retire length || trace EOF), byte-identical.
+    // Check for phase finish. A context is done when it has retired its share of
+    // the phase or reached its trace's EOF; a core is complete when every one of
+    // its contexts is done. Separately, once a core's every context is at EOF,
+    // every core's phase ends that tick: that is master's any-EOF rule, scoped
+    // so a short trace only ends the phase once its own core has no other input
+    // left. With one context per core the per-core and all-EOF rules coincide,
+    // so a one-context run is unchanged.
+    bool core_out_of_input = false;
     for (O3_CPU& cpu : cpus) {
       bool core_complete = true;
+      bool all_eof = true;
       for (std::size_t c = 0; c < std::size(cpu.contexts); ++c) {
         const bool retired = cpu.sim_instr(c) >= length;
         const bool eof = traces.at(trace_index.at(cpu.cpu).at(c)).eof();
         core_complete = core_complete && (retired || eof);
+        all_eof = all_eof && eof;
       }
       next_phase_complete[cpu.cpu] = next_phase_complete[cpu.cpu] || core_complete;
+      core_out_of_input = core_out_of_input || all_eof;
+    }
+    if (core_out_of_input) {
+      std::fill(std::begin(next_phase_complete), std::end(next_phase_complete), true);
     }
 
     for (O3_CPU& cpu : cpus) {
