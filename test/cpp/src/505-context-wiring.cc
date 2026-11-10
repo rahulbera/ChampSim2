@@ -20,11 +20,11 @@ phase_stats do_phase(const phase_info&, environment&, std::vector<tracereader>&,
 std::vector<std::vector<std::size_t>> context_trace_index(const std::vector<std::reference_wrapper<O3_CPU>>& cpus);
 }
 
-// Stage 4.2: do_cycle feeds each hardware context its own trace, keyed by
+// do_cycle feeds each hardware context its own trace, keyed by
 // trace_index[core][context] (structural, not a flattened stride). The
 // tracereader stamped a trace's instructions with asid {position, position}, so
 // the asid a context sees is exactly the value named by its trace_index entry.
-// Before 4.2 context 1 was never fed; these tests pin that it now is.
+// Before Stage 4 context 1 was never fed; these tests pin that it now is.
 namespace
 {
 champsim::tracereader trace_with_asid(uint8_t asid) { return champsim::tracereader{[asid] { return ooo_model_instr{asid, input_instr{}}; }}; }

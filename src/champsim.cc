@@ -74,7 +74,7 @@ long do_cycle(std::vector<std::reference_wrapper<operable>>& operables, const st
   // Read from trace: one trace per (core, context) pair. trace_index is keyed
   // [core][context] and names the positional (command-line) index of the trace
   // feeding that slot; the tracereader already stamped that trace's instructions
-  // with asid {position, position} (D-A: the global trace slot), so this slot's
+  // with asid {position, position} (the global trace slot), so this slot's
   // asid is {trace_index[cpu.cpu][c], trace_index[cpu.cpu][c]} by construction.
   // do_cycle assigns nothing -- the asid lives in the trace. num_contexts == 1
   // collapses this to the old single-context read.
