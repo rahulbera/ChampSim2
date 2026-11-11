@@ -230,13 +230,14 @@ non-inert and needs its own decision.
 - **Named FIFO hang.** `CLI::ExistingFile` accepts a FIFO, and a run that wraps
   blocks forever reopening it (`inc/repeatable.h:41`; wchan `wait_for_partner`). The
   B3 non-regular-source fix removes it.
-- **No drain, and an empty ROI with exit 0.** Without `-i`, any reader's EOF ends
-  every phase at once (`src/champsim.cc:144-147`) and drops in-flight work: a
-  200-record trace retires 30. `-w 30000` on a 20,000-record trace reports
-  `Simulation complete ... instructions: 0 cycles: 1` and exits 0. This is pinned by
-  `test/cpp/src/502-phase-order.cc:81-104`. Emit a named error or warning when a
-  measured phase retires nothing or stops short because of EOF. SMT Stage 4 needs
-  defined semantics here.
+- **No drain, and an empty ROI with exit 0.** Without `-i`, once every context of a
+  core reaches EOF the whole phase ends that tick (`src/champsim.cc:165-187`) and
+  drops in-flight work: a 200-record trace retires 30. With one context per core this
+  is upstream's any-EOF rule; with SMT an EOF'd context beside a fed sibling drains
+  without counting towards the length and can end short or empty silently. `-w 30000`
+  on a 20,000-record trace reports `Simulation complete ... instructions: 0 cycles: 1`
+  and exits 0. Pinned by `test/cpp/src/502-phase-order.cc:106-173`. Emit a named error
+  or warning when a measured phase retires nothing or stops short because of EOF.
 - **N−1 records per lap.** `eof()` goes true while one record is still buffered
   (`inc/tracereader.h:105`), and `repeatable` discards it, so a lap is N−1 records
   (N when N is a multiple of 127). Pinned by `087-tracereader-v2.cc:256-286`.

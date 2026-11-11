@@ -183,9 +183,8 @@ std::vector<std::string> champsim::plain_printer::format(champsim::phase_stats& 
   std::vector<std::string> lines{};
   lines.push_back(fmt::format("=== {} ===", stats.name));
 
-  int i = 0;
-  for (auto tn : stats.trace_names) {
-    lines.push_back(fmt::format("CPU {} runs {}", i++, tn));
+  for (std::size_t i = 0; i < std::size(stats.trace_names); ++i) {
+    lines.push_back(fmt::format("{} runs {}", stats.slot(i).label(), stats.trace_names.at(i)));
   }
 
   if (NUM_CPUS > 1) {

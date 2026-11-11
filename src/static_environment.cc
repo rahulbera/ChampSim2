@@ -173,6 +173,21 @@ std::size_t configured_register_file_size(const champsim::runtime_config& cfg, c
   return value;
 }
 
+// The RUNTIME number of hardware contexts (SMT threads) a core runs, chosen in
+// [1, champsim::defs::max_contexts]. max_contexts itself stays compile-time: the
+// single-context `if constexpr (champsim::defs::max_contexts == 1)` fast paths in
+// ooo_cpu.cc key on it, so it must remain a constant. positive_value rejects zero
+// and negatives; the upper bound is enforced here. Both errors name the key, the
+// walkers read it first, and O3_CPU and select_modules re-check without the key.
+std::size_t configured_num_contexts(const champsim::runtime_config& cfg, const std::string& key)
+{
+  const auto value = cfg.positive_value<std::size_t>(key, 1);
+  if (value > champsim::defs::max_contexts) {
+    throw std::runtime_error{"runtime config: " + key + " must be between 1 and " + std::to_string(champsim::defs::max_contexts)};
+  }
+  return value;
+}
+
 // The simulation's time quantum: do_phase() ticks the shared clock by the
 // SMALLEST clock_period among the operables, so a duration expressed in cycles
 // has to be scaled by this and not by any one component's period.
@@ -253,16 +268,20 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
            memory->size(), randomization(cfg))
 {
   ptws.reserve(defs::num_cpus);
+  std::size_t first_slot = 0;
   for (std::size_t cpu = 0; cpu < defs::num_cpus; ++cpu) {
     const auto key = ptw_key(cpu);
+    const auto slot = static_cast<uint8_t>(first_slot);
+    first_slot += configured_num_contexts(cfg, core_key(cpu) + ".num_contexts");
     ptws.emplace_back(champsim::ptw_builder{champsim::defaults::default_ptw}
                           .name(ptw_name(cpu))
                           .upper_levels({&channels.at(chan(cpu, stlb_to_ptw))})
                           .virtual_memory(&vmem)
                           .cpu(static_cast<uint32_t>(cpu))
-                          // The asid this core's trace stamps on its requests (ooo_model_instr), so
-                          // each core walks from its own page-table root, as master keys it by cpu.
-                          .asid({static_cast<uint8_t>(cpu), static_cast<uint8_t>(cpu)})
+                          // The asid of this core's first context: contexts are stamped with
+                          // consecutive trace slots, so the walker is built in the address space
+                          // its context 0 runs in.
+                          .asid({slot, slot})
                           .lower_level(&channels.at(chan(cpu, ptw_to_l1d)))
                           .mshr_size(cfg.value<uint32_t>(key + ".mshr_size", 5))
                           .tag_bandwidth(configured_bandwidth(cfg, key + ".max_read", 2))
@@ -313,6 +332,21 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
     const auto page_bits = champsim::lg2(PAGE_SIZE);
     const auto block_bits = champsim::lg2(BLOCK_SIZE);
 
+    // The L1D, L1I and L2C translation stashes are shared equally among the
+    // core's hardware contexts: each context may hold mshr_size / contexts of
+    // the stash's entries, so the size must divide the context count. stash_mshrs
+    // enforces that and names the offending key.
+    const auto contexts = configured_num_contexts(cfg, core_key(cpu) + ".num_contexts");
+    const auto stash_mshrs = [&cfg, contexts](const std::string& key, uint32_t fallback) {
+      const auto mshrs = cfg.value<uint32_t>(key + ".mshr_size", fallback);
+      if (mshrs % contexts != 0) {
+        throw std::runtime_error{"runtime config: " + key + ".mshr_size = " + std::to_string(mshrs) + " cannot be divided equally between "
+                                 + std::to_string(contexts) + " hardware contexts; each context may hold mshr_size / " + std::to_string(contexts)
+                                 + " translation-stash entries, so the size must be a multiple of the context count"};
+      }
+      return mshrs;
+    };
+
     caches.emplace_back(champsim::cache_builder{champsim::defaults::default_dtlb}
                             .name(cache_name(cpu, "DTLB"))
                             .upper_levels({&channels.at(chan(cpu, l1d_to_dtlb))})
@@ -349,6 +383,20 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .perfect(cfg.value<bool>(itlb + ".perfect", false))
                             .virtual_memory(&vmem));
 
+    // Explicit L1D admission. L1D has exactly two upper channels, each
+    // with a declared source:
+    //   * ptw_to_l1d  -- the PTW's page-walk reads. The PTW is one component per
+    //     physical core, not per context, so this is a single channel.
+    //   * core_to_l1d -- the core's data loads (RQ) and stores (WQ). Every hardware
+    //     context SHARES this one channel; there is deliberately no per-context
+    //     core_to_l1d, because the two uppers share the tag-check bandwidth the
+    //     translation stash leaves, capping the core channel at one load and one
+    //     store per cycle regardless.
+    // With max_tag_check == 2 (below), CACHE::operate splits the tag bandwidth the
+    // stash leaves across the two uppers, so the core's data channel initiates at
+    // most one load and one store per cycle. That is an explicit admission policy,
+    // decoupled from lq_width (which only bounds how many requests the core pushes
+    // into this channel) and pinned by test/cpp/src/418-l1d-admission.cc.
     caches.emplace_back(champsim::cache_builder{champsim::defaults::default_l1d}
                             .name(cache_name(cpu, "L1D"))
                             .upper_levels({&channels.at(chan(cpu, ptw_to_l1d)), &channels.at(chan(cpu, core_to_l1d))})
@@ -357,7 +405,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .sets(cfg.positive_value<uint32_t>(l1d + ".sets", 64))
                             .ways(cfg.positive_value<uint32_t>(l1d + ".ways", 12))
                             .pq_size(cfg.value<uint32_t>(l1d + ".pq_size", 8))
-                            .mshr_size(cfg.value<uint32_t>(l1d + ".mshr_size", 16))
+                            .mshr_size(stash_mshrs(l1d, 16))
+                            .num_contexts(contexts)
                             .latency(cfg.value<uint64_t>(l1d + ".latency", 5))
                             .tag_bandwidth(configured_bandwidth(cfg, l1d + ".max_tag_check", 2))
                             .fill_bandwidth(configured_bandwidth(cfg, l1d + ".max_fill", 2))
@@ -376,7 +425,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .sets(cfg.positive_value<uint32_t>(l1i + ".sets", 64))
                             .ways(cfg.positive_value<uint32_t>(l1i + ".ways", 8))
                             .pq_size(cfg.value<uint32_t>(l1i + ".pq_size", 32))
-                            .mshr_size(cfg.value<uint32_t>(l1i + ".mshr_size", 8))
+                            .mshr_size(stash_mshrs(l1i, 8))
+                            .num_contexts(contexts)
                             .latency(cfg.value<uint64_t>(l1i + ".latency", 4))
                             .tag_bandwidth(configured_bandwidth(cfg, l1i + ".max_tag_check", 2))
                             .fill_bandwidth(configured_bandwidth(cfg, l1i + ".max_fill", 2))
@@ -395,7 +445,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                             .sets(cfg.positive_value<uint32_t>(l2c + ".sets", 1024))
                             .ways(cfg.positive_value<uint32_t>(l2c + ".ways", 8))
                             .pq_size(cfg.value<uint32_t>(l2c + ".pq_size", 16))
-                            .mshr_size(cfg.value<uint32_t>(l2c + ".mshr_size", 32))
+                            .mshr_size(stash_mshrs(l2c, 32))
+                            .num_contexts(contexts)
                             .latency(cfg.value<uint64_t>(l2c + ".latency", 10))
                             .tag_bandwidth(configured_bandwidth(cfg, l2c + ".max_tag_check", 1))
                             .fill_bandwidth(configured_bandwidth(cfg, l2c + ".max_fill", 1))
@@ -441,6 +492,7 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                            .decode_buffer_size(cfg.value<std::size_t>(key + ".decode_buffer_size", 32))
                            .dispatch_buffer_size(cfg.value<std::size_t>(key + ".dispatch_buffer_size", 32))
                            .register_file_size(configured_register_file_size(cfg, key + ".register_file_size"))
+                           .num_contexts(configured_num_contexts(cfg, key + ".num_contexts"))
                            .rob_size(cfg.value<std::size_t>(key + ".rob_size", 352))
                            .lq_size(cfg.value<std::size_t>(key + ".lq_size", 128))
                            .sq_size(cfg.value<std::size_t>(key + ".sq_size", 72))
@@ -476,6 +528,16 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
                            .dib_hit_buffer_size(cfg.positive_value<std::size_t>(key + ".dib.hit_buffer_size", 32)));
   }
 
+  // Each cache serves one core's contexts; the LLC serves every core, so it
+  // takes the maximum. Prefetch-origin checks key on this count (S4-04).
+  for (std::size_t cpu = 0; cpu < defs::num_cpus; ++cpu) {
+    const auto contexts = std::size(cores.at(cpu).contexts);
+    for (std::size_t level = 0; level < 6; ++level) {
+      caches.at(1 + (cpu * 6) + level).contexts_per_core = contexts;
+    }
+    caches.at(0).contexts_per_core = std::max(caches.at(0).contexts_per_core, contexts);
+  }
+
   select_modules(cfg);
 }
 
@@ -498,6 +560,16 @@ void champsim::static_environment::select_modules(const runtime_config& cfg)
       core.install_btb_module(registry::make_btb(btb, &core));
     }
     core.btb_module_pimpl->impl_configure(cfg, key + "." + btb);
+
+    // Refuse an SMT-unsafe module at configuration time, not at
+    // initialize time (which is after --knobs and the unconsulted-key check).
+    const auto num_contexts = core.contexts.size();
+    if (num_contexts > champsim::defs::max_contexts) {
+      throw std::runtime_error{"configuration requests " + std::to_string(num_contexts) + " hardware contexts on " + key
+                               + " but this binary is compiled for at most " + std::to_string(champsim::defs::max_contexts)};
+    }
+    champsim::modules::check_smt_capability(core.branch_module_pimpl->capability(), cpu, num_contexts, key + ".branch_predictor", bp);
+    champsim::modules::check_smt_capability(core.btb_module_pimpl->capability(), cpu, num_contexts, key + ".btb", btb);
   }
 
   for (auto& cache : caches) {
@@ -508,6 +580,7 @@ void champsim::static_environment::select_modules(const runtime_config& cfg)
       cache.install_prefetcher_module(registry::make_prefetcher(pref, &cache));
     }
     cache.pref_module_pimpl->impl_configure(cfg, key + "." + pref);
+    cache.check_prefetch_origin(key + ".prefetcher", pref);
 
     const auto repl = cfg.value<std::string>(key + ".replacement", champsim::defs::default_replacement);
     if (repl != champsim::defs::default_replacement) {

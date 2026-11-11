@@ -35,17 +35,27 @@ struct phase_info {
   std::string name;
   bool is_warmup;
   long long length;
-  std::vector<std::size_t> trace_index;
+  // One trace per (core, context) pair, keyed structurally by [core][context]
+  // rather than by a flattened stride: trace_index[k][c] is the positional
+  // (command-line) index of the trace feeding hardware context c of physical
+  // core k. The tracereader stamped every instruction of a trace with asid
+  // {position, position}, so a slot's asid is {trace_index[k][c], trace_index[k][c]}.
+  std::vector<std::vector<std::size_t>> trace_index;
   std::vector<std::string> trace_names;
 };
 
 struct phase_stats {
   std::string name;
   std::vector<std::string> trace_names;
+  std::vector<context_slot> slots; // one per row, in the same order as trace_names and the cpu_stats vectors
   std::vector<O3_CPU::stats_type> roi_cpu_stats, sim_cpu_stats;
   std::vector<CACHE::stats_type> roi_cache_stats, sim_cache_stats;
   std::vector<dram_stats> roi_dram_stats, sim_dram_stats;
   std::optional<ramulator2_statistics> roi_ramulator2{}, sim_ramulator2{};
+
+  // A hand-built phase_stats (tests) has no slots; fall back to the old
+  // position-derived name so it keeps working.
+  [[nodiscard]] context_slot slot(std::size_t i) const { return i < std::size(slots) ? slots.at(i) : context_slot{static_cast<uint32_t>(i), 0, 1}; }
 };
 
 } // namespace champsim

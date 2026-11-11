@@ -48,6 +48,7 @@
 namespace champsim
 {
 std::vector<phase_stats> main(environment& env, std::vector<phase_info>& phases, std::vector<tracereader>& traces, const simulation_knobs& knobs);
+std::vector<std::vector<std::size_t>> context_trace_index(const std::vector<std::reference_wrapper<O3_CPU>>& cpus);
 }
 
 #ifndef CHAMPSIM_TEST_BUILD
@@ -152,7 +153,7 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 
   app.add_option("--listeners", requested_listeners, "A list of the listeners to be attached to the run");
 
-  app.add_option("traces", trace_names, "The paths to the traces")->expected(NUM_CPUS)->check(CLI::ExistingFile);
+  app.add_option("traces", trace_names, "The paths to the traces")->expected(1, -1)->check(CLI::ExistingFile);
 
   CLI11_PARSE(app, argc, argv);
 
@@ -166,12 +167,13 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     return 1;
   }
 
-  // An optional --toml argument can consume the next trace pathname. When that
-  // leaves too few traces, this check catches it; when one path too many was
-  // given, the count still matches, and only the output checks below stand
-  // between the consumed trace and its replacement by statistics.
-  if (!list_knobs && std::size(trace_names) != NUM_CPUS) {
-    fmt::print(stderr, "ERROR: expected {} trace(s), got {}. Use -- before trace paths when omitting the --toml filename.\n", NUM_CPUS, std::size(trace_names));
+  // Fewer traces than cores is always wrong, whatever num_contexts turns out to
+  // be, and it is checkable before construction. This is what refuses a bare
+  // `--toml <trace>` (no `--` before the trace paths) with a trace-count error
+  // instead of letting output::plan() open the trace as a statistics path.
+  if (!list_knobs && std::size(trace_names) < NUM_CPUS) {
+    fmt::print(stderr, "ERROR: expected at least {} trace(s), got {}. Use -- before trace paths when omitting the --toml filename.\n", NUM_CPUS,
+               std::size(trace_names));
     return 1;
   }
 
@@ -310,6 +312,23 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
     }
   }
 
+  // The exact trace count is the sum of every core's hardware contexts, which is
+  // only known after construction. This follows key validation deliberately: a
+  // misspelt num_contexts is reported as the unknown key it is, not as a trace
+  // count.
+  if (!list_knobs) {
+    std::size_t expected_traces = 0;
+    for (const O3_CPU& cpu : gen_environment.cpu_view()) {
+      expected_traces += cpu.contexts.size();
+    }
+    if (std::size(trace_names) != expected_traces) {
+      fmt::print(stderr, "ERROR: expected {} trace(s), one per hardware context (the sum of ooo_cpu.cpuN.num_contexts over {} core(s)), got {}.{}\n",
+                 expected_traces, std::size(gen_environment.cpu_view()), std::size(trace_names),
+                 std::size(trace_names) < expected_traces ? " Use -- before trace paths when omitting the --toml filename." : "");
+      return 1;
+    }
+  }
+
   if (list_knobs) {
     // Reported after construction, so these are the keys this machine actually
     // consults with the values this invocation would use -- including the knob
@@ -341,6 +360,9 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
 
   init_event_listeners(requested_listeners);
   std::get<0>(listeners).instructions_between_printouts = heartbeat_frequency;
+  for (const O3_CPU& cpu : gen_environment.cpu_view()) {
+    std::get<0>(listeners).contexts_per_cpu.push_back(std::size(cpu.contexts));
+  }
 
   const bool warmup_given = (warmup_instr_option->count() > 0) || (deprec_warmup_instr_option->count() > 0);
   const bool simulation_given = (sim_instr_option->count() > 0) || (deprec_sim_instr_option->count() > 0);
@@ -360,19 +382,11 @@ int main(int argc, char** argv) // NOLINT(bugprone-exception-escape)
   }
 
   try {
-    std::vector<champsim::tracereader> traces;
-    std::transform(std::begin(trace_names), std::end(trace_names), std::back_inserter(traces),
-                   [knob_cloudsuite, trace_version, repeat = simulation_given, i = uint8_t(0)](auto name) mutable {
-                     return get_tracereader(name, i++, knob_cloudsuite, repeat, trace_version);
-                   });
+    auto traces = get_tracereaders(trace_names, knob_cloudsuite, simulation_given, trace_version);
+    const auto trace_index = champsim::context_trace_index(gen_environment.cpu_view());
 
-    std::vector<champsim::phase_info> phases{
-        {champsim::phase_info{"Warmup", true, warmup_instructions, std::vector<std::size_t>(std::size(trace_names), 0), trace_names},
-         champsim::phase_info{"Simulation", false, simulation_instructions, std::vector<std::size_t>(std::size(trace_names), 0), trace_names}}};
-
-    for (auto& p : phases) {
-      std::iota(std::begin(p.trace_index), std::end(p.trace_index), 0);
-    }
+    std::vector<champsim::phase_info> phases{{champsim::phase_info{"Warmup", true, warmup_instructions, trace_index, trace_names},
+                                              champsim::phase_info{"Simulation", false, simulation_instructions, trace_index, trace_names}}};
 
     fmt::print(
         "\n*** ChampSim Multicore Out-of-Order Simulator ***\nWarmup Instructions: {}\nSimulation Instructions: {}\nNumber of CPUs: {}\nPage size: {}\n\n",

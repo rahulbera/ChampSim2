@@ -105,8 +105,9 @@ Re-run `config.sh` after **adding, renaming, or removing a module** — includin
 git removes one for you, which is what checking out a branch with a different module
 set does. No `make clean` is needed for that; see the branch-switch gotcha for why.
 Changing the machine's shape (which caches exist, how they are wired) is a code edit in
-`src/static_environment.cc`; changing `NUM_CPUS`, `BLOCK_SIZE` or `PAGE_SIZE` is an edit
-to `inc/defs.h` and a rebuild — multi-core is a separate binary by design.
+`src/static_environment.cc`; changing `NUM_CPUS`, `max_contexts`, `BLOCK_SIZE` or
+`PAGE_SIZE` is an edit to `inc/defs.h` and a rebuild — multi-core is a separate binary by
+design.
 
 Traces are `.champsimtrace` optionally `.xz`/`.gz`/`.bz2`/`.zst` compressed; a `-`/process
 substitution stream also works (see the `stats_output` CI job). Warmup/sim counts are
@@ -204,7 +205,8 @@ makefile). `501-static-environment.cc` pins 142 of them against the machine's
 consulted set, so a parameter cannot quietly stop being configurable; two had, and
 that test is why they were found. The 143rd, `sim.heartbeat_frequency`, is outside
 that list because `main()` reads it rather than the environment (`src/main.cc:213`)
-— nothing pins it, so it is the one knob that can still be dropped silently.
+— nothing pins it, so it is the one knob that can still be dropped silently. The same
+file pins `ooo_cpu.<cpu>.num_contexts`, which the JSON never had, in a case of its own.
 
 The two that needed more than a scalar lookup:
 
@@ -370,6 +372,12 @@ overlap a build, a test campaign or a profile with a timing run.
 [The benchmark tooling](tools/perf/README.md) has the procedure, the manifest
 hashing rule, and the harness's own tests, which `make pytest` does not reach.
 
+`ooo_cpu.<cpu>.num_contexts` is a key no older binary consults: against a binary
+without it (`bf574428`, feat/smt before #11), the comparison gate must drop exactly
+that key from the newer side, with every core at 1 (helper in PR #11's description).
+To strip a document for an older binary, use
+`sed -E '/^(ooo_cpu\.cpu[0-9]+\.)?num_contexts = 1$/d' run.toml > old.toml`.
+
 ### Tests
 
 ```bash
@@ -522,18 +530,62 @@ warns/dies on low IPC.
 
 `O3_CPU` (`inc/ooo_cpu.h`, `src/ooo_cpu.cc`) models the OoO pipeline
 (fetch→decode→dispatch→schedule→execute→retire). Per-thread state (input queue, pipeline
-buffers, ROB/LQ/SQ, the DIB decoded-instruction buffer, `frontend_RAT`/`backend_RAT` and
-renaming, fetch-stall state, `roi_stats`/`sim_stats`) is a `champsim::core_context`
-(`inc/core_context.h`). `O3_CPU` keeps the shared physical register file (`shared_prf`),
-sizes, widths, latencies, the L1I/L1D buses and the branch predictor and BTB modules, and
-reaches its context through `ctx()`, which is `contexts.front()`: every core currently
-builds one. Instructions come from `tracereader` (`src/tracereader.cc`), which `do_cycle`
-pushes into `cpu.ctx().input_queue`. `CACHE` (`inc/cache.h`,
+buffers, ROB/LQ/SQ, `frontend_RAT`/`backend_RAT` and renaming, fetch-stall state,
+`roi_stats`/`sim_stats`) is a `champsim::core_context` (`inc/core_context.h`); the core's
+`contexts` vector holds one per hardware context. What the threads share stays on the
+core: the physical register file (`shared_prf`), the one DIB decoded-instruction buffer,
+sizes, widths, latencies, the L1I/L1D buses and the branch predictor and BTB modules.
+`ctx()` is `contexts.front()`, context 0; `ooo_cpu.<cpu>.num_contexts` sets a core's
+contexts, and a multi-context module indexes `contexts[context.value]` (see Hardware
+contexts below). Instructions come from `tracereader` (`src/tracereader.cc`): each
+context is fed by its own tracereader, which `do_cycle` pushes into that context's
+input queue. `CACHE` (`inc/cache.h`,
 `src/cache.cc`) is the generic cache used for every level (L1I/L1D/L2C/LLC and TLBs);
 `PageTableWalker` (`ptw.cc`) + `VirtualMemory` (`vmem.cc`) handle address translation;
 `memory_backend` owns the selected legacy controller or native adapter;
 `DRAM_CONTROLLER`/`DRAM_CHANNEL` (`dram_controller.cc`) implement legacy memory. Stats are split
 into `sim_stats` (whole run) and `roi_stats` (region of interest / sim phase) per component; the core's pair lives in its context.
+
+### Hardware contexts (SMT)
+
+`ooo_cpu.<cpu>.num_contexts` selects how many hardware contexts (SMT threads) a core
+runs: 1 to `champsim::defs::max_contexts` (`inc/defs.h`, 2), default 1, refused naming
+the key outside that range. Traces are assigned core-major, context-minor: with two
+cores at two contexts, traces 0-1 feed cpu0 and 2-3 cpu1. The command line checks the
+trace count twice — at least `NUM_CPUS` before output planning, then exactly the sum of
+every core's `num_contexts` after construction. Trace position i runs in address space
+{i, i}, CloudSuite included. Naming is unchanged for one context; otherwise the core
+nests its contexts (`[phase.<name>.roi.core.cpu0.ctx1]`, `[phase.<name>.trace.cpu0].ctx1`,
+`CPU 0 ctx 1`, and the heartbeat's `(N contexts)`).
+
+Capacity quotas: the builder still names
+the whole-core totals (`rob_size`, `lq_size`, `sq_size`, the four buffer sizes);
+`O3_CPU::make_quota` divides each by the context count and refuses a total that does not
+divide equally or a count outside `1..max_contexts`. Each context's buffers and queues are
+then sized by its quota. What is shared: the physical register file and its free list, the
+one DIB (keyed `(asid, ip)`, so two address spaces never share a decoded window), the
+per-cycle widths, the L1I/L1D channels, and — with N > 1 contexts — the L1D, L1I and
+L2C translation stash: at most `MSHR_SIZE` entries in total and `MSHR_SIZE / N` per
+address space, counting the tag checks in flight and same-cycle admissions. With one
+context the per-asid count equals the total and the gate is `bf574428`'s start-of-cycle
+size check, not a cap.
+
+Arbitration: each stage's rule is summarised above `O3_CPU::operate()` (`src/ooo_cpu.cc`)
+— fetch through decode rotate a start and are work-conserving, dispatch runs one owner per
+cycle that yields only when it dispatches nothing, schedule/LSQ/retire rotate under one
+shared width or cap, and execute/complete issue by `dispatch_sequence`, the core-wide age
+key stamped at dispatch (with one context every rule reduces to the pre-SMT walk, so the
+`max_contexts == 1` fast paths are byte-identical). `max_contexts = 2` compiles out those
+fast paths and slows a one-context run with identical results; the measured cost is
+recorded in PR #10's description.
+
+Branch predictors and BTBs declare a `smt_capability` (`inc/modules.h`): `global_state`
+(process-wide statics; cpu0 and one context only), `single_context` (the default),
+`per_context`, or `shared` (one per-core instance, ASID keying keeps the histories
+disjoint). The environment refuses a module that cannot serve the requested context count
+at configuration time, naming the key and the module; prefetchers and replacement policies
+are not checked. Consequence: `configs/lnc.toml` runs at one context only — its
+`cbp6_tagescl64` is `global_state` — until a cbp6 predictor keeps per-context state.
 
 ### The module system (`inc/modules.h`)
 
@@ -552,7 +604,8 @@ pointer (usually `using Base::Base;`). Hooks are **detected at compile time via 
 simulator calls the first matching overload. The base pointer (`intern_`) gives access to
 the owning `CACHE`/`O3_CPU` (e.g. `NUM_WAY`, `prefetch_line(...)`). A branch predictor or
 BTB reaches per-thread core state through the context: `intern_->ctx().input_queue`,
-`intern_->ctx().roi_stats`, and likewise the ROB, LQ/SQ and DIB; a module written as
+`intern_->ctx().roi_stats`, and likewise the ROB, LQ/SQ; the shared DIB stays on the core
+as `intern_->DIB`; a module written as
 `intern_->input_queue` no longer compiles. `roi_instr()`/`sim_instr()` stay on `O3_CPU`. See
 `docs/src/Modules.rst` for the full hook signatures; `branch/bimodal/` is the minimal
 reference example.
@@ -679,9 +732,11 @@ overwrite that one.
   computed quantum against the constructed machine's actual minimum.
 - **Two configuration keys are named for something they are not.**
   `ooo_cpu.<cpu>.scheduler_size` feeds `schedule_width()` — a per-cycle search
-  *bandwidth*, not the size of a structure — and `ptw.<name>.max_read`/`max_write`
-  feed `tag_bandwidth`/`fill_bandwidth`. Both names came from the JSON and were kept
-  so old configurations still load; read them as widths.
+  *bandwidth* on the single-context path, not the size of a structure; with more than one
+  context it is additionally enforced as the shared reservation-station capacity (the
+  aggregate count of scheduled-not-executed instructions) — and `ptw.<name>.max_read`/
+  `max_write` feed `tag_bandwidth`/`fill_bandwidth`. Both names came from the JSON and
+  were kept so old configurations still load; read them as widths.
 - **An instruction's register operands change meaning when it is scheduled.**
   `ooo_model_instr::source_registers`/`destination_registers` hold the trace's
   architectural IDs until `O3_CPU::do_scheduling` renames them *in place*, and
@@ -708,7 +763,10 @@ overwrite that one.
   architectural register retires. So once the registers held plus what the oldest
   instruction must rename exceed the file, with nothing older in flight, the core can
   never proceed, and the scheduler throws `runtime config: ooo_cpu.cpuN.register_file_size
-  = X is too small for this trace` naming the instruction and the counts. Fast warmup
+  = X is too small for this trace` naming the instruction and the counts — but only with
+  one hardware context: with a sibling, that sibling may retire and free a register, so
+  the context waits instead and the throw is skipped (`src/ooo_cpu.cc`,
+  `schedule_instruction_impl`). Fast warmup
   clears every instruction's register operands (`do_init_instruction`), so the RAT is
   empty when measurement starts and the footprint builds during the region of
   interest. "Architectural register" here means a trace register ID, and a v1 trace
@@ -894,7 +952,9 @@ JSON in ways that matter to a parser:
   now per-CPU tables (`…roi.cache.cpu0_l1d.cpu0`), so key names do not change
   with the core count. The document root is `[meta]`, `[config]`,
   `[config_override]` and `[phase.<name>]`; `[config]` is emitted even when it is
-  empty, so a consumer can always index it.
+  empty, so a consumer can always index it. With several contexts a core's tables
+  nest per-context sub-tables (`…roi.core.cpu0.ctx1`, `…trace.cpu0.ctx1`), one per
+  hardware context.
 - **Only the region of interest is emitted by default.** With a single ROI the
   whole-run section is a byte-identical copy of it, so `sim` is opt-in via
   `--toml-sim-stats`; `[meta].sim_stats` records which, so its absence is never

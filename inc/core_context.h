@@ -26,10 +26,13 @@
 // register file and its free list, bandwidth and capacity constants) stays on
 // the core. So do the branch predictor and BTB modules: they are constructed
 // from the O3_CPU and reach the instruction under prediction through
-// O3_CPU::ctx(), which is context 0.
+// O3_CPU::ctx() (context 0); a module that keys state per context indexes the
+// core's contexts vector by context.value.
 //
-// Stage 1 has exactly one context per core and does not change the order of
-// operations, so single-context results remain bit-identical.
+// Each context's buffers and queues are sized by its share of the core's
+// totals (O3_CPU divides the knobs into per-context quotas; only the one DIB
+// stays shared), and the order of operations is unchanged, so single-context
+// results remain bit-identical.
 
 struct LSQ_ENTRY : champsim::program_ordered<LSQ_ENTRY> {
   champsim::address virtual_address{};
@@ -66,8 +69,8 @@ struct dib_shift {
 // The DIB key is (asid, ip): two address spaces never share a decoded window.
 // The set index stays ip>>shamt; the tag is the pair (ip>>shamt, asid), so a hit
 // needs the same window and address space. An XOR fold would let a different
-// window compare equal. In N=1 asid is {0,0}, so the pair compares equal exactly
-// when the original tag did.
+// window compare equal; the pair compares equal only when the window and the
+// address space both match.
 struct dib_entry {
   champsim::address ip{};
   champsim::address_space_id asid{};
@@ -84,6 +87,21 @@ struct dib_tag {
 };
 
 using dib_type = champsim::msl::lru_table<dib_entry, dib_index, dib_tag>;
+
+// The per-hardware-context share of each capacity knob. The builder still names
+// the whole-core totals (rob_size, lq_size, ...); O3_CPU::make_quota divides
+// each by the context count, refusing a total that does not divide equally, and
+// the pipeline gates read these quotas instead of the totals. The one DIB is
+// shared, so it has no quota here.
+struct context_quota {
+  std::size_t ifetch_buffer;
+  std::size_t decode_buffer;
+  std::size_t dib_hit_buffer;
+  std::size_t dispatch_buffer;
+  std::size_t rob;
+  std::size_t lq;
+  std::size_t sq;
+};
 
 struct core_context {
   using stats_type = cpu_stats;
@@ -103,7 +121,11 @@ struct core_context {
   // counts from zero, so ids repeat across contexts and across cores.
   uint64_t next_load_waiter_id = 0;
 
-  dib_type DIB;
+  // The hardware-context index of this thread. It is what keys the producer
+  // identity assertions in rename/retire: registers are private to a thread, so
+  // the assertion is on thread identity, not asid. The core assigns this after
+  // filling the context vector (the minimal test constructor leaves it 0).
+  champsim::context_index ctx_index{};
 
   // Per-context register-rename state: the architectural alias tables. The
   // physical register file and its free list are shared and stay on the core
@@ -113,9 +135,10 @@ struct core_context {
   std::array<PHYSICAL_REGISTER_ID, std::numeric_limits<uint8_t>::max() + 1> frontend_RAT, backend_RAT;
   RegisterAllocator* reg_allocator = nullptr;
 
-  // Rename methods that read or write the per-context RATs. They are moved here
-  // line-for-line from RegisterAllocator; the physical-register pool they touch
-  // is the shared reg_allocator above.
+  // Rename methods that read or write the per-context RATs. A rename stamps the
+  // physical register it hands out with this context's ctx_index and, on a hit,
+  // asserts the register already belongs to this thread; the physical-register
+  // pool they touch is the shared reg_allocator above.
   PHYSICAL_REGISTER_ID rename_dest_register(int16_t reg, champsim::program_ordered<ooo_model_instr>::id_type producer_id);
   PHYSICAL_REGISTER_ID rename_src_register(int16_t reg);
   void retire_dest_register(PHYSICAL_REGISTER_ID physreg);
@@ -123,8 +146,8 @@ struct core_context {
   bool isAllocated(PHYSICAL_REGISTER_ID archreg) const;
 
   // The RAT half of the deadlock printer; RegisterAllocator::print_deadlock()
-  // prints the physical-file half. Called back-to-back in that order by
-  // O3_CPU::print_deadlock() so the combined output matches the original.
+  // prints the physical-file half. O3_CPU::print_deadlock() prints one RAT per
+  // context and the physical file once after them.
   void print_deadlock();
 
   // Fetch freeze bookkeeping for this context.
@@ -141,20 +164,16 @@ struct core_context {
   long long begin_phase_instr = 0;
   champsim::chrono::clock::time_point finish_phase_time{};
   long long finish_phase_instr = 0;
-  champsim::chrono::clock::time_point last_heartbeat_time{};
-  long long last_heartbeat_instr = 0;
 
   // Minimal context bound to a shared physical register file. Tests use this to
-  // exercise the RAT methods directly; the DIB geometry is irrelevant there.
-  explicit core_context(RegisterAllocator* shared_prf) : DIB(1, 1), reg_allocator(shared_prf)
+  // exercise the RAT methods directly; the load/store queues stay empty.
+  explicit core_context(RegisterAllocator* shared_prf) : reg_allocator(shared_prf)
   {
     frontend_RAT.fill(-1); // default value for no mapping
     backend_RAT.fill(-1);
   }
 
-  core_context(RegisterAllocator* shared_prf, std::size_t lq_size, std::size_t dib_set, std::size_t dib_way, unsigned long dib_window)
-      : LQ(lq_size), DIB(dib_set, dib_way, {champsim::data::bits{champsim::lg2(dib_window)}}, {champsim::data::bits{champsim::lg2(dib_window)}}),
-        reg_allocator(shared_prf)
+  core_context(RegisterAllocator* shared_prf, std::size_t lq_quota) : LQ(lq_quota), reg_allocator(shared_prf)
   {
     frontend_RAT.fill(-1); // default value for no mapping
     backend_RAT.fill(-1);

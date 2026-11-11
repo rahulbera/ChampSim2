@@ -50,7 +50,7 @@ sources for you to plagiarize.
 #include <numeric>
 
 bool hashed_perceptron::predict_branch(champsim::address pc, champsim::address /*predicted_target*/, bool /*always_taken*/, uint8_t /*branch_type*/,
-                                       champsim::address_space_id asid)
+                                       champsim::context_index context, champsim::address_space_id asid)
 {
   // The ASID word is 16 bits wide and a table index only TABLE_INDEX_BITS, so
   // fold it to that width first; XOR-ing it in whole indexes past TABLE_SIZE once
@@ -61,7 +61,7 @@ bool hashed_perceptron::predict_branch(champsim::address pc, champsim::address /
     return hist.value() ^ pc_slice; // seed in the PC to spread accesses around (like gshare) XOR in the last word
   };
   perceptron_result result;
-  std::transform(std::cbegin(ghist_words), std::cend(ghist_words), std::begin(result.indices), get_index);
+  std::transform(std::cbegin(ghist_words.at(context.value)), std::cend(ghist_words.at(context.value)), std::begin(result.indices), get_index);
 
   // add the selected weights to the perceptron sum
   result.yout = std::inner_product(std::begin(tables), std::end(tables), std::begin(result.indices), 0, std::plus<>{},
@@ -71,9 +71,9 @@ bool hashed_perceptron::predict_branch(champsim::address pc, champsim::address /
 }
 
 void hashed_perceptron::last_branch_result(champsim::address pc, champsim::address /*branch_target*/, bool taken, uint8_t /*branch_type*/,
-                                           champsim::address_space_id asid)
+                                           champsim::context_index context, champsim::address_space_id asid)
 {
-  for (auto& hist : ghist_words) {
+  for (auto& hist : ghist_words.at(context.value)) {
     hist.push_back(taken);
   }
 

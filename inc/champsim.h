@@ -88,11 +88,22 @@ using page_offset = address_slice<page_offset_extent>;
 // An address space is identified by its ASID, not by a physical-core number.
 using address_space_id = std::array<uint8_t, 2>;
 
-// The ASID word is mixed into predictor and DIB indexes. The fold is a hash, not
-// an identity: x ^ asid_word(a) can equal y ^ asid_word(b) for a != b, so tagged
-// structures (the DIB and the direct BTBs) compare the asid itself.
-// In the N=1 milestone asid is constant {0,0}, so every fold is a numeric no-op.
+// The ASID word is folded into predictor indexes (the branch predictor and BTB
+// hashes), never into the DIB's set index, which stays ip>>shamt. Trace i runs
+// as {i,i}, and the fold is a hash, not an identity: x ^ asid_word(a) can equal
+// y ^ asid_word(b) for a != b, so the tagged structures that fold it compare the
+// asid itself too.
 inline constexpr uint64_t asid_word(address_space_id asid) { return static_cast<uint64_t>(asid[0]) | (static_cast<uint64_t>(asid[1]) << 8); }
+
+// A hardware-context index threaded through the module hooks so a per-context
+// module can select its own slice of replicated state. A distinct strong type
+// rather than a bare integer: several hook overloads already carry a uint8_t
+// (the branch type), and under the SFINAE probes an integral context index
+// would be indistinguishable from it -- silently routing a per-context module
+// onto the wrong overload.
+struct context_index {
+  uint8_t value{0};
+};
 
 /**
  * Get the lowest possible address for which the space between it and zero is the given size.
