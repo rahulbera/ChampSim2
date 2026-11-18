@@ -103,6 +103,56 @@ TEST_CASE("Two address spaces aliasing one physical page do not share a TLB entr
   REQUIRE(mock_stlb.request_count == 2);
 }
 
+TEST_CASE("Two address spaces that miss on one virtual page in the same cycle do not merge in a TLB")
+{
+  auto vmem = unrandomized_vmem();
+  aliasing_translator mock_stlb;
+  to_rq_MRP mock_ul{[](auto x, auto y) {
+    return x.v_address == y.v_address && x.asid[0] == y.asid[0];
+  }};
+
+  CACHE uut{champsim::cache_builder{champsim::defaults::default_dtlb}
+                .name("417-merge")
+                .upper_levels({&mock_ul.queues})
+                .lower_level(&mock_stlb.queues)
+                .virtual_memory(&vmem)
+                .hit_latency(10)
+                .fill_latency(3)
+                .tag_bandwidth(champsim::bandwidth::maximum_type{10})};
+
+  std::array<champsim::operable*, 3> elements{{&uut, &mock_ul, &mock_stlb}};
+  for (auto elem : elements) {
+    elem->initialize();
+    elem->warmup = false;
+    elem->begin_phase();
+  }
+
+  auto make_req = [](uint8_t asid0) {
+    champsim::channel::request_type req;
+    req.address = champsim::address{0xdead000};
+    req.v_address = champsim::address{0xdead000};
+    req.is_translated = true;
+    req.asid[0] = asid0;
+    req.asid[1] = asid0;
+    req.cpu = 0;
+    return req;
+  };
+
+  // Both lookups are checked in the same cycle, so the second finds the first's
+  // MSHR still outstanding; it must allocate its own rather than merge into it.
+  REQUIRE(mock_ul.issue(make_req(250)));
+  REQUIRE(mock_ul.issue(make_req(251)));
+  for (int i = 0; i < 50; ++i) {
+    for (auto elem : elements)
+      elem->_operate();
+  }
+
+  CHECK(mock_stlb.request_count == 2);
+  CHECK(uut.sim_stats.miss_merge.value_or(std::pair{access_type::LOAD, 0u}, 0) == 0);
+  for (const auto& pkt : mock_ul.packets)
+    CHECK(pkt.return_time > 0);
+}
+
 TEST_CASE("A physical cache matches a block on its physical address alone")
 {
   aliasing_translator mock_stlb;
@@ -163,5 +213,13 @@ TEST_CASE("A physical cache matches a block on its physical address alone")
 
   CHECK(uut.sim_stats.hits.value_or(std::pair{access_type::WRITE, 0u}, 0) == 1);
   CHECK(uut.sim_stats.misses.value_or(std::pair{access_type::WRITE, 0u}, 0) == 0);
+  CHECK(mock_stlb.request_count == 1);
+
+  // A load from another address space ({1,1}: another core's or context's trace)
+  // to the same physical block hits the same line, as the default-asid write did.
+  REQUIRE(mock_ul.issue(make_req(1, false)));
+  run(50);
+  CHECK(uut.sim_stats.hits.value_or(std::pair{access_type::LOAD, 0u}, 0) == 1);
+  CHECK(uut.sim_stats.misses.value_or(std::pair{access_type::LOAD, 0u}, 0) == 1);
   CHECK(mock_stlb.request_count == 1);
 }
