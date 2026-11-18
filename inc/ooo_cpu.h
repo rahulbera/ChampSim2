@@ -550,9 +550,9 @@ void O3_CPU::btb_module_model<Ts...>::impl_update_btb(champsim::address ip, cham
     /* Per-context modules: context index between branch type and asid */
     if constexpr (context_asid)
       t.update_btb(ip, predicted_target, taken, branch_type, context, asid);
-    if constexpr (strong_asid)
+    if constexpr (!context_asid && strong_asid)
       t.update_btb(ip, predicted_target, taken, branch_type, asid);
-    if constexpr (raw_asid)
+    if constexpr (!context_asid && raw_asid)
       t.update_btb(ip.to<uint64_t>(), predicted_target.to<uint64_t>(), taken, branch_type, asid);
     /* Without asid, for modules written before the hook took one */
     if constexpr (!context_asid && !raw_asid && !strong_asid && btb::has_update_btb<decltype(t), champsim::address, champsim::address, bool, uint8_t>)
