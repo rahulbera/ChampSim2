@@ -23,7 +23,7 @@ std::pair<champsim::address, bool> basic_btb::btb_prediction(champsim::address i
     return ras.at(context.value).prediction();
 
   if (btb_entry->type == direct_predictor::branch_info::INDIRECT)
-    return indirect.at(context.value).prediction(ip, asid);
+    return indirect.prediction(ip, context, asid);
 
   return {btb_entry->target, btb_entry->type != direct_predictor::branch_info::CONDITIONAL};
 }
@@ -37,10 +37,10 @@ void basic_btb::update_btb(champsim::address ip, champsim::address branch_target
 
   // updates for indirect branches
   if ((branch_type == BRANCH_INDIRECT) || (branch_type == BRANCH_INDIRECT_CALL))
-    indirect.at(context.value).update_target(ip, branch_target, asid);
+    indirect.update_target(ip, branch_target, context, asid);
 
   if (branch_type == BRANCH_CONDITIONAL)
-    indirect.at(context.value).update_direction(taken);
+    indirect.update_direction(context, taken);
 
   if (branch_type == BRANCH_RETURN)
     ras.at(context.value).calibrate_call_size(branch_target);

@@ -118,3 +118,18 @@ TEMPLATE_TEST_CASE("A branch predictor keeps its global history per context", ""
 {
   check_history_isolation<TestType>();
 }
+
+TEST_CASE("basic_btb's contexts share one indirect target table")
+{
+  // Context 1 trains an indirect branch; context 0, in the same address space and
+  // with an empty conditional history like context 1's, predicts the target
+  // context 1 trained. A table replicated per context would leave context 0's
+  // slot empty.
+  basic_btb uut;
+  constexpr champsim::address_space_id asid{0, 0};
+  uut.update_btb(champsim::address{0x7000}, champsim::address{0x9abc0}, true, BRANCH_INDIRECT, champsim::context_index{1}, asid);
+
+  const auto [target, taken] = uut.btb_prediction(champsim::address{0x7000}, champsim::context_index{0}, asid);
+  CHECK(target == champsim::address{0x9abc0});
+  CHECK(taken);
+}
