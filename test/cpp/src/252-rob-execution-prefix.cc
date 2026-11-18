@@ -54,18 +54,28 @@ struct resetting_predictor : champsim::modules::branch_predictor {
     }
     intern_->ctx().ROB.front().executed = false;
     intern_->ctx().ROB.front().ready_time = intern_->current_time;
+    intern_->recount_scheduler_occupancy(); // it just un-executed a scheduled entry
   }
 };
+
+// These cases set `scheduled` and `executed` on ROB entries directly, which the
+// core's running scheduler occupancy cannot see, so each cycle recounts it from
+// the ROB first, as any test that edits the ROB must.
+long run_cycle(O3_CPU& cpu)
+{
+  cpu.recount_scheduler_occupancy();
+  return cpu.operate();
+}
 } // namespace
 
 TEST_CASE_METHOD(rob_fixture, "ROB execution leaves empty and memory-blocked windows unchanged")
 {
-  SECTION("Empty") { CHECK(cpu.operate() == 0); }
+  SECTION("Empty") { CHECK(run_cycle(cpu) == 0); }
   SECTION("All executed with pending memory")
   {
     cpu.ctx().ROB = {blocked_memory_instruction(1), blocked_memory_instruction(2)};
     const auto old_time = cpu.ctx().ROB.front().ready_time;
-    CHECK(cpu.operate() == 0);
+    CHECK(run_cycle(cpu) == 0);
     for (const auto& instr : cpu.ctx().ROB) {
       CHECK(instr.executed);
       CHECK_FALSE(instr.completed);
@@ -77,7 +87,7 @@ TEST_CASE_METHOD(rob_fixture, "ROB execution leaves empty and memory-blocked win
 TEST_CASE_METHOD(rob_fixture, "ROB execution selects the oldest ready instructions after a blocked memory prefix")
 {
   cpu.ctx().ROB = {blocked_memory_instruction(1), blocked_memory_instruction(2), ready_instruction(3), ready_instruction(4), ready_instruction(5)};
-  CHECK(cpu.operate() == 2);
+  CHECK(run_cycle(cpu) == 2);
   const auto ready = cpu.current_time + cpu.EXEC_LATENCY;
   CHECK(cpu.ctx().ROB[2].executed);
   CHECK(cpu.ctx().ROB[3].executed);
@@ -103,7 +113,7 @@ TEST_CASE_METHOD(rob_fixture, "An unready first ROB candidate does not block lat
     dependency = cpu.ctx().rename_dest_register(7, 0);
     cpu.ctx().ROB[1].source_registers = {dependency};
   }
-  cpu.operate();
+  run_cycle(cpu);
   CHECK_FALSE(cpu.ctx().ROB[1].executed);
   CHECK(cpu.ctx().ROB[2].executed);
   CHECK(cpu.ctx().ROB[2].ready_time == cpu.current_time + cpu.EXEC_LATENCY);
@@ -111,7 +121,7 @@ TEST_CASE_METHOD(rob_fixture, "An unready first ROB candidate does not block lat
   if (blocked_by == blockage::reg) {
     cpu.ctx().reg_allocator->complete_dest_register(dependency);
   }
-  cpu.operate();
+  run_cycle(cpu);
   CHECK(cpu.ctx().ROB[1].executed);
   CHECK(cpu.ctx().ROB[1].ready_time == cpu.current_time + cpu.EXEC_LATENCY);
 }
@@ -126,7 +136,7 @@ TEST_CASE_METHOD(rob_fixture, "Completion and execution each use their full widt
   for (uint64_t id = 4; id <= 6; ++id) {
     cpu.ctx().ROB.push_back(ready_instruction(id));
   }
-  CHECK(cpu.operate() == 4);
+  CHECK(run_cycle(cpu) == 4);
   CHECK(cpu.ctx().ROB[0].completed);
   CHECK(cpu.ctx().ROB[1].completed);
   CHECK_FALSE(cpu.ctx().ROB[2].completed);
@@ -156,7 +166,7 @@ TEST_CASE_METHOD(rob_fixture, "Producer completion in the final completion slot 
   cpu.ctx().ROB.push_back(producer);
   cpu.ctx().ROB.push_back(dependent);
   REQUIRE_FALSE(cpu.ctx().reg_allocator->isValid(dependent.source_registers.front()));
-  CHECK(cpu.operate() == width + 1);
+  CHECK(run_cycle(cpu) == width + 1);
   CHECK(cpu.ctx().ROB[cpu.ctx().ROB.size() - 2].completed);
   CHECK(cpu.ctx().ROB.back().executed);
   CHECK_FALSE(cpu.ctx().ROB.back().completed);
@@ -195,7 +205,7 @@ TEST_CASE("Completion callbacks can make an older ROB entry win execution")
   branch.executed = true;
   branch.is_branch = true;
   cpu.ctx().ROB.push_back(branch);
-  CHECK(cpu.operate() == 2);
+  CHECK(run_cycle(cpu) == 2);
   REQUIRE(cpu.ctx().ROB.size() == (has_competitor ? 3u : 2u));
   CHECK(cpu.ctx().ROB.front().instr_id == 2);
   CHECK(cpu.ctx().ROB.front().executed);
@@ -234,9 +244,9 @@ TEST_CASE_METHOD(rob_fixture, "Standalone ROB stages inspect mutations between p
 TEST_CASE_METHOD(rob_fixture, "ROB execution has no state surviving direct mutations between cycles")
 {
   cpu.ctx().ROB = {blocked_memory_instruction(1), blocked_memory_instruction(2)};
-  CHECK(cpu.operate() == 0);
+  CHECK(run_cycle(cpu) == 0);
   const auto check_execution = [&] {
-    CHECK(cpu.operate() == 1);
+    CHECK(run_cycle(cpu) == 1);
     if (cpu.ctx().ROB.front().instr_id == 1 && cpu.ctx().ROB.size() == 3) {
       CHECK(cpu.ctx().ROB.back().executed);
       CHECK(cpu.ctx().ROB.back().ready_time == cpu.current_time + cpu.EXEC_LATENCY);
@@ -269,13 +279,13 @@ TEST_CASE_METHOD(rob_fixture, "Zero execution width holds both stages until widt
   completing.executed = true;
   cpu.ctx().ROB = {completing, ready_instruction(2)};
   cpu.EXEC_WIDTH = champsim::bandwidth::maximum_type{0};
-  CHECK(cpu.operate() == 0);
+  CHECK(run_cycle(cpu) == 0);
   CHECK_FALSE(cpu.ctx().ROB[0].completed);
   CHECK_FALSE(cpu.ctx().ROB[1].executed);
   CHECK(cpu.complete_inflight_instruction() == 0);
   CHECK(cpu.execute_instruction() == 0);
   cpu.EXEC_WIDTH = champsim::bandwidth::maximum_type{1};
-  CHECK(cpu.operate() == 2);
+  CHECK(run_cycle(cpu) == 2);
   CHECK(cpu.ctx().ROB[0].completed);
   CHECK(cpu.ctx().ROB[1].executed);
 }
@@ -287,7 +297,7 @@ TEST_CASE_METHOD(rob_fixture, "Retirement exposes the next ROB head before execu
   retired.completed = true;
   cpu.ctx().ROB = {retired, ready_instruction(2)};
   cpu.RETIRE_WIDTH = champsim::bandwidth::maximum_type{1};
-  CHECK(cpu.operate() == 2);
+  CHECK(run_cycle(cpu) == 2);
   REQUIRE(cpu.ctx().ROB.size() == 1);
   CHECK(cpu.ctx().num_retired == 1);
   CHECK(cpu.ctx().ROB.front().instr_id == 2);
@@ -300,20 +310,20 @@ TEST_CASE_METHOD(rob_fixture, "Execution latency and completion ordering survive
   cpu.warmup = GENERATE(false, true);
   const auto starting_warmup = cpu.warmup;
   cpu.ctx().ROB = {blocked_memory_instruction(1), ready_instruction(2)};
-  CHECK(cpu.operate() == 1);
+  CHECK(run_cycle(cpu) == 1);
   const auto first_ready = cpu.current_time + (starting_warmup ? champsim::chrono::clock::duration{} : cpu.EXEC_LATENCY);
   CHECK(cpu.ctx().ROB[1].ready_time == first_ready);
   CHECK_FALSE(cpu.ctx().ROB[1].completed);
   cpu.warmup = !starting_warmup;
   cpu.ctx().ROB.push_back(ready_instruction(3));
-  cpu.operate();
+  run_cycle(cpu);
   CHECK(cpu.ctx().ROB[1].completed == starting_warmup);
   CHECK(cpu.ctx().ROB[1].ready_time == first_ready);
   CHECK(cpu.ctx().ROB[2].executed);
   CHECK_FALSE(cpu.ctx().ROB[2].completed);
   CHECK(cpu.ctx().ROB[2].ready_time == cpu.current_time + (cpu.warmup ? champsim::chrono::clock::duration{} : cpu.EXEC_LATENCY));
   cpu.current_time += cpu.EXEC_LATENCY;
-  cpu.operate();
+  run_cycle(cpu);
   CHECK(cpu.ctx().ROB[1].completed);
   CHECK(cpu.ctx().ROB[2].completed);
 }
@@ -341,7 +351,7 @@ TEST_CASE_METHOD(rob_fixture, "ROB execution timestamps only the owning LSQ entr
   };
   require_lsq_owners();
   cpu.ctx().ROB = {blocked_memory_instruction(1), target, other};
-  CHECK(cpu.operate() == 1);
+  CHECK(run_cycle(cpu) == 1);
   require_lsq_owners();
   const auto ready = cpu.current_time + (cpu.warmup ? champsim::chrono::clock::duration{} : cpu.EXEC_LATENCY);
   CHECK(cpu.ctx().ROB[1].ready_time == ready);
