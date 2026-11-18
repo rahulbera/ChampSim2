@@ -1,4 +1,5 @@
 #include <catch.hpp>
+#include <stdexcept>
 #include <tuple>
 
 #include "environment.h"
@@ -57,6 +58,8 @@ struct phase_environment : champsim::environment {
     long operate() override
     {
       const auto tick = current_time.time_since_epoch().count();
+      if (tick > 1000)
+        throw std::runtime_error{"the phase did not end by tick 1000"};
       env.operations.emplace_back(id, tick);
       if (id == 'F') {
         for (std::size_t c = 0; c < std::size(env.first.contexts); ++c)
@@ -173,4 +176,56 @@ TEST_CASE("A core whose contexts have all reached EOF ends every core on that ti
   const std::vector<std::tuple<char, unsigned, long long>> expected_endings{{'S', 0, 1}, {'F', 0, 1}, {'M', 0, 1}, {'S', 1, 1}, {'F', 1, 1}, {'M', 1, 1}};
   CHECK(env.endings == expected_endings);
   CHECK(env.second.sim_instr() == 0);
+}
+
+TEST_CASE("A trace EOF on context 1 does not end its core while context 0 still has input")
+{
+  phase_environment env{2};
+  std::vector<champsim::tracereader> traces;
+  traces.emplace_back(finite_reader{});
+  traces.emplace_back([] { return ooo_model_instr{0, input_instr{}}; });
+  traces.emplace_back([] { return ooo_model_instr{0, input_instr{}}; });
+  champsim::chrono::clock clock;
+  champsim::phase_info phase{"Warmup", true, 100, {{1, 0}, {2}}, {"finite", "endless", "endless"}};
+  champsim::do_phase(phase, env, traces, clock, {});
+
+  const std::vector<std::tuple<char, unsigned, long long>> expected_endings{{'S', 0, 100}, {'F', 0, 100}, {'M', 0, 100},
+                                                                            {'S', 1, 200}, {'F', 1, 200}, {'M', 1, 200}};
+  CHECK(env.endings == expected_endings);
+  CHECK(env.first.contexts[1].input_queue.size() == 1);
+}
+
+TEST_CASE("With one context per core, the second core's trace EOF ends every core on that tick")
+{
+  phase_environment env;
+  std::vector<champsim::tracereader> traces;
+  traces.emplace_back([] { return ooo_model_instr{0, input_instr{}}; });
+  traces.emplace_back(finite_reader{});
+  champsim::chrono::clock clock;
+  champsim::phase_info phase{"Warmup", true, 100, {{0}, {1}}, {"endless", "finite"}};
+  champsim::do_phase(phase, env, traces, clock, {});
+
+  const std::vector<std::tuple<char, unsigned, long long>> expected_endings{{'S', 0, 1}, {'F', 0, 1}, {'M', 0, 1}, {'S', 1, 1}, {'F', 1, 1}, {'M', 1, 1}};
+  CHECK(env.endings == expected_endings);
+  CHECK(env.second.sim_instr() == 0);
+}
+
+TEST_CASE("With one context per core, a finished core's trace EOF still ends every core on that tick")
+{
+  struct timed_reader {
+    const O3_CPU* cpu;
+    long long end;
+    ooo_model_instr operator()() { return ooo_model_instr{0, input_instr{}}; }
+    bool eof() const { return cpu->current_time.time_since_epoch().count() >= end; }
+  };
+  phase_environment env;
+  std::vector<champsim::tracereader> traces;
+  traces.emplace_back(timed_reader{&env.first, 5});
+  traces.emplace_back([] { return ooo_model_instr{0, input_instr{}}; });
+  champsim::chrono::clock clock;
+  champsim::phase_info phase{"Warmup", true, 3, {{0}, {1}}, {"timed", "endless"}};
+  champsim::do_phase(phase, env, traces, clock, {});
+
+  const std::vector<std::tuple<char, unsigned, long long>> expected_endings{{'S', 0, 3}, {'F', 0, 3}, {'M', 0, 3}, {'S', 1, 5}, {'F', 1, 5}, {'M', 1, 5}};
+  CHECK(env.endings == expected_endings);
 }
