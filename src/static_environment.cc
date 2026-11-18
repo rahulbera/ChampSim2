@@ -334,8 +334,8 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
 
     // The L1D, L1I and L2C translation stashes are shared equally among the
     // core's hardware contexts: each context may hold mshr_size / contexts of
-    // the stash's entries, so the size must divide the context count. stash_mshrs
-    // enforces that and names the offending key.
+    // the stash's entries, so the size must be a multiple of the context count.
+    // stash_mshrs enforces that and names the offending key.
     const auto contexts = configured_num_contexts(cfg, core_key(cpu) + ".num_contexts");
     const auto stash_mshrs = [&cfg, contexts](const std::string& key, uint32_t fallback) {
       const auto mshrs = cfg.value<uint32_t>(key + ".mshr_size", fallback);

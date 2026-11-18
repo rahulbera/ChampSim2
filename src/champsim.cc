@@ -185,11 +185,11 @@ phase_stats do_phase(const phase_info& phase, environment& env, std::vector<trac
 
     // Check for phase finish. A context is done when it has retired its share of
     // the phase or reached its trace's EOF; a core is complete when every one of
-    // its contexts is done. Separately, once a core's every context is at EOF,
-    // every core's phase ends that tick: that is master's any-EOF rule, scoped
-    // so a short trace only ends the phase once its own core has no other input
-    // left. With one context per core the per-core and all-EOF rules coincide,
-    // so a one-context run is unchanged.
+    // its contexts is done. Separately, once every context of a core is at EOF,
+    // every core's phase ends that tick, so a short trace ends the phase only
+    // when its core has no other input. With one context per core the two rules
+    // together are master's rule: any trace's EOF ends every core, and a core
+    // also completes at its length.
     bool core_out_of_input = false;
     for (O3_CPU& cpu : cpus) {
       bool core_complete = true;

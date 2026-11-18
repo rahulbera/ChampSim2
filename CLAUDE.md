@@ -171,7 +171,7 @@ the previous JSON value as the fallback (`.rob_size(cfg.value<std::size_t>(...
   throws, not assertions, so `BUILD_MODE=fast` does not remove them. The deeper
   guards behind them — `src/dram_controller.cc:36,44,49`, `src/vmem.cc:33,41` —
   throw `std::invalid_argument` and name no key; `main()` catches `std::exception`
-  (`src/main.cc:288`), prints `ERROR: <what>` on stderr and exits 1. It caught only
+  (`src/main.cc:290`), prints `ERROR: <what>` on stderr and exits 1. It caught only
   `std::runtime_error` until `87aa5ba2`, so an unrepresentable aggregate DRAM
   capacity used to terminate the process instead. `--knobs` builds the machine, so
   it reports these errors too and exits 1. `501-static-environment.cc`'s "Invalid
@@ -204,7 +204,7 @@ of its 147 leaf keys are runtime knobs, and the other four are compile-time by d
 makefile). `501-static-environment.cc` pins 142 of them against the machine's
 consulted set, so a parameter cannot quietly stop being configurable; two had, and
 that test is why they were found. The 143rd, `sim.heartbeat_frequency`, is outside
-that list because `main()` reads it rather than the environment (`src/main.cc:213`)
+that list because `main()` reads it rather than the environment (`src/main.cc:215`)
 — nothing pins it, so it is the one knob that can still be dropped silently. The same
 file pins `ooo_cpu.<cpu>.num_contexts`, which the JSON never had, in a case of its own.
 
@@ -582,12 +582,16 @@ recorded in PR #10's description.
 Branch predictors and BTBs declare a `smt_capability` (`inc/modules.h`): `global_state`
 (process-wide statics; cpu0 and one context only), `single_context` (the default),
 `per_context`, or `shared` (one set of tables per core, the asid folded into their index
-or compared in their tags; branch history and return stacks kept per context, selected
-by the context index the core passes to the hooks). The environment refuses a module
-that cannot serve the requested context count at configuration time, naming the key and
-the module; prefetchers and replacement policies are not checked. Consequence:
-`configs/lnc.toml` runs at one context only — its `cbp6_tagescl64` is `global_state` —
-until a cbp6 predictor keeps per-context state.
+or compared in their tags; branch history and return stacks kept per context, selected by
+the context index the core passes to the hooks). The environment refuses a module that
+cannot serve the requested context count at configuration time, naming the key and the
+module. Consequence: `configs/lnc.toml` runs at one context only — its `cbp6_tagescl64` is
+`global_state` — until a cbp6 predictor keeps per-context state. Prefetchers and
+replacement policies declare no capability, but a prefetcher whose
+`prefetcher_cache_operate` takes no asid and cpu is refused on a cache that translates its
+prefetches (a virtual-prefetch L1I or a TLB) for a core with more than one context, and
+the origin-less `prefetch_line` throws there at run time (`docs/src/Modules.rst`,
+"Prefetchers with several hardware contexts").
 
 ### The module system (`inc/modules.h`)
 
@@ -956,9 +960,10 @@ JSON in ways that matter to a parser:
   now per-CPU tables (`…roi.cache.cpu0_l1d.cpu0`), so key names do not change
   with the core count. The document root is `[meta]`, `[config]`,
   `[config_override]` and `[phase.<name>]`; `[config]` is emitted even when it is
-  empty, so a consumer can always index it. With several contexts a core's tables
-  nest per-context sub-tables (`…roi.core.cpu0.ctx1`, `…trace.cpu0.ctx1`), one per
-  hardware context.
+  empty, so a consumer can always index it. With several contexts a core's
+  `roi.core` (and `sim.core`) table nests one sub-table per hardware context
+  (`…roi.core.cpu0.ctx1`), and its trace entry becomes a table of per-context
+  paths (`[…trace.cpu0].ctx1`).
 - **Only the region of interest is emitted by default.** With a single ROI the
   whole-run section is a byte-identical copy of it, so `sim` is opt-in via
   `--toml-sim-stats`; `[meta].sim_stats` records which, so its absence is never
@@ -1013,9 +1018,9 @@ Three things about `[config]` are not obvious:
   appear there, correctly: the user did supply them. The exception is a key that
   lost a precedence contest to something outside the store: a
   `sim.heartbeat_frequency` beaten by an explicit `--heartbeat-frequency` is erased
-  from the table (`src/main.cc:428`), because it did not take effect. `[config]`
+  from the table (`src/main.cc:442`), because it did not take effect. `[config]`
   then reports the winner's value — `runtime_config::override_effective`
-  (`src/main.cc:220`) records an effective value that came from neither the store
+  (`src/main.cc:222`) records an effective value that came from neither the store
   nor the fallback, which is also how the native driver records the hash, revision
   and canonical path it read out of the YAML (`src/ramulator2_driver.cc:361-365`).
 
