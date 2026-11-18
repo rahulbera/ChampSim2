@@ -69,6 +69,15 @@ class OperationalConfigErrorTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertIn(f"ERROR: expected {self.cores + 1} trace(s), one per hardware context", result.stderr)
 
+    def test_too_many_traces_are_refused_without_the_hint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            traces = [self.placeholder(tmp, f"trace{index}") for index in range(self.cores + 2)]
+            result = self.run_with_traces(traces, "--set", "ooo_cpu.cpu0.num_contexts=2")
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn(f"ERROR: expected {self.cores + 1} trace(s), one per hardware context", result.stderr)
+            self.assertIn(f"got {self.cores + 2}.", result.stderr)
+            self.assertNotIn("Use -- before trace paths", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
