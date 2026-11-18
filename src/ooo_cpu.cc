@@ -70,7 +70,7 @@ champsim::context_quota O3_CPU::make_quota(uint32_t cpu, std::size_t num_context
 // drains its context's buffer), so the `max_contexts == 1` fast paths below are
 // byte-identical to the pre-SMT core.
 //
-//   fetch .. promote_to_decode   rotating start (fetch_round_robin), greedy: each
+//   fetch .. decode              rotating start (fetch_round_robin), greedy: each
 //                                site drains its whole shared width from the
 //                                starting context before the sibling runs.
 //   dispatch                      one dispatch owner per cycle (dispatch_owner),
@@ -1356,8 +1356,8 @@ void O3_CPU::print_deadlock()
     champsim::range_print_deadlock(c.ROB, label(ctx, "ROB"), instr_fmt, instr_pack);
   }
 
-  // print each context's RATs (labelled only with several), then every physical
-  // register once, then the full-file warning once.
+  // print each context's RATs (labelled only with several), then the full-file
+  // warning once, then every physical register once.
   for (std::size_t ctx = 0; ctx < contexts.size(); ++ctx) {
     if (several)
       fmt::print("cpu{}_ctx{}_RAT\n", cpu, ctx);

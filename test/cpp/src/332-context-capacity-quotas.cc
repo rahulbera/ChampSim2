@@ -18,8 +18,8 @@
 // is shared, so it is sized on the core, not per context.
 //
 // The file pins four things: (1) the quota equals the total at one context and
-// half of it at two; (2) a total that does not divide by the context count, and
-// a context count outside 1..max_contexts, are refused naming the offending key;
+// half of it at two; (2) a total that does not divide by the context count is
+// refused naming its key, and a context count outside 1..max_contexts is refused;
 // (3) a full backlog fills each context's ROB, LQ and SQ -- and its front-end
 // buffers -- to exactly its quota, not the total; and (4) the single 1x1 DIB is
 // shared: a fill in one context hits in the other within one asid, and misses

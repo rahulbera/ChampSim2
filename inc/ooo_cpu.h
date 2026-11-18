@@ -93,9 +93,9 @@ public:
 
   // The one decoded-instruction buffer, shared by every context. Its key is the
   // (asid, ip) pair, so two contexts in different address spaces never share a
-  // decoded window; with one context asid is {0,0}, so a hit compares equal
-  // exactly when the original ip-only tag did. The per-context DIB was
-  // removed.
+  // decoded window; with one context every instruction carries its core's asid
+  // {cpu,cpu}, so a hit compares equal exactly when the original ip-only tag
+  // did. The per-context DIB was removed.
   champsim::dib_type DIB;
 
   // Front-end arbitration state. `fetch_round_robin` picks which

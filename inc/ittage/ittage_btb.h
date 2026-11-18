@@ -30,7 +30,7 @@
  *   3. Initialisation. The vendored reinit() is called from initialize(), and
  *      the copy fixes the reference's uninitialised-ghist bug. The predictor is
  *      held in a value-initialised pimpl (zeroed before the vendored constructor
- *      runs), one adapter per core, each keeping its own per-context storage.
+ *      runs): each core's module instance owns one adapter per hardware context.
  *   4. Direct-BTB gating. ITTAGE is only consulted when the direct predictor
  *      already knows this PC is an indirect branch. Measured on
  *      710.omnetpp_r.sp0: a perfect indirect oracle still leaves 3.8% of

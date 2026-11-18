@@ -8,7 +8,7 @@
 #include "ooo_cpu.h"
 
 // Back-end arbitration. With two hardware contexts the shared back-end
-// widths are partitioned each cycle by the same stage rules as the front end:
+// widths are partitioned each cycle by the stage rules above O3_CPU::operate():
 //   * schedule/retire/LSQ -- rotating start, one shared width;
 //   * execute/complete -- issue by global age (dispatch_sequence), not rotation,
 //     because the reservation station is shared and age-priority is the standard

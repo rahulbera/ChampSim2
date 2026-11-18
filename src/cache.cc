@@ -543,12 +543,15 @@ long CACHE::operate()
   // Partition the translation stash by address space. An untranslated
   // entry is admitted only while the stash as a whole is under MSHR_SIZE and, with
   // more than one hardware context, while the entry's own address space is under
-  // its equal share (MSHR_SIZE / NUM_CONTEXTS). The counts are taken before the
-  // drain and include the stash plus the still-untranslated inflight_tag_check
-  // entries, any of which may return to the stash; a refused head still blocks
-  // everything behind it because the gate stops the scan in place. Under a single
-  // context the per-asid count equals the total, so this gate is the former
-  // start-of-cycle size check.
+  // its equal share (MSHR_SIZE / NUM_CONTEXTS). With more than one context the
+  // counts are taken before the drain and include the stash plus the
+  // still-untranslated inflight_tag_check entries, any of which may return to the
+  // stash, and each true return is counted at once: transform_while_n bounds the
+  // span by the bandwidth before it applies can_translate, so every entry it
+  // accepts is admitted. A refused head still blocks everything behind it because
+  // the gate stops the scan in place. With one context nothing is counted: the
+  // gate is bf574428's start-of-cycle size check, so entries in their tag check
+  // and entries admitted in this cycle do not count against it.
   const bool stash_has_room = std::size(translation_stash) < static_cast<std::size_t>(MSHR_SIZE);
   std::size_t admitted_total = std::size(translation_stash);
   std::vector<std::pair<std::pair<uint8_t, uint8_t>, std::size_t>> admitted_by_asid{};
