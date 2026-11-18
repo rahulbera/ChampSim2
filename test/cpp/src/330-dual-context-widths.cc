@@ -65,7 +65,7 @@ struct dual_width_fixture {
 TEST_CASE_METHOD(dual_width_fixture, "Fetch moves FETCH_WIDTH instructions total across both contexts")
 {
   for (std::size_t ctx : {0u, 1u})
-    for (int i = 0; i < 8; ++i)
+    for (std::size_t i = 0; i < 8; ++i)
       dual.contexts[ctx].input_queue.push_back(champsim::test::instruction_with_ip(0x1000 * (ctx + 1) + 4 * i));
 
   dual.fetch_round_robin = 0;
@@ -79,7 +79,7 @@ TEST_CASE_METHOD(dual_width_fixture, "Fetch moves FETCH_WIDTH instructions total
 TEST_CASE_METHOD(dual_width_fixture, "L1I issue sends L1I_BANDWIDTH requests total across both contexts")
 {
   for (std::size_t ctx : {0u, 1u})
-    for (int i = 0; i < 4; ++i) {
+    for (std::size_t i = 0; i < 4; ++i) {
       auto instr = champsim::test::instruction_with_ip(0x1000 * (ctx + 1) + 0x40 * i); // one block per request
       instr.dib_checked = true;
       dual.contexts[ctx].IFETCH_BUFFER.push_back(std::move(instr));
@@ -92,7 +92,7 @@ TEST_CASE_METHOD(dual_width_fixture, "L1I issue sends L1I_BANDWIDTH requests tot
 TEST_CASE_METHOD(dual_width_fixture, "Promotion moves FETCH_WIDTH instructions total across both contexts")
 {
   for (std::size_t ctx : {0u, 1u})
-    for (int i = 0; i < 8; ++i) {
+    for (std::size_t i = 0; i < 8; ++i) {
       auto instr = champsim::test::instruction_with_ip(0x3000 * (ctx + 1) + 4 * i);
       instr.fetch_completed = true;
       instr.ready_time = champsim::chrono::clock::time_point::min();
@@ -106,7 +106,7 @@ TEST_CASE_METHOD(dual_width_fixture, "Promotion moves FETCH_WIDTH instructions t
 TEST_CASE_METHOD(dual_width_fixture, "Decode moves DECODE_WIDTH instructions total across both contexts")
 {
   for (std::size_t ctx : {0u, 1u})
-    for (int i = 0; i < 8; ++i) {
+    for (std::size_t i = 0; i < 8; ++i) {
       auto instr = champsim::test::instruction_with_ip(0x5000 * (ctx + 1) + 4 * i);
       instr.ready_time = champsim::chrono::clock::time_point::min();
       dual.contexts[ctx].DECODE_BUFFER.push_back(std::move(instr));
@@ -119,7 +119,7 @@ TEST_CASE_METHOD(dual_width_fixture, "Decode moves DECODE_WIDTH instructions tot
 TEST_CASE_METHOD(dual_width_fixture, "The DIB-hit route moves DIB_INORDER_WIDTH instructions total across both contexts")
 {
   for (std::size_t ctx : {0u, 1u})
-    for (int i = 0; i < 8; ++i) {
+    for (std::size_t i = 0; i < 8; ++i) {
       auto instr = champsim::test::instruction_with_ip(0x7000 * (ctx + 1) + 4 * i);
       instr.decoded = true;
       instr.ready_time = champsim::chrono::clock::time_point::min();
