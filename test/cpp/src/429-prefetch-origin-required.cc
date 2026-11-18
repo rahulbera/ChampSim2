@@ -1,6 +1,9 @@
 #include <algorithm>
+#include <array>
 #include <catch.hpp>
 #include <cstddef>
+#include <deque>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -11,6 +14,7 @@
 #include "../../../prefetcher/va_ampm_lite/va_ampm_lite.h"
 #include "cache.h"
 #include "defaults.hpp"
+#include "mocks.hpp"
 #include "runtime_config.h"
 #include "static_environment.h"
 
@@ -37,6 +41,60 @@ bool operates_without_origin()
 {
   CACHE cache{champsim::cache_builder{champsim::defaults::default_l1i}.name("cpu0_L1I").prefetcher<Prefetcher>()};
   return cache.pref_module_pimpl->impl_operates_without_origin();
+}
+
+// A translator that records every translation request and answers it with a
+// fixed physical page.
+struct recording_translator : champsim::operable {
+  champsim::channel queues{};
+  std::deque<champsim::channel::request_type> recorded{};
+
+  long operate() override
+  {
+    for (const auto& pkt : queues.RQ) {
+      recorded.push_back(pkt);
+      auto response = champsim::channel::response_type{pkt};
+      response.data = champsim::address{0xcafe000};
+      queues.returned.push_back(response);
+    }
+    queues.RQ.clear();
+    return 1;
+  }
+};
+
+// The address space a one-context virtual L1I translates an origin-less
+// prefetch in, with the last-writer cursor at core 1.
+champsim::address_space_id origin_less_translation_space(std::optional<champsim::address_space_id> core_space)
+{
+  recording_translator mock_translator;
+  do_nothing_MRC mock_ll;
+  to_rq_MRP mock_ul;
+  CACHE uut{champsim::cache_builder{champsim::defaults::default_l1i}
+                .name("cpu1_L1I")
+                .virtual_prefetch(true)
+                .upper_levels({&mock_ul.queues})
+                .lower_level(&mock_ll.queues)
+                .lower_translate(&mock_translator.queues)
+                .prefetcher<next_line>()};
+  uut.core_space = core_space;
+  uut.cpu = 1;
+
+  std::array<champsim::operable*, 4> elements{{&uut, &mock_ll, &mock_ul, &mock_translator}};
+  for (auto elem : elements) {
+    elem->initialize();
+    elem->warmup = false;
+    elem->begin_phase();
+  }
+
+  REQUIRE(uut.prefetch_line(champsim::address{0xbeef000}, true, 0));
+  for (int i = 0; i < 20; ++i) {
+    for (auto elem : elements)
+      elem->_operate();
+  }
+
+  REQUIRE(std::size(mock_translator.recorded) == 1);
+  const auto& translation = mock_translator.recorded.front();
+  return {translation.asid[0], translation.asid[1]};
 }
 } // namespace
 
@@ -97,6 +155,21 @@ TEST_CASE("The origin-less prefetch_line refuses on a translating cache with two
   CACHE physical_two{champsim::cache_builder{champsim::defaults::default_l1i}.name("cpu0_L1I").virtual_prefetch(false).prefetcher<next_line>()};
   physical_two.contexts_per_core = 2;
   CHECK(physical_two.prefetch_line(pf_addr, true, 0));
+
+  // The origin-less impl_prefetcher_cache_operate is refused the same way.
+  REQUIRE_THROWS_WITH(virtual_two.impl_prefetcher_cache_operate(champsim::address{0x1000}, champsim::address{0x2000}, false, false, access_type::LOAD, 0),
+                      Catch::Matchers::StartsWith("cpu0_L1I: impl_prefetcher_cache_operate without asid and cpu names no address space")
+                          && Catch::Matchers::ContainsSubstring("2 hardware contexts"));
+  CHECK_NOTHROW(virtual_one.impl_prefetcher_cache_operate(champsim::address{0x1000}, champsim::address{0x2000}, false, false, access_type::LOAD, 0));
+}
+
+TEST_CASE("An origin-less prefetch is translated in the address space of its cache's core")
+{
+  // A one-context core that follows a two-context core runs in trace slot 2,
+  // not {cpu, cpu}; the environment hands each core's caches that space.
+  CHECK(::origin_less_translation_space(champsim::address_space_id{2, 2}) == champsim::address_space_id{2, 2});
+  // A cache built alone has no core space and keeps the cursor's {cpu, cpu}.
+  CHECK(::origin_less_translation_space(std::nullopt) == champsim::address_space_id{1, 1});
 }
 
 TEST_CASE("The environment tells each cache its core's context count, and the LLC the maximum")
@@ -115,6 +188,7 @@ TEST_CASE("The environment tells each cache its core's context count, and the LL
   };
 
   CHECK(find("LLC").contexts_per_core == num_contexts);
+  CHECK_FALSE(find("LLC").core_space.has_value());
   for (const auto* level : {"DTLB", "ITLB", "L1D", "L1I", "L2C", "STLB"}) {
     CAPTURE(level);
     CHECK(find(champsim::static_environment::cache_name(0, level)).contexts_per_core == num_contexts);
@@ -124,6 +198,19 @@ TEST_CASE("The environment tells each cache its core's context count, and the LL
       CAPTURE(cpu, level);
       CHECK(find(champsim::static_environment::cache_name(cpu, level)).contexts_per_core == 1);
     }
+  }
+
+  // Each core's caches carry its first context's address space: trace slots are
+  // numbered core-major, so core k starts after every earlier core's contexts.
+  const auto cores = env.cpu_view();
+  std::size_t slot = 0;
+  for (std::size_t cpu = 0; cpu < champsim::defs::num_cpus; ++cpu) {
+    const champsim::address_space_id space{static_cast<uint8_t>(slot), static_cast<uint8_t>(slot)};
+    for (const auto* level : {"DTLB", "ITLB", "L1D", "L1I", "L2C", "STLB"}) {
+      CAPTURE(cpu, level);
+      CHECK(find(champsim::static_environment::cache_name(cpu, level)).core_space == space);
+    }
+    slot += std::size(cores.at(cpu).get().contexts);
   }
 
   // Only a translating cache refuses an origin-less prefetch: virtual prefetch

@@ -29,6 +29,7 @@
 #include <iterator> // for size
 #include <limits>   // for numeric_limits
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -182,6 +183,12 @@ public:
   VirtualMemory* vmem;
   std::vector<access_type> pref_activate_mask;
   std::size_t contexts_per_core = 1;
+  // The address space of the first context of the core this cache serves, set
+  // by the environment on each core's own caches (trace slots are numbered
+  // core-major, so it is {k,k} for core k only while every earlier core runs one
+  // context). An origin-less prefetch that is not refused is issued in it;
+  // unset (the LLC, or a cache built alone) it falls back to {cpu, cpu}.
+  std::optional<champsim::address_space_id> core_space{};
   [[nodiscard]] bool prefetch_origin_required() const { return contexts_per_core > 1 && (virtual_prefetch || vmem != nullptr); }
   void check_prefetch_origin(std::string_view key, std::string_view module_name) const;
 

@@ -530,13 +530,20 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
   }
 
   // Each cache serves one core's contexts; the LLC serves every core, so it
-  // takes the maximum. Prefetch-origin checks key on this count (S4-04).
+  // takes the maximum. CACHE::prefetch_origin_required() keys on this count.
+  // Each core's own caches also learn the address space of the core's first
+  // context, the trace slot after every earlier core's contexts, which an
+  // origin-less prefetch on a one-context core is issued in.
+  std::size_t core_slot = 0;
   for (std::size_t cpu = 0; cpu < defs::num_cpus; ++cpu) {
     const auto contexts = std::size(cores.at(cpu).contexts);
+    const auto slot = static_cast<uint8_t>(core_slot);
     for (std::size_t level = 0; level < 6; ++level) {
       caches.at(1 + (cpu * 6) + level).contexts_per_core = contexts;
+      caches.at(1 + (cpu * 6) + level).core_space = champsim::address_space_id{slot, slot};
     }
     caches.at(0).contexts_per_core = std::max(caches.at(0).contexts_per_core, contexts);
+    core_slot += contexts;
   }
 
   select_modules(cfg);

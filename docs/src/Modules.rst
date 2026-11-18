@@ -292,7 +292,9 @@ A prefetcher issues a prefetch by calling ``prefetch_line`` on the cache it is b
 .. cpp:function:: bool prefetch_line(champsim::address pf_addr, bool fill_this_level, uint32_t prefetch_metadata)
 
    The first form names the prefetch's origin explicitly: ``asid`` is the address space the prefetch will be translated in, and ``cpu`` the core it is issued for.
-   The second form stamps the last packet's ``{cpu, cpu}`` for both, mirroring the origin-less entry point.
+   The second form issues the prefetch for the last packet's ``cpu``, in the address space of the first hardware context of the cache's core
+   (``{cpu, cpu}`` on the LLC and on a cache built outside the environment). On a cache that translates its prefetches for a core with more
+   than one hardware context it throws instead; see "Prefetchers with several hardware contexts" below.
    With ``fill_this_level`` true the prefetch fills this cache; with false this cache allocates no MSHR and receives no response, so the block is filled only at the level below. A lower level that misses fills either way.
 
    :return: true if the prefetch was queued, false if the queue was full.
