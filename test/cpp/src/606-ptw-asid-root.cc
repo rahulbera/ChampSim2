@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <catch.hpp>
 #include <vector>
@@ -13,8 +14,9 @@
 
 // A page table walker's CR3 is the page-table root of the address space it is
 // built for, read from the virtual memory keyed by asid. Two walkers in two
-// address spaces must not share a root, and the environment must build each
-// core's walker in the space that core's trace stamps on its requests.
+// address spaces must not share a root, and the environment builds each core's
+// walker in the address space of that core's first context (trace slots are
+// numbered core-major, context-minor; slot i carries asid {i,i}).
 
 TEST_CASE("Page table walkers built for different address spaces start at different roots")
 {
@@ -105,6 +107,17 @@ TEST_CASE("A walker shared by two address spaces walks each from its own root")
 
   walk(0);
   REQUIRE(mock_ll.packet_count() == 12);
+
+  // The shortened walk reads the first space's own tables, never the second's.
+  for (std::size_t i = 10; i < 12; ++i) {
+    INFO("read " << i);
+    const champsim::page_number page{mock_ll.addresses.at(i)};
+    auto on_page = [page](auto a) {
+      return champsim::page_number{a} == page;
+    };
+    CHECK(std::any_of(std::begin(mock_ll.addresses), std::next(std::begin(mock_ll.addresses), 5), on_page));
+    CHECK(std::none_of(std::next(std::begin(mock_ll.addresses), 5), std::next(std::begin(mock_ll.addresses), 10), on_page));
+  }
 }
 
 TEST_CASE("Each core's page table walker starts at the root of the address space its core's requests carry")
@@ -126,9 +139,9 @@ TEST_CASE("Each core's page table walker starts at the root of the address space
     roots.push_back(ptw.CR3_addr);
   }
 
-  // No two cores may share a page-table root. At N=1 this is vacuous, but the
-  // per-cpu stamping that makes it true at every core count is what the fix
-  // pins.
+  // No two cores may share a page-table root. This case runs the default of one
+  // context per core, where a core's first slot equals its index; the next case
+  // covers cores with several contexts. At N=1 the check is vacuous.
   for (std::size_t i = 0; i < std::size(roots); ++i) {
     for (std::size_t j = i + 1; j < std::size(roots); ++j) {
       REQUIRE(roots[i] != roots[j]);
@@ -142,12 +155,16 @@ TEST_CASE("A core's walker is built in the address space of that core's first co
   cfg.set("ooo_cpu.cpu0.num_contexts=2");
   champsim::static_environment env{cfg};
   auto ptws = env.ptw_view();
+  auto cores = env.cpu_view();
 
-  const auto& ptw = ptws.at(0).get();
-  std::size_t first_slot = 0;
-  const auto slot = static_cast<uint8_t>(first_slot);
-  first_slot += 2; // cpu0's two contexts advance the slot past its first context
-
-  REQUIRE(ptw.CR3_asid == ooo_model_instr{slot, input_instr{}}.asid);
-  REQUIRE(ptw.CR3_addr == ptw.vmem->get_pte_pa(ptw.CR3_asid, champsim::page_number{}, ptw.vmem->pt_levels).first);
+  // Trace slots are numbered core-major, context-minor; slot i carries asid {i,i}.
+  std::size_t slot = 0;
+  for (std::size_t cpu = 0; cpu < std::size(ptws); ++cpu) {
+    INFO("cpu " << cpu << " slot " << slot);
+    const auto& ptw = ptws.at(cpu).get();
+    const auto asid = ooo_model_instr{static_cast<uint8_t>(slot), input_instr{}}.asid;
+    CHECK(ptw.CR3_asid == asid);
+    CHECK(ptw.CR3_addr == ptw.vmem->get_pte_pa(asid, champsim::page_number{}, ptw.vmem->pt_levels).first);
+    slot += std::size(cores.at(cpu).get().contexts);
+  }
 }
