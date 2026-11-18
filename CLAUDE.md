@@ -236,11 +236,11 @@ fires** — the one window where the swap is free (`install_*_module`). The
 (`[ooo_cpu.cpu0.basic_btb] sets = 2048`); the contract is that a module consults
 every knob it owns unconditionally — an unconsumed knob key is fatal after
 construction. `basic_btb` is the exemplar: `[ooo_cpu.cpu0.basic_btb] sets`/`ways`
-resize its direct predictor (`btb/basic_btb/basic_btb.cc:50`), default 1024x8.
+resize its direct predictor (`btb/basic_btb/basic_btb.cc:51`), default 1024x8.
 `blbp_64kb`, `blbp_64kb_tuned`, `ittage_64kb` and `ittage_32kb` implement
 `configure` too, but only over the basic_btb direct path each of them copied, and
 under a different key — `.direct.sets`/`.direct.ways`, not `.sets`/`.ways`
-(`inc/blbp/blbp_btb.h:184`, `inc/ittage/ittage_btb.h:224`, same 1024x8 default) —
+(`inc/blbp/blbp_btb.h:185`, `inc/ittage/ittage_btb.h:225`, same 1024x8 default) —
 because a bare `sets` there would name the vendored tables that cannot be sized. A
 comparison between BTB arms is honest only while every arm's direct geometry is
 identical, so move these on all arms or none. Past the direct path nothing is
@@ -564,11 +564,13 @@ recorded in PR #10's description.
 
 Branch predictors and BTBs declare a `smt_capability` (`inc/modules.h`): `global_state`
 (process-wide statics; cpu0 and one context only), `single_context` (the default),
-`per_context`, or `shared` (one per-core instance, ASID keying keeps the histories
-disjoint). The environment refuses a module that cannot serve the requested context count
-at configuration time, naming the key and the module; prefetchers and replacement policies
-are not checked. Consequence: `configs/lnc.toml` runs at one context only — its
-`cbp6_tagescl64` is `global_state` — until a cbp6 predictor keeps per-context state.
+`per_context`, or `shared` (one set of tables per core, the asid folded into their index
+or compared in their tags; branch history and return stacks kept per context, selected
+by the context index the core passes to the hooks). The environment refuses a module
+that cannot serve the requested context count at configuration time, naming the key and
+the module; prefetchers and replacement policies are not checked. Consequence:
+`configs/lnc.toml` runs at one context only — its `cbp6_tagescl64` is `global_state` —
+until a cbp6 predictor keeps per-context state.
 
 ### The module system (`inc/modules.h`)
 
@@ -668,14 +670,14 @@ overwrite that one.
 - **`SET_ASIDE_CHAMPSIM_MODULE` is not re-entrant.** A module cannot simply
   `#include "ooo_cpu.h"`: `inc/ooo_cpu.h:20-23` sets the flag aside and undefines
   `CHAMPSIM_MODULE`, the `address.h` it pulls in re-defines the macro on its own way
-  out (`inc/address.h:671-673`), and the `util/lru_table.h` at `ooo_cpu.h:43` then
+  out (`inc/address.h:671-673`), and the `util/lru_table.h` at `ooo_cpu.h:44` then
   fires its `#error` from outside its own include guard (`inc/util/lru_table.h:17`).
   Do `#undef CHAMPSIM_MODULE` / include / `#define` at the *outermost* level.
   Upstream ships no module that needs this, which is why the bug survives there; on
   this branch sixteen do — every `cbp6_*` predictor, `perfect_branch`, and all the
   BTBs that reach into the core. `branch/cbp6_tagescl64/cbp6_tagescl64.cc:1-15`
   explains it in full and is the pattern to copy. `inc/core_context.h`
-  (included at `ooo_cpu.h:37`) uses `msl/lru_table.h`, so it adds no second
+  (included at `ooo_cpu.h:38`) uses `msl/lru_table.h`, so it adds no second
   `#error` and a module can include it; keep it free of `util/` headers that
   refuse modules.
 - **`CHAMPSIM_TRACE_MEMORY_VALUES=1` changes `ooo_model_instr`'s size in every
@@ -714,12 +716,13 @@ overwrite that one.
   clock, add its frequency key to that sweep; `501-static-environment.cc` pins the
   computed quantum against the constructed machine's actual minimum.
 - **Two configuration keys are named for something they are not.**
-  `ooo_cpu.<cpu>.scheduler_size` feeds `schedule_width()` — a per-cycle search
-  *bandwidth* on the single-context path, not the size of a structure; with more than one
-  context it is additionally enforced as the shared reservation-station capacity (the
-  aggregate count of scheduled-not-executed instructions) — and `ptw.<name>.max_read`/
-  `max_write` feed `tag_bandwidth`/`fill_bandwidth`. Both names came from the JSON and
-  were kept so old configurations still load; read them as widths.
+  `ooo_cpu.<cpu>.scheduler_size` feeds the builder's `schedule_width()`, but the core
+  uses it as a cap, not a width: at most that many instructions are scheduled and not
+  yet executed, summed over the core's contexts. `max_contexts = 2` builds use it that
+  way even with one context, where it schedules the same instructions as the old
+  per-cycle search window, which only a `max_contexts = 1` build still compiles.
+  `ptw.<name>.max_read`/`max_write` feed `tag_bandwidth`/`fill_bandwidth`; read them as
+  widths. Both names came from the JSON and were kept so old configurations still load.
 - **An instruction's register operands change meaning when it is scheduled.**
   `ooo_model_instr::source_registers`/`destination_registers` hold the trace's
   architectural IDs until `O3_CPU::do_scheduling` renames them *in place*, and
@@ -749,7 +752,8 @@ overwrite that one.
   = X is too small for this trace` naming the instruction and the counts — but only with
   one hardware context: with a sibling, that sibling may retire and free a register, so
   the context waits instead and the throw is skipped (`src/ooo_cpu.cc`,
-  `schedule_instruction_impl`). Fast warmup
+  `schedule_instruction_impl`). A file too small for the contexts together therefore
+  ends in the generic deadlock abort, not in this error. Fast warmup
   clears every instruction's register operands (`do_init_instruction`), so the RAT is
   empty when measurement starts and the footprint builds during the region of
   interest. "Architectural register" here means a trace register ID, and a v1 trace

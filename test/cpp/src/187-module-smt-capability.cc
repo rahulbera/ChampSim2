@@ -64,11 +64,11 @@ TEST_CASE("The per-context BTBs advertise per_context capability")
 
 TEST_CASE("The ASID-keyed per-core modules advertise shared capability")
 {
-  // These hold one per-core table whose index/hash
-  // folds ASID, while any per-thread branch history (the GHR, RAS and
-  // indirect conditional history) is replicated per context. They are `shared`,
-  // not per_context: replicating the whole table would waste state the ASID
-  // keying already separates.
+  // These hold one per-core instance whose tables the core's contexts share (an
+  // asid folded into an index is a hash that can alias; basic_btb's direct BTB
+  // compares the asid in its tag), while per-thread state (global history,
+  // return stack, indirect conditional history) is kept per context. They are
+  // `shared`, not per_context.
   REQUIRE(smt_capability_of<basic_btb>::value == smt_capability::shared);
   REQUIRE(smt_capability_of<hashed_perceptron>::value == smt_capability::shared);
   REQUIRE(smt_capability_of<bimodal>::value == smt_capability::shared);
