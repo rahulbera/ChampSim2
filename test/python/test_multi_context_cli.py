@@ -47,9 +47,10 @@ class MultiContextCliTests(unittest.TestCase):
 
     def test_cpu0_two_contexts_runs_with_override(self):
         with tempfile.TemporaryDirectory() as tmp:
+            # cpu0's two contexts plus one for every other core.
             traces = []
-            for c in range(2):
-                path = Path(tmp) / f"trace{c}.champsim2"
+            for position in range(self.cores + 1):
+                path = Path(tmp) / f"trace{position}.champsim2"
                 generate(path, 4096)
                 traces.append(path)
 
@@ -64,6 +65,8 @@ class MultiContextCliTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             doc = tomllib.loads(toml_path.read_text())
             self.assertEqual(doc["config_override"], {"ooo_cpu.cpu0.num_contexts": 2})
+            contexts = {f"cpu{cpu}": doc["config"]["ooo_cpu"][f"cpu{cpu}"]["num_contexts"] for cpu in range(self.cores)}
+            self.assertEqual(contexts, {f"cpu{cpu}": 2 if cpu == 0 else 1 for cpu in range(self.cores)})
 
     def test_every_core_two_contexts_runs(self):
         if self.cores < 2:
