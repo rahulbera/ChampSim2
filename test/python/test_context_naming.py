@@ -1,4 +1,4 @@
-"""Stage 4 statistics naming: one context keeps the flat names, several nest."""
+"""Statistics naming: one context keeps the flat names, several nest."""
 
 import os
 from pathlib import Path
@@ -105,6 +105,17 @@ class ContextNamingTests(unittest.TestCase):
                 for c in range(2):
                     self.assertIn(f"CPU {k} ctx {c}", result.stdout)
             self.assertIn("Heartbeat CPU 0 (2 contexts)", result.stdout)
+
+            # Trace 2K+C runs on cpuK.ctxC, and each context's four progress
+            # lines carry its label exactly once; no bare "CPU K" line is left.
+            for k in range(cores):
+                for c in range(2):
+                    label = f"CPU {k} ctx {c}"
+                    self.assertTrue(trace[f"cpu{k}"][f"ctx{c}"].endswith(f"trace{k}c{c}.champsim2"), trace)
+                    for prefix in ("Warmup finished", "Warmup complete", "Simulation finished", "Simulation complete"):
+                        found = re.findall(rf"^{prefix} {label} instructions: ", result.stdout, re.MULTILINE)
+                        self.assertEqual(len(found), 1, (prefix, label))
+                self.assertIsNone(re.search(rf"^Simulation (finished|complete) CPU {k} instructions: ", result.stdout, re.MULTILINE))
 
 
 if __name__ == "__main__":
