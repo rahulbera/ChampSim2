@@ -329,3 +329,60 @@ TEST_CASE("The one 1x1 DIB is shared: a fill in one context hits in the other wi
   dual.do_check_dib(dual.contexts[0], c0_evicted);
   CHECK_FALSE(c0_evicted.fetch_completed);
 }
+
+TEST_CASE("The DECODE and DIB-hit quotas each bind on their own")
+{
+  // promote_to_decode moves at most the smaller of the two buffers' free space,
+  // so with equal sizes either quota alone holds both buffers. Here the buffer
+  // not under test is twice as large, so only the quota under test can stop a
+  // context's eight fetched instructions at 2.
+  do_nothing_MRC l1i, l1d;
+  auto build = [&](std::size_t decode, std::size_t dib_hit) {
+    return O3_CPU{champsim::core_builder{}
+                      .fetch_queues(&l1i.queues)
+                      .data_queues(&l1d.queues)
+                      .num_contexts(2)
+                      .ifetch_buffer_size(16)
+                      .decode_buffer_size(decode)
+                      .dib_hit_buffer_size(dib_hit)
+                      .dispatch_buffer_size(4)
+                      .rob_size(8)
+                      .lq_size(4)
+                      .sq_size(4)
+                      .register_file_size(128)
+                      .fetch_width(champsim::bandwidth::maximum_type{64})
+                      .decode_width(champsim::bandwidth::maximum_type{64})
+                      .dib_inorder_width(champsim::bandwidth::maximum_type{64})};
+  };
+  auto offer = [](O3_CPU& cpu, bool decoded) {
+    cpu.warmup = true;
+    cpu.current_time = champsim::chrono::clock::time_point{champsim::chrono::picoseconds{1000}};
+    for (std::size_t ctx = 0; ctx < 2; ++ctx) {
+      for (std::size_t i = 0; i < 8; ++i) {
+        auto instr = champsim::test::instruction_with_ip(0x9000 * (ctx + 1) + 4 * i);
+        instr.fetch_completed = true;
+        instr.decoded = decoded;
+        instr.ready_time = champsim::chrono::clock::time_point::min();
+        cpu.contexts[ctx].IFETCH_BUFFER.push_back(std::move(instr));
+      }
+    }
+    cpu.fetch_round_robin = 0;
+    cpu.promote_to_decode();
+  };
+
+  SECTION("DECODE, beside a DIB-hit buffer twice as large")
+  {
+    auto cpu = build(4, 8);
+    offer(cpu, false);
+    REQUIRE(cpu.contexts[0].DECODE_BUFFER.size() == 2);
+    REQUIRE(cpu.contexts[1].DECODE_BUFFER.size() == 2);
+  }
+
+  SECTION("DIB-hit, beside a DECODE buffer twice as large")
+  {
+    auto cpu = build(8, 4);
+    offer(cpu, true);
+    REQUIRE(cpu.contexts[0].DIB_HIT_BUFFER.size() == 2);
+    REQUIRE(cpu.contexts[1].DIB_HIT_BUFFER.size() == 2);
+  }
+}
