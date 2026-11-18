@@ -64,11 +64,11 @@ TEST_CASE("The per-context BTBs advertise per_context capability")
 
 TEST_CASE("The ASID-keyed per-core modules advertise shared capability")
 {
-  // These hold one per-core table whose index/hash
-  // folds ASID, while any per-thread branch history (the GHR, RAS and
-  // indirect conditional history) is replicated per context. They are `shared`,
-  // not per_context: replicating the whole table would waste state the ASID
-  // keying already separates.
+  // These hold one per-core instance whose tables the core's contexts share (an
+  // asid folded into an index is a hash that can alias; basic_btb's direct BTB
+  // compares the asid in its tag), while per-thread state (global history,
+  // return stack, indirect conditional history) is kept per context. They are
+  // `shared`, not per_context.
   REQUIRE(smt_capability_of<basic_btb>::value == smt_capability::shared);
   REQUIRE(smt_capability_of<hashed_perceptron>::value == smt_capability::shared);
   REQUIRE(smt_capability_of<bimodal>::value == smt_capability::shared);
@@ -103,7 +103,8 @@ TEST_CASE("check_smt_capability refuses global_state off cpu0 and single-copy st
   REQUIRE_THROWS_WITH(check_smt_capability(smt_capability::global_state, 1, 1, "ooo_cpu.cpu1.branch_predictor", "cbp6_tagescl64"),
                       ContainsSubstring("which every core would share, so it can run only on cpu0"));
   REQUIRE_THROWS_WITH(check_smt_capability(smt_capability::global_state, 0, 2, "ooo_cpu.cpu0.branch_predictor", "cbp6_tagescl64"),
-                      ContainsSubstring("cannot serve the 2 hardware contexts of this core"));
+                      ContainsSubstring("runtime config: ooo_cpu.cpu0.branch_predictor = cbp6_tagescl64: ")
+                          && ContainsSubstring("cannot serve the 2 hardware contexts of this core"));
   REQUIRE_THROWS_WITH(check_smt_capability(smt_capability::global_state, 1, 1, "ooo_cpu.cpu1.branch_predictor", "cbp6_tagescl64"),
                       ContainsSubstring("runtime config: ooo_cpu.cpu1.branch_predictor = cbp6_tagescl64"));
 
@@ -111,9 +112,11 @@ TEST_CASE("check_smt_capability refuses global_state off cpu0 and single-copy st
   REQUIRE_NOTHROW(check_smt_capability(smt_capability::single_context, 0, 1, "ooo_cpu.cpu0.btb", "perfect_btb"));
   REQUIRE_NOTHROW(check_smt_capability(smt_capability::single_context, 1, 1, "ooo_cpu.cpu1.btb", "perfect_btb"));
   REQUIRE_THROWS_WITH(check_smt_capability(smt_capability::single_context, 0, 2, "ooo_cpu.cpu0.btb", "perfect_btb"),
-                      ContainsSubstring("declares neither smt_capability::per_context nor smt_capability::shared"));
+                      ContainsSubstring("runtime config: ooo_cpu.cpu0.btb = perfect_btb: ")
+                          && ContainsSubstring("declares neither smt_capability::per_context nor smt_capability::shared"));
   REQUIRE_THROWS_WITH(check_smt_capability(smt_capability::single_context, 1, 2, "ooo_cpu.cpu1.btb", "perfect_btb"),
-                      ContainsSubstring("cannot serve the 2 hardware contexts of this core"));
+                      ContainsSubstring("runtime config: ooo_cpu.cpu1.btb = perfect_btb: ")
+                          && ContainsSubstring("cannot serve the 2 hardware contexts of this core"));
 
   // per_context and shared are admitted anywhere, at any context count.
   REQUIRE_NOTHROW(check_smt_capability(smt_capability::per_context, 0, 2, "ooo_cpu.cpu0.btb", "blbp_64kb"));

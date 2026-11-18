@@ -91,8 +91,8 @@ using address_space_id = std::array<uint8_t, 2>;
 // The ASID word is folded into predictor indexes (the branch predictor and BTB
 // hashes), never into the DIB's set index, which stays ip>>shamt. Trace i runs
 // as {i,i}, and the fold is a hash, not an identity: x ^ asid_word(a) can equal
-// y ^ asid_word(b) for a != b, so the tagged structures that fold it compare the
-// asid itself too.
+// y ^ asid_word(b) for a != b, so the tagged structures (the DIB and the direct
+// BTBs) compare the asid itself rather than a fold.
 inline constexpr uint64_t asid_word(address_space_id asid) { return static_cast<uint64_t>(asid[0]) | (static_cast<uint64_t>(asid[1]) << 8); }
 
 // A hardware-context index threaded through the module hooks so a per-context

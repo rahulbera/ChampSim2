@@ -70,7 +70,7 @@ champsim::context_quota O3_CPU::make_quota(uint32_t cpu, std::size_t num_context
 // drains its context's buffer), so the `max_contexts == 1` fast paths below are
 // byte-identical to the pre-SMT core.
 //
-//   fetch .. promote_to_decode   rotating start (fetch_round_robin), greedy: each
+//   fetch .. decode              rotating start (fetch_round_robin), greedy: each
 //                                site drains its whole shared width from the
 //                                starting context before the sibling runs.
 //   dispatch                      one dispatch owner per cycle (dispatch_owner),
@@ -693,30 +693,37 @@ long O3_CPU::schedule_instruction()
     // bounds this count there; across contexts a shared scan budget would let
     // two threads each fill the window, doubling it. So the gate is the live
     // occupancy itself: schedule only while the shared count is below capacity.
+    // scheduler_occupancy is that count, kept by do_scheduling and do_execution.
+    // The assertion below recounts it from the ROBs once per cycle; a build
+    // without assertions never walks them.
     const long capacity = champsim::to_underlying(SCHEDULER_SIZE);
-    long occupied = 0;
-    for (const auto& c : contexts)
-      occupied += static_cast<long>(std::count_if(std::begin(c.ROB), std::end(c.ROB), [](const auto& x) { return x.scheduled && !x.executed; }));
 
     long progress = 0;
-    for (std::size_t i = 0; i < contexts.size() && occupied < capacity; ++i) {
+    for (std::size_t i = 0; i < contexts.size() && scheduler_occupancy < capacity; ++i) {
       const std::size_t c = (backend_round_robin + i) % contexts.size();
-      progress += schedule_instruction_impl(contexts[c], occupied, capacity);
+      progress += schedule_instruction_impl(contexts[c], capacity);
     }
 
     // L2 occupancy invariant, asserted every cycle: the shared reservation
     // station can never hold more than SCHEDULER_SIZE scheduled-not-executed
     // instructions, however the arbitration interleaves the contexts.
-    long scheduled_not_executed = 0;
-    for (const auto& c : contexts)
-      scheduled_not_executed += static_cast<long>(std::count_if(std::begin(c.ROB), std::end(c.ROB), [](const auto& x) { return x.scheduled && !x.executed; }));
-    CHAMPSIM_ASSERT(scheduled_not_executed <= champsim::to_underlying(SCHEDULER_SIZE));
+    CHAMPSIM_ASSERT(scheduler_occupancy == count_scheduled_not_executed());
+    CHAMPSIM_ASSERT(scheduler_occupancy <= capacity);
 
     return progress;
   }
 }
 
-long O3_CPU::schedule_instruction_impl(champsim::core_context& c, long& occupied, long capacity)
+long O3_CPU::count_scheduled_not_executed() const
+{
+  long count = 0;
+  for (const auto& c : contexts) {
+    count += static_cast<long>(std::count_if(std::begin(c.ROB), std::end(c.ROB), [](const auto& x) { return x.scheduled && !x.executed; }));
+  }
+  return count;
+}
+
+long O3_CPU::schedule_instruction_impl(champsim::core_context& c, long capacity)
 {
   // Renaming stays in program order: the walk stops at the first instruction the
   // free registers cannot cover. The register shortage stops only this context's
@@ -724,7 +731,7 @@ long O3_CPU::schedule_instruction_impl(champsim::core_context& c, long& occupied
   // and only a retiring write would, so it is a config error and throws. With a
   // sibling, that sibling may retire and free one, so this context just waits.
   int progress{0};
-  for (auto rob_it = std::begin(c.ROB); rob_it != std::end(c.ROB) && occupied < capacity; ++rob_it) {
+  for (auto rob_it = std::begin(c.ROB); rob_it != std::end(c.ROB) && scheduler_occupancy < capacity; ++rob_it) {
     if (!rob_it->scheduled && rob_it->ready_time <= current_time) {
       // The free-register rename gate applies only to instructions being
       // renamed this cycle. An already-scheduled instruction has claimed its
@@ -745,9 +752,8 @@ long O3_CPU::schedule_instruction_impl(champsim::core_context& c, long& occupied
         }
         break;
       }
-      do_scheduling(c, *rob_it);
+      do_scheduling(c, *rob_it); // counts it into scheduler_occupancy
       ++progress;
-      ++occupied;
     }
   }
 
@@ -769,6 +775,9 @@ void O3_CPU::do_scheduling(champsim::core_context& c, ooo_model_instr& instr)
     dreg = c.rename_dest_register(dreg, instr.instr_id);
   }
 
+  if (!instr.scheduled && !instr.executed) {
+    ++scheduler_occupancy;
+  }
   instr.scheduled = true;
 }
 
@@ -783,10 +792,18 @@ long O3_CPU::execute_instruction()
     // EXEC_WIDTH issue slots go to the globally oldest ready instructions,
     // keyed on dispatch_sequence -- the core-wide age key. instr_id is
     // process-unique but does not order dispatch time across contexts; with a
-    // single context dispatch_sequence is monotone with ROB position, so this
-    // loop
+    // single context dispatch_sequence is monotone with ROB position, so this loop
     // reduces to the single-context in-order walk bit-for-bit.
     champsim::bandwidth exec_bw{EXEC_WIDTH};
+    // With one context that walk is taken at run time as well: the loop below
+    // restarts at the ROB head for every issue slot. Issuing an instruction
+    // changes no other entry's readiness (do_execution writes only that
+    // instruction and its own LSQ entries, and no register becomes valid until
+    // completion), so the oldest ready entry after an issue is the next ready
+    // one in ROB order, and the walk issues what the loop would.
+    if (contexts.size() == 1)
+      return execute_instruction_impl(contexts.front(), exec_bw);
+
     long progress = 0;
     while (exec_bw.has_remaining()) {
       champsim::core_context* best_c = nullptr;
@@ -840,6 +857,9 @@ void O3_CPU::do_execution(ooo_model_instr& instr) { do_execution(ctx(), instr); 
 
 void O3_CPU::do_execution(champsim::core_context& c, ooo_model_instr& instr)
 {
+  if (instr.scheduled && !instr.executed) {
+    --scheduler_occupancy;
+  }
   instr.executed = true;
   instr.ready_time = current_time + (warmup ? champsim::chrono::clock::duration{} : EXEC_LATENCY);
 
@@ -1096,6 +1116,13 @@ long O3_CPU::complete_inflight_instruction()
     // executed instruction completes first, keyed on dispatch_sequence. With a
     // single context this is the in-order walk bit-for-bit.
     champsim::bandwidth complete_bw{EXEC_WIDTH};
+    // With one context that walk is taken at run time as well, for the reason
+    // execute_instruction gives: completing an instruction changes no other
+    // entry's eligibility. The branch hooks do_complete_execution calls touch
+    // no ROB entry in any shipped module.
+    if (contexts.size() == 1)
+      return complete_inflight_instruction_impl(contexts.front(), complete_bw);
+
     long progress = 0;
     while (complete_bw.has_remaining()) {
       champsim::core_context* best_c = nullptr;
@@ -1270,6 +1297,11 @@ long O3_CPU::retire_rob_impl(champsim::core_context& c, champsim::bandwidth& ret
   // commit register writes to backend RAT
   // and recycle the old physical registers
   for (auto rob_it = retire_begin; rob_it != retire_end; ++rob_it) {
+    // The core completes only executed instructions, so a simulation never takes
+    // this branch; a test can retire one it marked completed by hand (300 does).
+    if (rob_it->scheduled && !rob_it->executed) {
+      --scheduler_occupancy;
+    }
     for (auto dreg : rob_it->destination_registers) {
       c.retire_dest_register(dreg);
     }
@@ -1363,8 +1395,8 @@ void O3_CPU::print_deadlock()
     champsim::range_print_deadlock(c.ROB, label(ctx, "ROB"), instr_fmt, instr_pack);
   }
 
-  // print each context's RATs (labelled only with several), then every physical
-  // register once, then the full-file warning once.
+  // print each context's RATs (labelled only with several), then the full-file
+  // warning once, then every physical register once.
   for (std::size_t ctx = 0; ctx < contexts.size(); ++ctx) {
     if (several)
       fmt::print("cpu{}_ctx{}_RAT\n", cpu, ctx);

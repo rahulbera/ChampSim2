@@ -16,7 +16,7 @@
 // silently fell back to a single shared one fails here rather than passing on a
 // replay against an empty sibling. Cases (2) and (3) use ROB entries only: their
 // stuck memory instruction is placed in the ROB already scheduled, never renamed;
-// case (6) drives the register file directly.
+// case (6) renames both contexts through schedule_instruction.
 //
 //   (1) two contexts writing the same architectural register get independent RAT
 //       entries;
@@ -222,17 +222,38 @@ TEST_CASE_METHOD(dual_criteria_fixture, "Global oldest-first issues in a differe
 
 TEST_CASE_METHOD(dual_criteria_fixture, "A read of a register the sibling is still writing is not a cross-context RAW")
 {
-  // Context 1 leaves architectural register 7 in flight (renamed, not completed);
-  // context 0 reads register 7. The read must map to context 0's own committed
-  // live-in, not context 1's speculative destination -- a shared RAT would make
-  // it a RAW dependency on the sibling's unfinished write.
-  const auto c1_dest = dual.contexts[1].rename_dest_register(7, 100);
-  const auto c0_src = dual.contexts[0].rename_src_register(7);
+  // One context writes architectural register 7 and its write stays in flight;
+  // the other context then reads register 7. Both rename through the core
+  // (schedule_instruction), so the read must map to the reader's own committed
+  // live-in, which is valid, and issue at once: a rename through the writer's RAT
+  // would make it a RAW dependency on the sibling's unfinished write. Each
+  // context takes each role, so a rename through contexts.front() or
+  // contexts.back() fails one of the two.
+  const std::size_t reader = GENERATE(as<std::size_t>{}, 1, 0);
+  const std::size_t writer = 1 - reader;
+  CAPTURE(reader);
 
-  CHECK(c0_src != c1_dest);
-  CHECK(dual.contexts[0].frontend_RAT[7] == c0_src);
-  CHECK(dual.contexts[0].backend_RAT[7] == c0_src);
-  CHECK(dual.contexts[1].frontend_RAT[7] == c1_dest);
-  CHECK_FALSE(dual.shared_prf->isValid(c1_dest));
-  CHECK(dual.shared_prf->isValid(c0_src));
+  auto writer_instr = ready_instr(0, 7);
+  writer_instr.dispatch_sequence = 0;
+  auto reader_instr = ready_instr(100, 3);
+  reader_instr.source_registers = {7};
+  reader_instr.dispatch_sequence = 1;
+  dual.contexts[writer].ROB = {writer_instr};
+  dual.contexts[reader].ROB = {reader_instr};
+
+  dual.schedule_instruction();
+  REQUIRE(dual.contexts[writer].ROB.front().scheduled);
+  REQUIRE(dual.contexts[reader].ROB.front().scheduled);
+  const auto written = dual.contexts[writer].ROB.front().destination_registers.front();
+  const auto read = dual.contexts[reader].ROB.front().source_registers.front();
+  CHECK(read != written);
+  CHECK(dual.contexts[reader].frontend_RAT[7] == read);
+  CHECK(dual.contexts[writer].frontend_RAT[7] == written);
+  CHECK(dual.shared_prf->isValid(read));
+  CHECK_FALSE(dual.shared_prf->isValid(written));
+
+  dual.contexts[writer].ROB.front().ready_time = champsim::chrono::clock::time_point::max(); // keep the write in flight
+  dual.execute_instruction();
+  CHECK_FALSE(dual.contexts[writer].ROB.front().executed);
+  CHECK(dual.contexts[reader].ROB.front().executed);
 }

@@ -39,7 +39,7 @@ One way to do this, if your module's constructor has an empty body, is to inheri
 For branch predictors and BTBs, per-thread core state (input queue, instruction buffers, ROB, LQ/SQ, register alias tables, ``roi_stats``, ``sim_stats``) lives in a ``champsim::core_context`` (``inc/core_context.h``). The core's ``contexts`` vector holds one ``core_context`` per hardware context, reached as ``intern_->contexts``; ``intern_->ctx()`` is context 0 (``contexts.front()``), for example ``intern_->ctx().input_queue``. A module written for more than one context selects its slice with ``intern_->contexts[context.value]``.
 The decoded-instruction buffer is shared by every context, so it stays on the core as ``intern_->DIB`` rather than in a context.
 A module written as ``intern_->input_queue`` no longer compiles; insert ``ctx().``.
-The former ``reg_allocator`` is split into ``intern_->shared_prf`` (the physical register file) and the alias tables on ``intern_->ctx()``.
+The former ``reg_allocator`` is split into ``intern_->shared_prf`` (the physical register file) and the alias tables on each context (``intern_->contexts[i]``; ``intern_->ctx()`` is context 0).
 
 A module may implement any of the listed member functions.
 If a member function has overloads listed, any of them may be implemented, and the simulator will select the first candidate overload in the list. A ``context_index`` overload is listed first and, when implemented, is called alone: the non-``context`` overloads are not also called.
@@ -57,9 +57,9 @@ core states how its state is stored with respect to those contexts through a
 * ``global_state``: process-wide static storage; cpu0 only, one context.
 * ``single_context``: one instance per core that cannot be replicated; any core, one context (the default).
 * ``per_context``: state replicated per hardware context.
-* ``shared``: one instance per core, correctly shared across contexts (ASID keying keeps each context's history disjoint).
+* ``shared``: one set of tables per core, with ``asid`` folded into their index or compared in their tags; per-thread speculative state (global history, return stack, indirect history) is kept per context and selected by ``context.value``.
 
-A module that declares no ``capability`` is ``single_context``. The core refuses,
+A module that declares no ``capability`` is ``single_context``. The environment refuses,
 at configuration time, a module whose ``capability`` cannot serve the requested
 context count, naming the configuration key and the module: ``global_state`` off
 cpu0 or past one context, and ``single_context`` past one context. Only branch
@@ -231,7 +231,7 @@ A prefetcher module may implement five or six functions.
 
    :param metadata_in: the metadata carried along by the packet.
    :param asid: the address space of the packet.
-   :param cpu: the core the demand was issued for.
+   :param cpu: the core of the packet that triggered the call.
 
    :return: The function should return metadata that will be stored alongside the block.
 
@@ -293,7 +293,7 @@ A prefetcher issues a prefetch by calling ``prefetch_line`` on the cache it is b
 
    The first form names the prefetch's origin explicitly: ``asid`` is the address space the prefetch will be translated in, and ``cpu`` the core it is issued for.
    The second form stamps the last packet's ``{cpu, cpu}`` for both, mirroring the origin-less entry point.
-   ``fill_this_level`` says whether the prefetch is for this cache level; lower levels fill only if it is not.
+   With ``fill_this_level`` true the prefetch fills this cache; with false this cache allocates no MSHR and receives no response, so the block is filled only at the level below. A lower level that misses fills either way.
 
    :return: true if the prefetch was queued, false if the queue was full.
 

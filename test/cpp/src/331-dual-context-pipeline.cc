@@ -99,6 +99,7 @@ TEST_CASE_METHOD(dual_pipeline_fixture, "A store behind its unretired head drain
   store.destination_memory = {champsim::address{0x8000}};
 
   dual.contexts[0].ROB = {head, store};
+  dual.contexts[1].ROB = {ready_nop(100)}; // a live sibling: its unexecuted head is younger than the store
 
   LSQ_ENTRY sq_entry{champsim::address{0x8000}, 11, champsim::address{0x1000}, champsim::address_space_id{}};
   sq_entry.fetch_issued = true; // already translated/issued; only the drain phase remains
@@ -255,11 +256,11 @@ TEST_CASE_METHOD(mispredict_fixture, "A misprediction freezes only the mispredic
   };
 
   dual.contexts[1].input_queue.push_back(make_branch(0x8000, BRANCH_CONDITIONAL, true, 0x9000));
-  dual.contexts[1].input_queue.back().instr_id = 0;
+  dual.contexts[1].input_queue.back().instr_id = 1000; // ids disjoint from context 0's, as tracereader's one counter gives
   dual.contexts[1].input_queue.push_back(make_branch(0x8100, BRANCH_DIRECT_JUMP, true, 0x9000));
-  dual.contexts[1].input_queue.back().instr_id = 1;
+  dual.contexts[1].input_queue.back().instr_id = 1001;
   for (uint64_t i = 0; i < 3; ++i) {
-    dual.contexts[1].input_queue.push_back(branch_seq(2 + i, 0x8200 + 4 * i));
+    dual.contexts[1].input_queue.push_back(branch_seq(1002 + i, 0x8200 + 4 * i));
   }
   for (uint64_t i = 0; i < 40; ++i)
     dual.contexts[0].input_queue.push_back(branch_seq(i, 0x9000 + 4 * i));

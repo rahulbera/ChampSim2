@@ -30,7 +30,7 @@
  *   3. Initialisation. The vendored reinit() is called from initialize(), and
  *      the copy fixes the reference's uninitialised-ghist bug. The predictor is
  *      held in a value-initialised pimpl (zeroed before the vendored constructor
- *      runs), one adapter per core, each keeping its own per-context storage.
+ *      runs): each core's module instance owns one adapter per hardware context.
  *   4. Direct-BTB gating. ITTAGE is only consulted when the direct predictor
  *      already knows this PC is an indirect branch. Measured on
  *      710.omnetpp_r.sp0: a perfect indirect oracle still leaves 3.8% of
@@ -227,8 +227,8 @@ public:
   // arm and not another measures two things at once. The defaults are the
   // geometry the write-ups pin, so leaving these keys alone is always safe. One
   // difference geometry cannot equalise: this adapter keeps one direct table per
-  // hardware context, while basic_btb keeps one table set per core and shares it
-  // across contexts by ASID keying.
+  // hardware context, while basic_btb keeps one direct table per core, shared by
+  // its contexts and tagged with the asid.
   void configure_direct(const champsim::runtime_config& cfg, std::string_view prefix)
   {
     // positive_value: lru_table validates sets itself but never ways, and a

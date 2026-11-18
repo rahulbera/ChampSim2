@@ -18,8 +18,8 @@
 // is shared, so it is sized on the core, not per context.
 //
 // The file pins four things: (1) the quota equals the total at one context and
-// half of it at two; (2) a total that does not divide by the context count, and
-// a context count outside 1..max_contexts, are refused naming the offending key;
+// half of it at two; (2) a total that does not divide by the context count is
+// refused naming its key, and a context count outside 1..max_contexts is refused;
 // (3) a full backlog fills each context's ROB, LQ and SQ -- and its front-end
 // buffers -- to exactly its quota, not the total; and (4) the single 1x1 DIB is
 // shared: a fill in one context hits in the other within one asid, and misses
@@ -88,13 +88,20 @@ TEST_CASE("An indivisible size is refused, naming the key")
                       .sq_size(sq)};
   };
 
-  REQUIRE_THROWS_WITH(build(3, 4, 4, 4, 4, 4, 4), ContainsSubstring("ifetch_buffer_size"));
-  REQUIRE_THROWS_WITH(build(4, 3, 4, 4, 4, 4, 4), ContainsSubstring("decode_buffer_size"));
-  REQUIRE_THROWS_WITH(build(4, 4, 3, 4, 4, 4, 4), ContainsSubstring("dib.hit_buffer_size"));
-  REQUIRE_THROWS_WITH(build(4, 4, 4, 3, 4, 4, 4), ContainsSubstring("dispatch_buffer_size"));
-  REQUIRE_THROWS_WITH(build(4, 4, 4, 4, 3, 4, 4), ContainsSubstring("rob_size"));
-  REQUIRE_THROWS_WITH(build(4, 4, 4, 4, 4, 3, 4), ContainsSubstring("lq_size"));
-  REQUIRE_THROWS_WITH(build(4, 4, 4, 4, 4, 4, 3), ContainsSubstring("sq_size"));
+  REQUIRE_THROWS_WITH(build(3, 4, 4, 4, 4, 4, 4),
+                      ContainsSubstring("runtime config: ooo_cpu.cpu0.ifetch_buffer_size = 3 cannot be divided equally between 2 hardware contexts"));
+  REQUIRE_THROWS_WITH(build(4, 3, 4, 4, 4, 4, 4),
+                      ContainsSubstring("runtime config: ooo_cpu.cpu0.decode_buffer_size = 3 cannot be divided equally between 2 hardware contexts"));
+  REQUIRE_THROWS_WITH(build(4, 4, 3, 4, 4, 4, 4),
+                      ContainsSubstring("runtime config: ooo_cpu.cpu0.dib.hit_buffer_size = 3 cannot be divided equally between 2 hardware contexts"));
+  REQUIRE_THROWS_WITH(build(4, 4, 4, 3, 4, 4, 4),
+                      ContainsSubstring("runtime config: ooo_cpu.cpu0.dispatch_buffer_size = 3 cannot be divided equally between 2 hardware contexts"));
+  REQUIRE_THROWS_WITH(build(4, 4, 4, 4, 3, 4, 4),
+                      ContainsSubstring("runtime config: ooo_cpu.cpu0.rob_size = 3 cannot be divided equally between 2 hardware contexts"));
+  REQUIRE_THROWS_WITH(build(4, 4, 4, 4, 4, 3, 4),
+                      ContainsSubstring("runtime config: ooo_cpu.cpu0.lq_size = 3 cannot be divided equally between 2 hardware contexts"));
+  REQUIRE_THROWS_WITH(build(4, 4, 4, 4, 4, 4, 3),
+                      ContainsSubstring("runtime config: ooo_cpu.cpu0.sq_size = 3 cannot be divided equally between 2 hardware contexts"));
 }
 
 TEST_CASE("Zero contexts and more than max_contexts are refused")
@@ -148,54 +155,47 @@ TEST_CASE("A full backlog fills each context's ROB, LQ and SQ to exactly its quo
         std::count_if(std::begin(dual.contexts[ctx].LQ), std::end(dual.contexts[ctx].LQ), [](const auto& e) { return e.has_value(); }));
   };
 
-  // No memory operands: the ROB quota is what binds, not the LQ or SQ.
-  for (std::size_t ctx : {0u, 1u})
-    for (int i = 0; i < 8; ++i)
-      dual.contexts[ctx].DISPATCH_BUFFER.push_back(ready_instr(100 * ctx + i));
-  dispatch_both();
-  REQUIRE(dual.contexts[0].ROB.size() == 4);
-  REQUIRE(dual.contexts[1].ROB.size() == 4);
-  REQUIRE(dual.contexts[0].DISPATCH_BUFFER.size() == 4); // the leftover proves the ROB bound it
-  REQUIRE(dual.contexts[1].DISPATCH_BUFFER.size() == 4);
-
-  // Loads fill the LQ to its quota; the ROB has room to spare.
-  for (auto& c : dual.contexts) {
-    c.ROB.clear();
-    c.DISPATCH_BUFFER.clear();
-    for (auto& e : c.LQ)
-      e.reset();
+  SECTION("no memory operands: the ROB quota binds")
+  {
+    for (std::size_t ctx : {0u, 1u})
+      for (std::size_t i = 0; i < 8; ++i)
+        dual.contexts[ctx].DISPATCH_BUFFER.push_back(ready_instr(100 * ctx + i));
+    dispatch_both();
+    REQUIRE(dual.contexts[0].ROB.size() == 4);
+    REQUIRE(dual.contexts[1].ROB.size() == 4);
+    REQUIRE(dual.contexts[0].DISPATCH_BUFFER.size() == 4); // the leftover proves the ROB bound it
+    REQUIRE(dual.contexts[1].DISPATCH_BUFFER.size() == 4);
   }
-  for (std::size_t ctx : {0u, 1u})
-    for (int i = 0; i < 4; ++i) {
-      auto instr = ready_instr(200 * ctx + i);
-      instr.source_memory = {champsim::address{0x4000 + 8 * (4 * ctx + i)}};
-      dual.contexts[ctx].DISPATCH_BUFFER.push_back(std::move(instr));
-    }
-  dispatch_both();
-  REQUIRE(lq_used(0) == 2);
-  REQUIRE(lq_used(1) == 2);
-  REQUIRE(dual.contexts[0].ROB.size() == 2); // the LQ, not the ROB, bound it
-  REQUIRE(dual.contexts[1].ROB.size() == 2);
 
-  // Stores fill the SQ to its quota; again the ROB has room to spare.
-  for (auto& c : dual.contexts) {
-    c.ROB.clear();
-    c.DISPATCH_BUFFER.clear();
-    c.SQ.clear();
-    for (auto& e : c.LQ)
-      e.reset();
+  SECTION("loads: the LQ quota binds")
+  {
+    for (std::size_t ctx : {0u, 1u})
+      for (std::size_t i = 0; i < 4; ++i) {
+        auto instr = ready_instr(200 * ctx + i);
+        instr.source_memory = {champsim::address{0x4000 + 8 * (4 * ctx + i)}};
+        dual.contexts[ctx].DISPATCH_BUFFER.push_back(std::move(instr));
+      }
+    dispatch_both();
+    REQUIRE(lq_used(0) == 2);
+    REQUIRE(lq_used(1) == 2);
+    REQUIRE(dual.contexts[0].ROB.size() == 2); // the LQ, not the ROB, bound it
+    REQUIRE(dual.contexts[1].ROB.size() == 2);
   }
-  for (std::size_t ctx : {0u, 1u})
-    for (int i = 0; i < 4; ++i) {
-      auto instr = ready_instr(300 * ctx + i);
-      instr.destination_memory = {champsim::address{0x8000 + 8 * (4 * ctx + i)}};
-      dual.contexts[ctx].DISPATCH_BUFFER.push_back(std::move(instr));
-    }
-  dispatch_both();
-  REQUIRE(dual.contexts[0].SQ.size() == 2);
-  REQUIRE(dual.contexts[1].SQ.size() == 2);
-  REQUIRE(dual.contexts[0].ROB.size() == 2); // the SQ, not the ROB, bound it
-  REQUIRE(dual.contexts[1].ROB.size() == 2);
+
+  SECTION("stores: the SQ quota binds")
+  {
+    for (std::size_t ctx : {0u, 1u})
+      for (std::size_t i = 0; i < 4; ++i) {
+        auto instr = ready_instr(300 * ctx + i);
+        instr.destination_memory = {champsim::address{0x8000 + 8 * (4 * ctx + i)}};
+        dual.contexts[ctx].DISPATCH_BUFFER.push_back(std::move(instr));
+      }
+    dispatch_both();
+    REQUIRE(dual.contexts[0].SQ.size() == 2);
+    REQUIRE(dual.contexts[1].SQ.size() == 2);
+    REQUIRE(dual.contexts[0].ROB.size() == 2); // the SQ, not the ROB, bound it
+    REQUIRE(dual.contexts[1].ROB.size() == 2);
+  }
 }
 
 TEST_CASE("Front-end buffers fill to exactly their per-context quota")
@@ -221,7 +221,7 @@ TEST_CASE("Front-end buffers fill to exactly their per-context quota")
 
   // IFETCH: initialize_instruction stops at the per-context quota.
   for (std::size_t ctx : {0u, 1u})
-    for (int i = 0; i < 4; ++i)
+    for (std::size_t i = 0; i < 4; ++i)
       dual.contexts[ctx].input_queue.push_back(champsim::test::instruction_with_ip(0x1000 * (ctx + 1) + 4 * i));
   dual.fetch_round_robin = 0;
   dual.initialize_instruction();
@@ -233,7 +233,7 @@ TEST_CASE("Front-end buffers fill to exactly their per-context quota")
   for (std::size_t ctx : {0u, 1u}) {
     for (auto& instr : dual.contexts[ctx].IFETCH_BUFFER)
       instr.fetch_completed = true;
-    for (int i = 0; i < 2; ++i) {
+    for (std::size_t i = 0; i < 2; ++i) {
       auto instr = champsim::test::instruction_with_ip(0x3000 * (ctx + 1) + 4 * i);
       instr.fetch_completed = true;
       instr.ready_time = champsim::chrono::clock::time_point::min();
@@ -249,7 +249,7 @@ TEST_CASE("Front-end buffers fill to exactly their per-context quota")
   for (std::size_t ctx : {0u, 1u}) {
     dual.contexts[ctx].IFETCH_BUFFER.clear();
     dual.contexts[ctx].DECODE_BUFFER.clear();
-    for (int i = 0; i < 4; ++i) {
+    for (std::size_t i = 0; i < 4; ++i) {
       auto instr = champsim::test::instruction_with_ip(0x5000 * (ctx + 1) + 4 * i);
       instr.fetch_completed = true;
       instr.decoded = true;
@@ -266,7 +266,7 @@ TEST_CASE("Front-end buffers fill to exactly their per-context quota")
   for (std::size_t ctx : {0u, 1u}) {
     dual.contexts[ctx].DIB_HIT_BUFFER.clear();
     dual.contexts[ctx].DECODE_BUFFER.clear();
-    for (int i = 0; i < 4; ++i) {
+    for (std::size_t i = 0; i < 4; ++i) {
       auto instr = champsim::test::instruction_with_ip(0x7000 * (ctx + 1) + 4 * i);
       instr.ready_time = champsim::chrono::clock::time_point::min();
       dual.contexts[ctx].DECODE_BUFFER.push_back(std::move(instr));
@@ -328,4 +328,61 @@ TEST_CASE("The one 1x1 DIB is shared: a fill in one context hits in the other wi
   c0_evicted.asid = champsim::address_space_id{1, 1};
   dual.do_check_dib(dual.contexts[0], c0_evicted);
   CHECK_FALSE(c0_evicted.fetch_completed);
+}
+
+TEST_CASE("The DECODE and DIB-hit quotas each bind on their own")
+{
+  // promote_to_decode moves at most the smaller of the two buffers' free space,
+  // so with equal sizes either quota alone holds both buffers. Here the buffer
+  // not under test is twice as large, so only the quota under test can stop a
+  // context's eight fetched instructions at 2.
+  do_nothing_MRC l1i, l1d;
+  auto build = [&](std::size_t decode, std::size_t dib_hit) {
+    return O3_CPU{champsim::core_builder{}
+                      .fetch_queues(&l1i.queues)
+                      .data_queues(&l1d.queues)
+                      .num_contexts(2)
+                      .ifetch_buffer_size(16)
+                      .decode_buffer_size(decode)
+                      .dib_hit_buffer_size(dib_hit)
+                      .dispatch_buffer_size(4)
+                      .rob_size(8)
+                      .lq_size(4)
+                      .sq_size(4)
+                      .register_file_size(128)
+                      .fetch_width(champsim::bandwidth::maximum_type{64})
+                      .decode_width(champsim::bandwidth::maximum_type{64})
+                      .dib_inorder_width(champsim::bandwidth::maximum_type{64})};
+  };
+  auto offer = [](O3_CPU& cpu, bool decoded) {
+    cpu.warmup = true;
+    cpu.current_time = champsim::chrono::clock::time_point{champsim::chrono::picoseconds{1000}};
+    for (std::size_t ctx = 0; ctx < 2; ++ctx) {
+      for (std::size_t i = 0; i < 8; ++i) {
+        auto instr = champsim::test::instruction_with_ip(0x9000 * (ctx + 1) + 4 * i);
+        instr.fetch_completed = true;
+        instr.decoded = decoded;
+        instr.ready_time = champsim::chrono::clock::time_point::min();
+        cpu.contexts[ctx].IFETCH_BUFFER.push_back(std::move(instr));
+      }
+    }
+    cpu.fetch_round_robin = 0;
+    cpu.promote_to_decode();
+  };
+
+  SECTION("DECODE, beside a DIB-hit buffer twice as large")
+  {
+    auto cpu = build(4, 8);
+    offer(cpu, false);
+    REQUIRE(cpu.contexts[0].DECODE_BUFFER.size() == 2);
+    REQUIRE(cpu.contexts[1].DECODE_BUFFER.size() == 2);
+  }
+
+  SECTION("DIB-hit, beside a DECODE buffer twice as large")
+  {
+    auto cpu = build(8, 4);
+    offer(cpu, true);
+    REQUIRE(cpu.contexts[0].DIB_HIT_BUFFER.size() == 2);
+    REQUIRE(cpu.contexts[1].DIB_HIT_BUFFER.size() == 2);
+  }
 }

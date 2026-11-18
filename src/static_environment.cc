@@ -389,9 +389,10 @@ champsim::static_environment::static_environment(const runtime_config& cfg)
     //     physical core, not per context, so this is a single channel.
     //   * core_to_l1d -- the core's data loads (RQ) and stores (WQ). Every hardware
     //     context SHARES this one channel; there is deliberately no per-context
-    //     core_to_l1d, because the two uppers share the tag-check bandwidth the
-    //     translation stash leaves, capping the core channel at one load and one
-    //     store per cycle regardless.
+    //     core_to_l1d, because a second core channel would let the two contexts
+    //     each start a load (or a store) in the same cycle, raising the core's
+    //     admission to two loads per cycle within the same two tag checks, with no
+    //     knob naming it.
     // With max_tag_check == 2 (below), CACHE::operate splits the tag bandwidth the
     // stash leaves across the two uppers, so the core's data channel initiates at
     // most one load and one store per cycle. That is an explicit admission policy,

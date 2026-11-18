@@ -269,20 +269,20 @@ struct replacement : public bound_to<CACHE> {
 enum class smt_capability {
   global_state,   // process-wide static storage: cpu0 only, one context
   single_context, // one instance per core that cannot be replicated: any core, one context (the default)
-  per_context,    // state replicated per hardware context (member or static array)
-  shared,         // one instance per core, correctly shared across contexts (ASID keying keeps each context's history disjoint)
+  per_context,    // a private copy of the state per hardware context, held by the instance (e.g. a member std::array indexed by context_index)
+  shared,         // one instance serves every context of its core: tables shared, per-thread history kept per context (see below)
 };
 
-// The distinction that decides `shared` vs `per_context` is *how the state is
-// keyed*, not how many instances exist. A module that folds ASID into its table
-// index/hash (so two hardware contexts of different address spaces land in
-// disjoint entries) is `shared`: one per-core instance is safe because ASID does
-// the isolation, and the module still keeps per-context history. A module whose
-// tables are keyed only by IP -- and that must therefore keep a private copy
-// per hardware context to avoid aliasing two threads' histories -- is
-// `per_context`. Do NOT label an ASID-keyed single instance `per_context` to
-// replicate it: that wastes state and defeats the sharing the module already
-// provides.
+// The distinction between `shared` and `per_context` is how the module keeps
+// its tables, not whether it is SMT-safe: both serve several contexts. A
+// `per_context` module replicates all of its state per context. A `shared`
+// module keeps one set of tables for the core and folds the asid into their
+// index/hash or compares it in their tags. An index fold is a hash, not an
+// identity, so two contexts can still meet in one entry, as two threads do in a
+// hardware predictor, and contexts in one address space are not separated at
+// all. A `shared` module must therefore keep its per-thread speculative state
+// (global history, return stack, indirect or path history) per context, selected
+// by the context index the core passes to its hooks.
 
 // A module opts out of the single_context default with a
 // `static constexpr smt_capability capability` member. The default is

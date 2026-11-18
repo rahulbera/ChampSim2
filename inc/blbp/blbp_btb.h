@@ -187,8 +187,8 @@ public:
   // arm and not another measures two things at once. The defaults are the
   // geometry the write-ups pin, so leaving these keys alone is always safe. One
   // difference geometry cannot equalise: this adapter keeps one direct table per
-  // hardware context, while basic_btb keeps one table set per core and shares it
-  // across contexts by ASID keying.
+  // hardware context, while basic_btb keeps one direct table per core, shared by
+  // its contexts and tagged with the asid.
   void configure_direct(const champsim::runtime_config& cfg, std::string_view prefix)
   {
     // positive_value: lru_table validates sets itself but never ways, and a

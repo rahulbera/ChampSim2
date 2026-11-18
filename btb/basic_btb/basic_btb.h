@@ -13,17 +13,22 @@
 
 class basic_btb : champsim::modules::btb
 {
+  // A return stack per hardware context: a sibling's calls and returns must not
+  // move this context's stack. The indirect target table and the direct BTB are
+  // shared; the indirect predictor keeps its conditional history per context.
   std::array<return_stack, champsim::defs::max_contexts> ras{};
-  std::array<indirect_predictor, champsim::defs::max_contexts> indirect{};
+  indirect_predictor indirect{};
   direct_predictor direct{};
 
 public:
   using btb::btb;
   basic_btb() : btb(nullptr) {}
 
-  // SMT: the direct predictor is one shared per-core table whose tag folds the
-  // asid (the fold is a hash that can alias), while the return stack and the
-  // indirect conditional history are kept per context.
+  // SMT: one per-core instance whose tables are shared by the core's contexts.
+  // The direct BTB compares the asid in its tag; the indirect table folds the
+  // asid into its index, a hash, so two address spaces can alias there. The
+  // return stack and the indirect predictor's conditional history are per
+  // context, selected by the context index the core passes to both hooks.
   static constexpr champsim::modules::smt_capability capability = champsim::modules::smt_capability::shared;
 
   // void initialize_btb();

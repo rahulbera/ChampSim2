@@ -93,9 +93,9 @@ public:
 
   // The one decoded-instruction buffer, shared by every context. Its key is the
   // (asid, ip) pair, so two contexts in different address spaces never share a
-  // decoded window; with one context asid is {0,0}, so a hit compares equal
-  // exactly when the original ip-only tag did. The per-context DIB was
-  // removed.
+  // decoded window; with one context every instruction carries its core's asid
+  // {cpu,cpu}, so a hit compares equal exactly when the original ip-only tag
+  // did. The per-context DIB was removed.
   champsim::dib_type DIB;
 
   // Front-end arbitration state. `fetch_round_robin` picks which
@@ -113,6 +113,19 @@ public:
   // dispatched instruction.
   std::size_t backend_round_robin = 0;
   uint64_t next_dispatch_sequence = 0;
+
+  // The shared reservation station's occupancy: instructions scheduled and not
+  // yet executed, summed over every context, which the scheduler caps at
+  // SCHEDULER_SIZE. do_scheduling and do_execution are the only places the core
+  // sets `scheduled` or `executed`, and each adjusts this count by the change it
+  // makes; an entry leaves the ROB only at retirement, which adjusts it too, and
+  // the core never squashes. So the count stays exact without walking the ROBs
+  // every cycle. count_scheduled_not_executed() is that walk, kept for
+  // assertions. A test that sets either flag on a ROB entry directly calls
+  // recount_scheduler_occupancy() before the next stage runs.
+  long scheduler_occupancy = 0;
+  [[nodiscard]] long count_scheduled_not_executed() const;
+  void recount_scheduler_occupancy() { scheduler_occupancy = count_scheduled_not_executed(); }
 
   // Constants
   const std::size_t IFETCH_BUFFER_SIZE, DISPATCH_BUFFER_SIZE, DECODE_BUFFER_SIZE, REGISTER_FILE_SIZE, ROB_SIZE, SQ_SIZE, DIB_HIT_BUFFER_SIZE;
@@ -165,7 +178,7 @@ public:
   long promote_to_decode_impl(champsim::core_context& c, champsim::bandwidth& fetch_bw);
   long decode_instruction_impl(champsim::core_context& c, champsim::bandwidth& decode_bw, champsim::bandwidth& inorder_bw);
   long dispatch_instruction_impl(champsim::core_context& c, champsim::bandwidth& dispatch_bw);
-  long schedule_instruction_impl(champsim::core_context& c, long& occupied, long capacity);
+  long schedule_instruction_impl(champsim::core_context& c, long capacity);
   long execute_instruction_impl(champsim::core_context& c, champsim::bandwidth& exec_bw);
   long complete_inflight_instruction_impl(champsim::core_context& c, champsim::bandwidth& complete_bw);
   long operate_lsq_impl(champsim::core_context& c, champsim::bandwidth& store_bw, champsim::bandwidth& load_bw);
@@ -556,9 +569,9 @@ void O3_CPU::btb_module_model<Ts...>::impl_update_btb(champsim::address ip, cham
     /* Per-context modules: context index between branch type and asid */
     if constexpr (context_asid)
       t.update_btb(ip, predicted_target, taken, branch_type, context, asid);
-    if constexpr (strong_asid)
+    if constexpr (!context_asid && strong_asid)
       t.update_btb(ip, predicted_target, taken, branch_type, asid);
-    if constexpr (raw_asid)
+    if constexpr (!context_asid && raw_asid)
       t.update_btb(ip.to<uint64_t>(), predicted_target.to<uint64_t>(), taken, branch_type, asid);
     /* Without asid, for modules written before the hook took one */
     if constexpr (!context_asid && !raw_asid && !strong_asid && btb::has_update_btb<decltype(t), champsim::address, champsim::address, bool, uint8_t>)
