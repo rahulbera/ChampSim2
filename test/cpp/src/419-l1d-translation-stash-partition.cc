@@ -1,5 +1,7 @@
 #include <array>
 #include <catch.hpp>
+#include <cstddef>
+#include <stdexcept>
 
 #include "channel.h"
 #include "defaults.hpp"
@@ -8,9 +10,10 @@
 // The L1D translation stash is gated in equal shares across hardware
 // contexts. An untranslated entry is admitted only while the stash as a whole is
 // under MSHR_SIZE and, with more than one context, while the entry's own address
-// space is under its equal share. The counts are taken before the drain and
-// include the still-untranslated inflight_tag_check entries, any of which may
-// return to the stash.
+// space is under its equal share. With more than one context the counts are
+// taken before the drain and include the still-untranslated inflight_tag_check
+// entries, any of which may return to the stash; with one context the gate is
+// the stash's size at the start of the cycle.
 
 namespace
 {
@@ -116,6 +119,12 @@ TEST_CASE("Each context's untranslated entries are admitted up to its equal shar
 
 TEST_CASE("The stash as a whole admits nothing untranslated once it holds MSHR_SIZE entries")
 {
+  // With one context the start-of-cycle size gate refuses the third address
+  // space. With two, each address space's share is MSHR_SIZE / 2 = 2 and the
+  // third one holds none, so only the total bound refuses it.
+  const std::size_t contexts = GENERATE(as<std::size_t>{}, 1, 2);
+  CAPTURE(contexts);
+
   release_MRC mock_translator; // holds every walk
   do_nothing_MRC mock_ll;
   champsim::channel core_channel;
@@ -127,7 +136,8 @@ TEST_CASE("The stash as a whole admits nothing untranslated once it holds MSHR_S
                 .lower_translate(&mock_translator.queues)
                 .hit_latency(1)
                 .tag_bandwidth(champsim::bandwidth::maximum_type{16})
-                .mshr_size(4)};
+                .mshr_size(4)
+                .num_contexts(contexts)};
 
   std::array<champsim::operable*, 3> elements{{&uut, &mock_ll, &mock_translator}};
   for (auto elem : elements) {
@@ -149,7 +159,7 @@ TEST_CASE("The stash as a whole admits nothing untranslated once it holds MSHR_S
   REQUIRE(mock_translator.packet_count() == 4);
 
   // A third address space has nothing stashed, but the stash as a whole is full,
-  // so its load waits even though its own count is zero.
+  // so its load waits (with two contexts, even though its own count is zero).
   REQUIRE(core_channel.add_rq(make_req(3, 0x5000)));
   for (int i = 0; i < 4; ++i) {
     uut._operate();
@@ -165,9 +175,9 @@ TEST_CASE("A cache refuses a context count that does not divide its MSHRs")
   REQUIRE_NOTHROW(CACHE{champsim::cache_builder{champsim::defaults::default_l1d}.mshr_size(16).num_contexts(2)});
 
   // (5,2), (1,2) and (16,0) do not divide evenly (or have no context) and throw.
-  REQUIRE_THROWS(CACHE{champsim::cache_builder{champsim::defaults::default_l1d}.mshr_size(5).num_contexts(2)});
-  REQUIRE_THROWS(CACHE{champsim::cache_builder{champsim::defaults::default_l1d}.mshr_size(1).num_contexts(2)});
-  REQUIRE_THROWS(CACHE{champsim::cache_builder{champsim::defaults::default_l1d}.mshr_size(16).num_contexts(0)});
+  REQUIRE_THROWS_AS(CACHE{champsim::cache_builder{champsim::defaults::default_l1d}.mshr_size(5).num_contexts(2)}, std::invalid_argument);
+  REQUIRE_THROWS_AS(CACHE{champsim::cache_builder{champsim::defaults::default_l1d}.mshr_size(1).num_contexts(2)}, std::invalid_argument);
+  REQUIRE_THROWS_AS(CACHE{champsim::cache_builder{champsim::defaults::default_l1d}.mshr_size(16).num_contexts(0)}, std::invalid_argument);
 }
 
 TEST_CASE("With two contexts the stash never exceeds MSHR_SIZE or a context's share, even within one cycle")
