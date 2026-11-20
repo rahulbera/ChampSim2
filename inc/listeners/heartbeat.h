@@ -4,6 +4,7 @@
 #include <chrono>
 #include <deque>
 #include <iostream>
+#include <string>
 #include <vector>
 #include <fmt/chrono.h>
 
@@ -26,6 +27,15 @@ public:
   std::vector<uint64_t> num_retired_last_printout;
   std::vector<uint64_t> cycles_last_printout;
   std::vector<uint64_t> num_retired;
+  std::vector<std::size_t> contexts_per_cpu; // hardware contexts per core, indexed by cpu
+
+  // "CPU <cpu>", plus " (<n> contexts)" once the core runs more than one
+  // hardware context. contexts_per_cpu is filled by main() before any phase.
+  [[nodiscard]] std::string cpu_label(uint32_t cpu) const
+  {
+    const auto n = cpu < std::size(contexts_per_cpu) ? contexts_per_cpu[cpu] : 1;
+    return "CPU " + std::to_string(cpu) + (n > 1 ? " (" + std::to_string(n) + " contexts)" : std::string{});
+  }
 
   std::vector<uint64_t> num_retired_start_phase;
   std::vector<uint64_t> cycles_start_phase;
@@ -88,8 +98,8 @@ inline void handle_event<Event::RETIRE>(Heartbeat* hb, uint32_t& cpu, std::deque
     auto phase_cycle = static_cast<double>(current_cycles - hb->cycles_start_phase[cpu]);
 
     fmt::print(*(hb->std_out),
-               "Heartbeat CPU {} instructions: {} cycles: {} heartbeat IPC: {:.4} cumulative IPC: {:.4} (Simulation time: {:%H hr %M min %S sec})\n", cpu,
-               hb->num_retired[cpu], current_cycles, heartbeat_instr / heartbeat_cycle, phase_instr / phase_cycle, elapsed_time());
+               "Heartbeat {} instructions: {} cycles: {} heartbeat IPC: {:.4} cumulative IPC: {:.4} (Simulation time: {:%H hr %M min %S sec})\n",
+               hb->cpu_label(cpu), hb->num_retired[cpu], current_cycles, heartbeat_instr / heartbeat_cycle, phase_instr / phase_cycle, elapsed_time());
 
     // Flush explicitly. A heartbeat exists to show the run is alive, and stdout
     // is block-buffered when redirected to a file -- which is how long runs are

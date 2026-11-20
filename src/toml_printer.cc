@@ -312,19 +312,33 @@ std::vector<std::string> champsim::toml_printer::format(champsim::phase_stats& s
   emit_table(lines, root, {{"name", quote(stats.name)}});
 
   std::vector<entry> traces{};
+  std::vector<std::pair<std::string, std::vector<entry>>> trace_groups{};
   for (std::size_t i = 0; i < std::size(stats.trace_names); ++i) {
-    traces.emplace_back(fmt::format("cpu{}", i), quote(stats.trace_names.at(i)));
+    const auto slot = stats.slot(i);
+    if (slot.contexts > 1) {
+      auto it = std::find_if(std::begin(trace_groups), std::end(trace_groups), [&slot](const auto& g) { return g.first == slot.core_key(); });
+      if (it == std::end(trace_groups)) {
+        trace_groups.emplace_back(slot.core_key(), std::vector<entry>{});
+        it = std::prev(std::end(trace_groups));
+      }
+      it->second.emplace_back(slot.context_key(), quote(stats.trace_names.at(i)));
+    } else {
+      traces.emplace_back(slot.core_key(), quote(stats.trace_names.at(i)));
+    }
   }
   emit_table(lines, fmt::format("{}.trace", root), traces);
+  for (const auto& [core, entries] : trace_groups) {
+    emit_table(lines, fmt::format("{}.trace.{}", root, core), entries);
+  }
 
   // The region of interest is always written. The whole-run section is a copy
   // of it whenever the run has a single region of interest -- the usual case --
   // so it is written only on request; [meta].sim_stats records which, so its
   // absence is never ambiguous. Note this is NOT the plain printer's rule,
   // which keys the same decision on NUM_CPUS > 1.
-  const auto emit_section = [&lines, &root](std::string_view section, auto& cores, auto& caches, auto& channels, const auto& native) {
+  const auto emit_section = [&lines, &root, &stats](std::string_view section, auto& cores, auto& caches, auto& channels, const auto& native) {
     for (std::size_t i = 0; i < std::size(cores); ++i) {
-      append_block(lines, format(cores.at(i), fmt::format("{}.{}.core.cpu{}", root, section, i)));
+      append_block(lines, format(cores.at(i), fmt::format("{}.{}.core.{}", root, section, stats.slot(i).path())));
     }
     const auto cache_keys = component_keys(caches);
     for (std::size_t i = 0; i < std::size(caches); ++i) {

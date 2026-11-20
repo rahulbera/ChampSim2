@@ -22,9 +22,11 @@
 #include <limits>   // for numeric_limits
 #include <optional> // for optional
 #include <string>
+#include <utility>
 
 #include "address.h"
 #include "bandwidth.h"
+#include "champsim.h"
 #include "channel.h"
 #include "operable.h"
 #include "ptw_builder.h"
@@ -38,6 +40,7 @@ class PageTableWalker : public champsim::operable
     champsim::address vaddr;
     champsim::address ptw_addr;
     std::size_t level;
+    champsim::address_space_id asid{std::numeric_limits<uint8_t>::max(), std::numeric_limits<uint8_t>::max()};
   };
 
   struct pscl_indexer {
@@ -45,7 +48,12 @@ class PageTableWalker : public champsim::operable
     auto operator()(const pscl_entry& entry) const { return entry.vaddr.slice_upper(shamt); }
   };
 
-  using pscl_type = champsim::lru_table<pscl_entry, pscl_indexer, pscl_indexer>;
+  struct pscl_tagger {
+    champsim::data::bits shamt;
+    auto operator()(const pscl_entry& entry) const { return std::pair{entry.vaddr.slice_upper(shamt), champsim::asid_word(entry.asid)}; }
+  };
+
+  using pscl_type = champsim::lru_table<pscl_entry, pscl_indexer, pscl_tagger>;
   using channel_type = champsim::channel;
   using request_type = typename channel_type::request_type;
   using response_type = typename channel_type::response_type;
@@ -93,6 +101,9 @@ public:
   std::vector<pscl_type> pscl;
   VirtualMemory* vmem;
 
+  champsim::address root_of(champsim::address_space_id asid) const;
+
+  const champsim::address_space_id CR3_asid;
   const champsim::address CR3_addr;
 
   explicit PageTableWalker(champsim::ptw_builder builder);

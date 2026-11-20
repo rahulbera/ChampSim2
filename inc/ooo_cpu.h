@@ -210,6 +210,12 @@ public:
   [[nodiscard]] auto sim_instr() const { return ctx().num_retired - ctx().begin_phase_instr; }
   [[nodiscard]] auto sim_cycle() const { return (current_time.time_since_epoch() / clock_period) - ctx().sim_stats.begin_cycles; }
 
+  // Per-context phase progress. The no-argument forms above remain the context-0
+  // convenience used by the single-context path; these take the hardware context
+  // index so do_phase can judge every context against `length` independently.
+  [[nodiscard]] auto sim_instr(std::size_t c) const { return contexts[c].num_retired - contexts[c].begin_phase_instr; }
+  [[nodiscard]] auto sim_cycle(std::size_t c) const { return (current_time.time_since_epoch() / clock_period) - contexts[c].sim_stats.begin_cycles; }
+
   // Context 0: with one context, the context this core's frontend and backend
   // operate on. With more, the pipeline stages iterate over `contexts`, and
   // every caller of ctx(), including the branch predictor and BTB modules,

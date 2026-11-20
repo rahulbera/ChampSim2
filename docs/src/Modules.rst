@@ -63,8 +63,10 @@ A module that declares no ``capability`` is ``single_context``. The environment 
 at configuration time, a module whose ``capability`` cannot serve the requested
 context count, naming the configuration key and the module: ``global_state`` off
 cpu0 or past one context, and ``single_context`` past one context. Only branch
-predictors and BTBs are refused this way; prefetchers and replacement policies
-are bound to a cache and are not checked.
+predictors and BTBs declare a capability. Prefetchers and replacement policies
+are bound to a cache; a prefetcher is refused only where it cannot name the
+address space of its prefetches (see "Prefetchers with several hardware
+contexts").
 
 ----------------------------
 Branch Predictors
@@ -292,10 +294,33 @@ A prefetcher issues a prefetch by calling ``prefetch_line`` on the cache it is b
 .. cpp:function:: bool prefetch_line(champsim::address pf_addr, bool fill_this_level, uint32_t prefetch_metadata)
 
    The first form names the prefetch's origin explicitly: ``asid`` is the address space the prefetch will be translated in, and ``cpu`` the core it is issued for.
-   The second form stamps the last packet's ``{cpu, cpu}`` for both, mirroring the origin-less entry point.
+   The second form issues the prefetch for the last packet's ``cpu``, in the address space of the first hardware context of the cache's core
+   (``{cpu, cpu}`` on the LLC and on a cache built outside the environment). On a cache that translates its prefetches for a core with more
+   than one hardware context it throws instead; see "Prefetchers with several hardware contexts" below.
    With ``fill_this_level`` true the prefetch fills this cache; with false this cache allocates no MSHR and receives no response, so the block is filled only at the level below. A lower level that misses fills either way.
 
    :return: true if the prefetch was queued, false if the queue was full.
+
+------------------------------------------
+Prefetchers with several hardware contexts
+------------------------------------------
+
+A cache that translates its prefetches reads the address space the prefetch is
+issued in: one configured with ``virtual_prefetch`` (L1I's default) or an
+asid-keyed TLB (any cache given ``virtual_memory``). With more than one hardware
+context on a core, the origin-less ``prefetch_line(pf_addr, fill_this_level,
+prefetch_metadata)`` and ``CACHE::impl_prefetcher_cache_operate`` without
+``asid`` and ``cpu`` cannot know which context's address space to translate in,
+so they throw at run time rather than walk the prefetch in another context's
+page table. A prefetcher whose ``prefetcher_cache_operate`` takes no ``asid``
+and ``cpu`` is refused at configuration time; implement the
+``prefetcher_cache_operate(..., asid, cpu)`` overload instead. On a core with
+one hardware context the origin-less forms issue in that context's address
+space.
+
+One prefetcher instance -- and its training state -- serves every hardware
+context of its core. A prefetcher that needs per-context state must key it by the
+``asid`` passed to ``prefetcher_cache_operate``.
 
 -----------------------------------
 Replacement Policies

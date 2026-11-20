@@ -23,6 +23,7 @@
 #include <string>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "instruction.h"
 #include "util/detect.h"
@@ -162,5 +163,10 @@ bool v2_trace_declares_branch_type(const std::string& fname);
 } // namespace champsim
 
 champsim::tracereader get_tracereader(const std::string& fname, uint8_t cpu, bool is_cloudsuite, bool repeat, unsigned trace_version = 1);
+
+// One tracereader per positional trace, each in the address space {position,
+// position}: the position is the trace's command-line order, so the reader for
+// trace k stamps its instructions with asid {k, k}.
+std::vector<champsim::tracereader> get_tracereaders(const std::vector<std::string>& fnames, bool is_cloudsuite, bool repeat, unsigned trace_version = 1);
 
 #endif

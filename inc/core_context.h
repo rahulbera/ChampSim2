@@ -164,8 +164,6 @@ struct core_context {
   long long begin_phase_instr = 0;
   champsim::chrono::clock::time_point finish_phase_time{};
   long long finish_phase_instr = 0;
-  champsim::chrono::clock::time_point last_heartbeat_time{};
-  long long last_heartbeat_instr = 0;
 
   // Minimal context bound to a shared physical register file. Tests use this to
   // exercise the RAT methods directly; the load/store queues stay empty.

@@ -36,6 +36,12 @@ Four keys select modules -- ``ooo_cpu.<cpu>.branch_predictor``,
 ``cache.<name>.replacement`` -- naming any module compiled into the binary by
 its directory name. One module per key.
 
+``ooo_cpu.<cpu>.num_contexts`` sets how many hardware contexts (SMT threads) a
+core runs -- 1 to ``max_contexts`` (2), default 1, refused naming the key outside
+that range. Each context is fed its own trace, assigned core-major then
+context-minor (traces 0-1 to cpu0 at two contexts, 2-3 to cpu1), and the command
+line requires exactly one trace per hardware context.
+
 A module may accept its own knobs from a table named after it:
 
 .. code-block:: toml
@@ -88,4 +94,8 @@ The loader recognises the document by ``[meta].schema_version`` and reads its
 ``[config]`` table, ignoring the results; an ordinary configuration file has no
 such key and is read whole. This only reproduces what is *configurable* --
 ``[meta].build_id`` still has to match, or the two binaries are different
-machines.
+machines. Every N=1 ``[config]`` also carries one ``ooo_cpu.<cpu>.num_contexts = 1``
+per core, so the reproduced document is a key longer than an older binary
+expects; a binary without the key rejects it as a stray key, so those lines must
+be stripped (``sed -E '/^(ooo_cpu\.cpu[0-9]+\.)?num_contexts = 1$/d'``) before
+the document is replayed against one.

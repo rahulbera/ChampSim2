@@ -171,3 +171,14 @@ champsim::tracereader get_tracereader(const std::string& fname, uint8_t cpu, boo
 
   return champsim::get_tracereader_for_type<champsim::bulk_tracereader, input_instr>(fname, cpu);
 }
+
+std::vector<champsim::tracereader> get_tracereaders(const std::vector<std::string>& fnames, bool is_cloudsuite, bool repeat, unsigned trace_version)
+{
+  std::vector<champsim::tracereader> traces;
+  traces.reserve(std::size(fnames));
+  uint8_t position = 0;
+  for (const auto& fname : fnames) {
+    traces.push_back(get_tracereader(fname, position++, is_cloudsuite, repeat, trace_version));
+  }
+  return traces;
+}

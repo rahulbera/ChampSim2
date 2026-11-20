@@ -66,7 +66,7 @@ A zero-byte `.xz`/`.gz`/`.zst`/`.bz2` *file* already fails cleanly with
 
 **Root cause.** `bulk_tracereader::operator()` calls `refill()` and then
 `instr_buffer.front()` without checking that a record was read
-(`inc/tracereader.h:146-151`).
+(`inc/tracereader.h:147-152`).
 
 - `refill()` converts only whole records (`:130-137`).
 - `eof()` is false before the first read, and stays false forever on a stream that
@@ -75,7 +75,7 @@ A zero-byte `.xz`/`.gz`/`.zst`/`.bz2` *file* already fails cleanly with
 - `repeatable` reopens the source and calls the new reader unconditionally
   (`inc/repeatable.h:39-44`).
 
-gdb puts the fault at `inc/tracereader.h:150`, called from `do_cycle`.
+gdb puts the fault at `inc/tracereader.h:151`, called from `do_cycle`.
 
 **Reproduction.** Run the existing binary with `-- empty.champsimtrace`, and again
 with `-w 1000 -i 10000 --`; both exit 139. Other triggers:
@@ -230,15 +230,19 @@ non-inert and needs its own decision.
 - **Named FIFO hang.** `CLI::ExistingFile` accepts a FIFO, and a run that wraps
   blocks forever reopening it (`inc/repeatable.h:41`; wchan `wait_for_partner`). The
   B3 non-regular-source fix removes it.
-- **No drain, and an empty ROI with exit 0.** Without `-i`, any reader's EOF ends
-  every phase at once (`src/champsim.cc:144-147`) and drops in-flight work: a
-  200-record trace retires 30. `-w 30000` on a 20,000-record trace reports
-  `Simulation complete ... instructions: 0 cycles: 1` and exits 0. This is pinned by
-  `test/cpp/src/502-phase-order.cc:81-104`. Emit a named error or warning when a
-  measured phase retires nothing or stops short because of EOF. SMT Stage 4 needs
-  defined semantics here.
+- **No drain, and an empty ROI with exit 0.** Without `-i`, once every context of a
+  core reaches EOF the whole phase ends that tick (the phase-finish check in
+  `do_phase`, `src/champsim.cc`) and drops in-flight work: a 200-record trace
+  retires 30. With one context per core this is upstream's any-EOF rule; with SMT an
+  EOF'd context beside a fed sibling drains without counting towards the length and
+  can end short or empty silently. `-w 30000` on a 20,000-record trace reports
+  `Simulation complete ... instructions: 0 cycles: 1` and exits 0. Pinned by the
+  seven EOF cases of `test/cpp/src/502-phase-order.cc`, from "A trace reaching EOF
+  completes every remaining CPU on that tick" to the end of the file. Emit a named
+  error or warning when a measured phase retires nothing or stops short because of
+  EOF.
 - **N−1 records per lap.** `eof()` goes true while one record is still buffered
-  (`inc/tracereader.h:105`), and `repeatable` discards it, so a lap is N−1 records
+  (`inc/tracereader.h:106`), and `repeatable` discards it, so a lap is N−1 records
   (N when N is a multiple of 127). Pinned by `087-tracereader-v2.cc:256-286`.
 - **Lap-message spam, and no lap count.** `*** Reached end of trace` prints once per
   lap: 250,123 lines for a 5-record trace at 1M instructions. Laps are not recorded
@@ -255,7 +259,7 @@ non-inert and needs its own decision.
 **Status: open.** Severity: low.
 
 - `--hide-heartbeat` sets `O3_CPU::show_heartbeat`, which nothing reads
-  (`src/main.cc:336-339`), so the flag does nothing.
+  (`src/main.cc:355-358`), so the flag does nothing.
 - `champsim::program_ordered::matches_id(const T&)` returns `precedes(...)` instead
   of an ID match (`inc/instruction.h:73`). It is unused today, and wrong if anyone
   calls it.

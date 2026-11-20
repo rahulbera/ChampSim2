@@ -1,12 +1,16 @@
 #ifndef CORE_STATS_H
 #define CORE_STATS_H
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
 #include "event_counter.h"
 #include "instruction.h"
 
+// Counters are charged to the hardware context that caused them and sum to the
+// core totals, except cycles_on_wrong_path (context-cycles); begin_cycles and
+// end_cycles are the core's phase window and are never summed.
 struct cpu_stats {
   std::string name;
   long long begin_instrs = 0;
@@ -45,5 +49,22 @@ struct cpu_stats {
 };
 
 cpu_stats operator-(cpu_stats lhs, cpu_stats rhs);
+
+namespace champsim
+{
+// Names one (core, context) slot in the statistics document: its table keys and
+// the human label. One hardware context keeps the old flat name (`cpu<k>`,
+// `CPU <k>`); several nest every context, context 0 included (`cpu<k>.ctx<c>`,
+// `CPU <k> ctx <c>`), so `cpu<k>` is always a core.
+struct context_slot {
+  uint32_t cpu = 0;
+  std::size_t context = 0;
+  std::size_t contexts = 1; // hardware contexts on this core
+  [[nodiscard]] std::string core_key() const { return "cpu" + std::to_string(cpu); }
+  [[nodiscard]] std::string context_key() const { return "ctx" + std::to_string(context); }
+  [[nodiscard]] std::string path() const { return contexts > 1 ? core_key() + "." + context_key() : core_key(); }
+  [[nodiscard]] std::string label() const { return "CPU " + std::to_string(cpu) + (contexts > 1 ? " ctx " + std::to_string(context) : std::string{}); }
+};
+} // namespace champsim
 
 #endif

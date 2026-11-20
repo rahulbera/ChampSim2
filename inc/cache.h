@@ -29,8 +29,10 @@
 #include <iterator> // for size
 #include <limits>   // for numeric_limits
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <vector>
 
@@ -125,6 +127,8 @@ private:
 
   void issue_translation(tag_lookup_type& q_entry) const;
 
+  [[nodiscard]] champsim::address_space_id origin_less_asid(std::string_view entry_point) const;
+
 public:
   using BLOCK = champsim::cache_block;
 
@@ -178,6 +182,15 @@ public:
   // cache_builder::virtual_memory.
   VirtualMemory* vmem;
   std::vector<access_type> pref_activate_mask;
+  std::size_t contexts_per_core = 1;
+  // The address space of the first context of the core this cache serves, set
+  // by the environment on each core's own caches (trace slots are numbered
+  // core-major, so it is {k,k} for core k only while every earlier core runs one
+  // context). An origin-less prefetch that is not refused is issued in it;
+  // unset (the LLC, or a cache built alone) it falls back to {cpu, cpu}.
+  std::optional<champsim::address_space_id> core_space{};
+  [[nodiscard]] bool prefetch_origin_required() const { return contexts_per_core > 1 && (virtual_prefetch || vmem != nullptr); }
+  void check_prefetch_origin(std::string_view key, std::string_view module_name) const;
 
   using stats_type = cache_stats;
 
@@ -251,6 +264,7 @@ public:
     virtual void impl_prefetcher_cycle_operate() = 0;
     virtual void impl_prefetcher_final_stats() = 0;
     virtual void impl_prefetcher_branch_operate(champsim::address ip, uint8_t branch_type, champsim::address branch_target) = 0;
+    [[nodiscard]] virtual bool impl_operates_without_origin() const = 0;
   };
 
   struct replacement_module_concept {
@@ -289,6 +303,7 @@ public:
     void impl_prefetcher_cycle_operate() final;
     void impl_prefetcher_final_stats() final;
     void impl_prefetcher_branch_operate(champsim::address ip, uint8_t branch_type, champsim::address branch_target) final;
+    [[nodiscard]] bool impl_operates_without_origin() const final;
   };
 
   template <typename... Rs>
@@ -371,6 +386,23 @@ public:
   CACHE& operator=(const CACHE&) = delete;
   CACHE& operator=(CACHE&&);
 };
+
+template <typename... Ps>
+bool CACHE::prefetcher_module_model<Ps...>::impl_operates_without_origin() const
+{
+  [[maybe_unused]] auto without_origin = [](auto* tag) {
+    using namespace champsim::modules;
+    using P = std::remove_pointer_t<decltype(tag)>&;
+    using addr = champsim::address;
+    using raw_type = std::underlying_type_t<access_type>;
+    constexpr bool with_origin = prefetcher::has_cache_operate<P, addr, addr, bool, bool, access_type, uint32_t, champsim::address_space_id, uint32_t>;
+    constexpr bool strong = prefetcher::has_cache_operate<P, addr, addr, bool, bool, access_type, uint32_t>;
+    constexpr bool strong_raw_type = prefetcher::has_cache_operate<P, addr, addr, bool, bool, raw_type, uint32_t>;
+    constexpr bool raw = prefetcher::has_cache_operate<P, uint64_t, uint64_t, bool, raw_type, uint32_t>;
+    return !with_origin && (strong || strong_raw_type || raw);
+  };
+  return std::apply([&](const auto&... p) { return (false || ... || without_origin(static_cast<std::decay_t<decltype(p)>*>(nullptr))); }, intern_);
+}
 
 template <typename... Ps>
 void CACHE::prefetcher_module_model<Ps...>::impl_configure(const champsim::runtime_config& cfg, std::string_view prefix)
