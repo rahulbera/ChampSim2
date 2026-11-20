@@ -25,16 +25,17 @@ const std::array<champsim::address_space_id, 5> asids{{{0, 0}, {0, 16}, {16, 16}
 
 TEMPLATE_TEST_CASE("A branch predictor keeps asid-folded indexes inside its tables", "", bimodal, gshare, perceptron, hashed_perceptron)
 {
-  TestType uut{nullptr};
+  do_nothing_MRC mock_L1I, mock_L1D;
+  O3_CPU uut{champsim::core_builder{}.fetch_queues(&mock_L1I.queues).data_queues(&mock_L1D.queues).branch_predictor<TestType>()};
   const champsim::address ip{0xdeadbeef};
 
   for (const auto& asid : asids) {
     CAPTURE(static_cast<int>(asid[0]), static_cast<int>(asid[1]));
     for (int i = 0; i < 64; ++i) {
-      REQUIRE_NOTHROW(uut.predict_branch(ip, champsim::address{}, true, BRANCH_CONDITIONAL, asid));
-      uut.last_branch_result(ip, champsim::address{}, true, BRANCH_CONDITIONAL, asid);
+      REQUIRE_NOTHROW(uut.impl_predict_branch(ip, champsim::address{}, true, BRANCH_CONDITIONAL, champsim::context_index{}, asid));
+      uut.impl_last_branch_result(ip, champsim::address{}, true, BRANCH_CONDITIONAL, champsim::context_index{}, asid);
     }
-    CHECK(uut.predict_branch(ip, champsim::address{}, true, BRANCH_CONDITIONAL, asid));
+    CHECK(uut.impl_predict_branch(ip, champsim::address{}, true, BRANCH_CONDITIONAL, champsim::context_index{}, asid));
   }
 }
 
@@ -45,11 +46,11 @@ TEST_CASE("The basic_btb keeps asid-folded indexes inside its tables")
   for (const auto& asid : asids) {
     CAPTURE(static_cast<int>(asid[0]), static_cast<int>(asid[1]));
 
-    REQUIRE_NOTHROW(uut.update_btb(champsim::address{0x110000}, champsim::address{0x66b5f0}, true, BRANCH_DIRECT_JUMP, asid));
-    CHECK(uut.btb_prediction(champsim::address{0x110000}, asid).first == champsim::address{0x66b5f0});
+    REQUIRE_NOTHROW(uut.update_btb(champsim::address{0x110000}, champsim::address{0x66b5f0}, true, BRANCH_DIRECT_JUMP, champsim::context_index{}, asid));
+    CHECK(uut.btb_prediction(champsim::address{0x110000}, champsim::context_index{}, asid).first == champsim::address{0x66b5f0});
 
-    REQUIRE_NOTHROW(uut.update_btb(champsim::address{0x220000}, champsim::address{0x66b5f0}, true, BRANCH_INDIRECT, asid));
-    CHECK(uut.btb_prediction(champsim::address{0x220000}, asid).first == champsim::address{0x66b5f0});
+    REQUIRE_NOTHROW(uut.update_btb(champsim::address{0x220000}, champsim::address{0x66b5f0}, true, BRANCH_INDIRECT, champsim::context_index{}, asid));
+    CHECK(uut.btb_prediction(champsim::address{0x220000}, champsim::context_index{}, asid).first == champsim::address{0x66b5f0});
   }
 }
 

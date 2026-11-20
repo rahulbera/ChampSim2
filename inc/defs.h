@@ -22,6 +22,12 @@ namespace champsim::defs
 // iteration, so this is deliberately not a runtime knob.
 inline constexpr std::size_t num_cpus = 1;
 
+// The compile-time bound on hardware contexts per core (SMT threads). Stage 3
+// replicates per-context module state in arrays of this size, and
+// O3_CPU::make_quota refuses a core built with more contexts than this. Stage 3
+// targets dual-context; raise it before a wider-SMT build.
+inline constexpr std::size_t max_contexts = 2;
+
 inline constexpr std::size_t block_size = 64;
 inline constexpr std::size_t page_size = 4096;
 

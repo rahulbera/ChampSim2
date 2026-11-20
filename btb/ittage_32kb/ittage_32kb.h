@@ -15,6 +15,7 @@
 #define BTB_ITTAGE_32KB_H
 
 #include <cstdint>
+#include <memory>
 #include <string_view>
 #include <utility>
 
@@ -24,16 +25,32 @@
 
 class ittage_32kb : champsim::modules::btb
 {
+  struct storage;
+  struct storage_deleter {
+    void operator()(storage* s) const;
+  };
+  static std::unique_ptr<storage, storage_deleter> make_storage();
+
+  std::unique_ptr<storage, storage_deleter> state = make_storage();
+
 public:
   using btb::btb;
   ittage_32kb() : btb(nullptr) {}
+
+  // ITTAGE's vendored predictor relies on zero-initialisation before its
+  // constructor runs, so the per-context storage is heap-allocated behind a
+  // pimpl: make_storage() value-initialises the aggregate (see the .cc), and
+  // each instance -- each core -- gets its own. The capability advertises
+  // per-context isolation.
+  static constexpr champsim::modules::smt_capability capability = champsim::modules::smt_capability::per_context;
 
   // Only the direct predictor is settable; this module's own tables are
   // vendored and compile-time. Keys: <prefix>.direct.sets / .direct.ways.
   void configure(const champsim::runtime_config& cfg, std::string_view prefix);
   void initialize_btb();
-  std::pair<champsim::address, bool> btb_prediction(champsim::address ip, champsim::address_space_id asid);
-  void update_btb(champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type, champsim::address_space_id asid);
+  std::pair<champsim::address, bool> btb_prediction(champsim::address ip, champsim::context_index context, champsim::address_space_id asid);
+  void update_btb(champsim::address ip, champsim::address branch_target, bool taken, uint8_t branch_type, champsim::context_index context,
+                  champsim::address_space_id asid);
 };
 
 #endif

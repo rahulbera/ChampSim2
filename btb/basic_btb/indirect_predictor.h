@@ -8,16 +8,20 @@
 
 #include "address.h"
 #include "champsim.h"
+#include "defs.h"
 #include "msl/bits.h"
 
 struct indirect_predictor {
   static constexpr std::size_t size = 4096;
+  // The target table is shared by the core's contexts; each context keeps its
+  // own conditional history, so a sibling's branches never move this context's
+  // index.
   std::array<champsim::address, size> predictor = {};
-  std::bitset<champsim::msl::lg2(size)> conditional_history = {};
+  std::array<std::bitset<champsim::msl::lg2(size)>, champsim::defs::max_contexts> conditional_history = {};
 
-  std::pair<champsim::address, bool> prediction(champsim::address ip, champsim::address_space_id asid);
-  void update_target(champsim::address ip, champsim::address branch_target, champsim::address_space_id asid);
-  void update_direction(bool taken);
+  std::pair<champsim::address, bool> prediction(champsim::address ip, champsim::context_index context, champsim::address_space_id asid);
+  void update_target(champsim::address ip, champsim::address branch_target, champsim::context_index context, champsim::address_space_id asid);
+  void update_direction(champsim::context_index context, bool taken);
 };
 
 #endif

@@ -8,10 +8,13 @@
 
 // Stage 1 splits register renaming in two: the physical register file and its
 // free list stay on the core (one RegisterAllocator), while each hardware
-// context owns its own frontend and backend alias tables (champsim::core_context).
-// O3_CPU builds only one context at this stage, so the two-context cases below
-// bind two hand-built contexts to one allocator. Physical registers leave the
-// free list in index order, which the exact free counts rely on.
+// context owns its own frontend and backend alias tables (champsim::core_context)
+// and its own context index. The four scenarios below bind two hand-built
+// contexts to one allocator, giving the second a distinct context index; the
+// final case builds a two-context core and checks that the builder wires both
+// contexts to the core's shared physical register file with indices 0 and 1.
+// Physical registers leave the free list in index order, which the exact free
+// counts rely on.
 
 namespace
 {
@@ -31,6 +34,7 @@ SCENARIO("Two contexts sharing a physical register file rename the same architec
     constexpr int PHYSICALREGS = 8;
     RegisterAllocator prf{PHYSICALREGS};
     champsim::core_context a{&prf}, b{&prf};
+    b.ctx_index = champsim::context_index{1};
 
     WHEN("Context A renames architectural register 5 as a destination")
     {
@@ -92,6 +96,7 @@ SCENARIO("Retiring a write in one context frees only that context's committed ma
     constexpr int PHYSICALREGS = 8;
     RegisterAllocator prf{PHYSICALREGS};
     champsim::core_context a{&prf}, b{&prf};
+    b.ctx_index = champsim::context_index{1};
     const auto b_live_in = b.rename_src_register(5);
     const auto a_live_in = a.rename_src_register(5);
     REQUIRE(a_live_in != b_live_in);
@@ -142,6 +147,7 @@ SCENARIO("Resetting one context's frontend alias table leaves its sibling untouc
     constexpr int PHYSICALREGS = 8;
     RegisterAllocator prf{PHYSICALREGS};
     champsim::core_context a{&prf}, b{&prf};
+    b.ctx_index = champsim::context_index{1};
     const auto a_live_in = a.rename_src_register(5);
     const auto b_live_in = b.rename_src_register(5);
     const auto b_speculative = b.rename_dest_register(5, 2);
@@ -169,6 +175,7 @@ SCENARIO("Whether an architectural register is allocated is answered per context
   {
     RegisterAllocator prf{8};
     champsim::core_context a{&prf}, b{&prf};
+    b.ctx_index = champsim::context_index{1};
     const auto& a_view = std::as_const(a);
     const auto& b_view = std::as_const(b);
 
@@ -204,4 +211,29 @@ TEST_CASE("A built core has one context bound to the core's shared physical regi
   uut.ctx().rename_src_register(3);
   REQUIRE(view.ctx().isAllocated(3));
   REQUIRE(uut.shared_prf->count_free_registers() == PHYSICALREGS - 1);
+}
+
+TEST_CASE("A core built with two contexts binds both to the shared physical register file with indices 0 and 1")
+{
+  constexpr std::size_t PHYSICALREGS = 16;
+  do_nothing_MRC mock_L1I, mock_L1D;
+  O3_CPU uut{champsim::core_builder{}
+                 .register_file_size(PHYSICALREGS)
+                 .num_contexts(2)
+                 .ifetch_buffer_size(2)
+                 .decode_buffer_size(2)
+                 .dib_hit_buffer_size(2)
+                 .dispatch_buffer_size(2)
+                 .rob_size(16)
+                 .lq_size(8)
+                 .sq_size(8)
+                 .fetch_queues(&mock_L1I.queues)
+                 .data_queues(&mock_L1D.queues)};
+
+  REQUIRE(uut.contexts.size() == 2);
+  REQUIRE(uut.shared_prf != nullptr);
+  REQUIRE(uut.contexts[0].ctx_index.value == 0);
+  REQUIRE(uut.contexts[1].ctx_index.value == 1);
+  REQUIRE(uut.contexts[0].reg_allocator == uut.shared_prf.get());
+  REQUIRE(uut.contexts[1].reg_allocator == uut.shared_prf.get());
 }

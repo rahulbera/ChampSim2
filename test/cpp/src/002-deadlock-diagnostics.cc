@@ -9,6 +9,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include "defaults.hpp"
 #include "instr.h"
 #include "mocks.hpp"
 #include "ooo_cpu.h"
@@ -86,6 +87,14 @@ std::string stdout_of(F&& print)
   stdout_capture capture;
   print();
   return capture.text();
+}
+
+std::size_t occurrences(const std::string& haystack, const std::string& needle)
+{
+  std::size_t n = 0;
+  for (std::size_t pos = 0; (pos = haystack.find(needle, pos)) != std::string::npos; pos += needle.size())
+    ++n;
+  return n;
 }
 } // namespace
 
@@ -166,4 +175,148 @@ TEST_CASE("The core's deadlock diagnostics count register dependencies only for 
   };
   REQUIRE_THAT(line_of(2), Catch::Matchers::ContainsSubstring("num_reg_dependent: 1"));
   REQUIRE_THAT(line_of(3), Catch::Matchers::ContainsSubstring("num_reg_dependent: -"));
+}
+
+TEST_CASE("The core's deadlock diagnostics keep the single-context layout with one context")
+{
+  // With one context the printer keeps the pre-SMT spelling: the buffer labels
+  // carry no context suffix and the physical file prints no Context column.
+  do_nothing_MRC mock_L1I, mock_L1D;
+  O3_CPU uut{champsim::core_builder{champsim::defaults::default_core}.register_file_size(4).fetch_queues(&mock_L1I.queues).data_queues(&mock_L1D.queues)};
+
+  uut.ctx().rename_src_register(3); // one busy physical register, owned by context 0
+
+  const auto printed = stdout_of([&] { uut.print_deadlock(); });
+
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("DEADLOCK! CPU 0"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("cpu0_IFETCH empty"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("cpu0_DECODE empty"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("cpu0_DISPATCH empty"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("cpu0_ROB empty"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("[cpu0_LQ] entry:   0 empty"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("cpu0_SQ empty"));
+  REQUIRE_THAT(printed, !Catch::Matchers::ContainsSubstring("_ctx"));
+  REQUIRE_THAT(printed, !Catch::Matchers::ContainsSubstring("_RAT"));
+  REQUIRE(occurrences(printed, "Frontend Register Allocation Table") == 1);
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("Physical Register File"));
+  REQUIRE(occurrences(printed, "Physical Register File") == 1);
+  REQUIRE_THAT(printed, !Catch::Matchers::ContainsSubstring("Context:"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("Phys reg:   0\t Arch reg:   3\t Producer: 0\t Valid: true\t Busy: true"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("Phys reg:   1\t Arch reg:   0\t Producer: 0\t Valid: false\t Busy: false"));
+}
+
+TEST_CASE("The core's deadlock diagnostics print every context, and the owner of each register")
+{
+  do_nothing_MRC mock_L1I, mock_L1D;
+  O3_CPU uut{champsim::core_builder{champsim::defaults::default_core}
+                 .num_contexts(2)
+                 .register_file_size(4)
+                 .fetch_queues(&mock_L1I.queues)
+                 .data_queues(&mock_L1D.queues)};
+
+  // Each context renames the same architectural register, taking physical
+  // registers 0 and 1 in index order and stamping each with its own context.
+  uut.contexts[0].rename_src_register(3);
+  uut.contexts[1].rename_src_register(3);
+
+  const auto printed = stdout_of([&] { uut.print_deadlock(); });
+
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("cpu0_ctx0_IFETCH empty"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("cpu0_ctx1_IFETCH empty"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("cpu0_ctx0_DECODE empty"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("cpu0_ctx1_DECODE empty"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("cpu0_ctx0_DISPATCH empty"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("cpu0_ctx1_DISPATCH empty"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("cpu0_ctx0_ROB empty"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("cpu0_ctx1_ROB empty"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("[cpu0_ctx0_LQ] entry:   0 empty"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("[cpu0_ctx1_LQ] entry:   0 empty"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("cpu0_ctx0_SQ empty"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("cpu0_ctx1_SQ empty"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("cpu0_ctx0_RAT"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("cpu0_ctx1_RAT"));
+  REQUIRE(occurrences(printed, "Frontend Register Allocation Table") == 2);
+  REQUIRE_THAT(printed, !Catch::Matchers::ContainsSubstring("cpu0_RAT"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("Context: 0"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("Context: 1"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("Context: -"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("Phys reg:   0\t Arch reg:   3\t Producer: 0\t Valid: true\t Busy: true\t Context: 0"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("Phys reg:   1\t Arch reg:   3\t Producer: 0\t Valid: true\t Busy: true\t Context: 1"));
+}
+
+TEST_CASE("The core's deadlock diagnostics print each context's own entries and RAT, then the full-file warning once")
+{
+  do_nothing_MRC mock_L1I, mock_L1D;
+  O3_CPU uut{champsim::core_builder{champsim::defaults::default_core}
+                 .num_contexts(2)
+                 .register_file_size(4)
+                 .fetch_queues(&mock_L1I.queues)
+                 .data_queues(&mock_L1D.queues)};
+
+  // Only context 1 holds entries, and the two contexts map different
+  // architectural registers, so a label that printed the other context's
+  // buffers or RAT would show here.
+  auto in_flight = [](uint64_t id) {
+    auto instr = champsim::test::instruction_with_ip(id);
+    instr.instr_id = id;
+    return instr;
+  };
+  const champsim::address_space_id asid{1, 1};
+  uut.contexts[1].IFETCH_BUFFER.push_back(in_flight(5));
+  uut.contexts[1].ROB.push_back(in_flight(7));
+  uut.contexts[1].LQ.at(0).emplace(champsim::address{0x2000}, 8, champsim::address{0x404}, asid);
+  uut.contexts[1].SQ.emplace_back(champsim::address{0x1000}, 9, champsim::address{0x408}, asid);
+  uut.contexts[0].rename_src_register(3); // physical 0
+  for (int16_t reg = 4; reg <= 6; ++reg)
+    uut.contexts[1].rename_src_register(reg); // physical 1-3: the shared file is now full
+
+  const auto printed = stdout_of([&] { uut.print_deadlock(); });
+
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("cpu0_ctx0_IFETCH empty"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("[cpu0_ctx1_IFETCH] entry:   0 instr_id: 5 "));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("cpu0_ctx0_ROB empty"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("[cpu0_ctx1_ROB] entry:   0 instr_id: 7 "));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("[cpu0_ctx0_LQ] entry:   0 empty"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("[cpu0_ctx1_LQ] entry:   0 instr_id: 8 "));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("cpu0_ctx0_SQ empty"));
+  REQUIRE_THAT(printed, Catch::Matchers::ContainsSubstring("[cpu0_ctx1_SQ] entry:   0 instr_id: 9 "));
+
+  // Each RAT section holds its own context's mapping (once in the frontend and
+  // once in the backend column); the warning follows the last RAT, once, and
+  // precedes the physical file.
+  const auto rat0 = printed.find("cpu0_ctx0_RAT\n");
+  const auto rat1 = printed.find("cpu0_ctx1_RAT\n");
+  const auto warning = printed.find("COMPLETELY OCCUPIED");
+  const auto prf = printed.find("Physical Register File");
+  REQUIRE(rat0 != std::string::npos);
+  REQUIRE(rat1 != std::string::npos);
+  REQUIRE(warning != std::string::npos);
+  REQUIRE(prf != std::string::npos);
+  REQUIRE(rat0 < rat1);
+  REQUIRE(rat1 < warning);
+  REQUIRE(warning < prf);
+  REQUIRE(occurrences(printed, "COMPLETELY OCCUPIED") == 1);
+  REQUIRE(occurrences(printed.substr(rat0, rat1 - rat0), "Arch reg:   3    Phys reg:   0") == 2);
+  REQUIRE(occurrences(printed.substr(rat1, warning - rat1), "Arch reg:   4    Phys reg:   1") == 2);
+}
+
+TEST_CASE("The core's deadlock diagnostics print the full-file warning once, between the RAT and the physical file, with one context")
+{
+  do_nothing_MRC mock_L1I, mock_L1D;
+  O3_CPU uut{champsim::core_builder{champsim::defaults::default_core}.register_file_size(4).fetch_queues(&mock_L1I.queues).data_queues(&mock_L1D.queues)};
+  for (int16_t reg = 1; reg <= 4; ++reg)
+    uut.ctx().rename_src_register(reg); // the file is now full
+
+  const auto printed = stdout_of([&] { uut.print_deadlock(); });
+
+  const auto rat = printed.find("Frontend Register Allocation Table");
+  const auto warning = printed.find(
+      "\n**WARNING!! WARNING!!** THE PHYSICAL REGISTER FILE IS COMPLETELY OCCUPIED.\nIt is extremely likely your register file size is too small.\n");
+  const auto prf = printed.find("\nPhysical Register File\n");
+  REQUIRE(rat != std::string::npos);
+  REQUIRE(warning != std::string::npos);
+  REQUIRE(prf != std::string::npos);
+  REQUIRE(rat < warning);
+  REQUIRE(warning < prf);
+  REQUIRE(occurrences(printed, "COMPLETELY OCCUPIED") == 1);
 }

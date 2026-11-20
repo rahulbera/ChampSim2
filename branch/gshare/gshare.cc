@@ -15,19 +15,21 @@ std::size_t gshare::gs_table_hash(champsim::address ip, std::bitset<GLOBAL_HISTO
 }
 
 bool gshare::predict_branch(champsim::address ip, champsim::address /*predicted_target*/, bool /*always_taken*/, uint8_t /*branch_type*/,
-                            champsim::address_space_id asid)
+                            champsim::context_index context, champsim::address_space_id asid)
 {
-  auto gs_hash = gs_table_hash(ip, branch_history_vector, asid);
+  auto gs_hash = gs_table_hash(ip, branch_history_vector.at(context.value), asid);
   auto value = gs_history_table[gs_hash];
   return value.value() >= (value.maximum / 2);
 }
 
-void gshare::last_branch_result(champsim::address ip, champsim::address /*branch_target*/, bool taken, uint8_t /*branch_type*/, champsim::address_space_id asid)
+void gshare::last_branch_result(champsim::address ip, champsim::address /*branch_target*/, bool taken, uint8_t /*branch_type*/, champsim::context_index context,
+                                champsim::address_space_id asid)
 {
-  auto gs_hash = gs_table_hash(ip, branch_history_vector, asid);
+  auto& history = branch_history_vector.at(context.value);
+  auto gs_hash = gs_table_hash(ip, history, asid);
   gs_history_table[gs_hash] += taken ? 1 : -1;
 
   // update branch history vector
-  branch_history_vector <<= 1;
-  branch_history_vector[0] = taken;
+  history <<= 1;
+  history[0] = taken;
 }

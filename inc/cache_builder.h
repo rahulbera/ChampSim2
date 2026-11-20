@@ -49,6 +49,7 @@ struct cache_builder_base {
   std::optional<uint32_t> m_ways{};
   std::size_t m_pq_size{std::numeric_limits<std::size_t>::max()};
   std::optional<uint32_t> m_mshr_size{};
+  std::size_t m_num_contexts{1};
   std::optional<uint64_t> m_hit_lat{};
   std::optional<uint64_t> m_fill_lat{};
   std::optional<uint64_t> m_latency{};
@@ -148,6 +149,12 @@ public:
    * If this is not specified, it will be derived from the number of sets, fill latency, and fill bandwidth.
    */
   self_type& mshr_size(uint32_t mshr_size_);
+
+  /**
+   * Specify the number of hardware contexts served by this cache.
+   * The MSHRs must divide equally among the contexts, or construction throws.
+   */
+  self_type& num_contexts(std::size_t num_contexts_);
 
   /**
    * Specify the latency of the cache, in cycles.
@@ -448,6 +455,13 @@ template <typename P, typename R>
 auto champsim::cache_builder<P, R>::mshr_size(uint32_t mshr_size_) -> self_type&
 {
   m_mshr_size = mshr_size_;
+  return *this;
+}
+
+template <typename P, typename R>
+auto champsim::cache_builder<P, R>::num_contexts(std::size_t num_contexts_) -> self_type&
+{
+  m_num_contexts = num_contexts_;
   return *this;
 }
 

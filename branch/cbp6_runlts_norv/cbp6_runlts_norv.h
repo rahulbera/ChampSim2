@@ -30,7 +30,9 @@
  * vendored source being patched.
  *
  * SINGLE CORE, SINGLE CONTEXT ONLY, as with the other CBP6 tenants: predictor
- * state lives in namespace-scope globals shared by every instance.
+ * state lives in namespace-scope globals shared by every instance. It declares
+ * smt_capability::global_state, so the environment refuses it at configuration
+ * time off cpu0 or past one context.
  */
 
 #ifndef BRANCH_CBP6_RUNLTS_NORV_H
@@ -45,6 +47,8 @@ class cbp6_runlts_norv : champsim::modules::branch_predictor
 {
 public:
   using branch_predictor::branch_predictor;
+
+  static constexpr champsim::modules::smt_capability capability = champsim::modules::smt_capability::global_state;
 
   void initialize_branch_predictor();
   bool predict_branch(champsim::address ip, champsim::address predicted_target, bool always_taken, uint8_t branch_type, champsim::address_space_id asid);

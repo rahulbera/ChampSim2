@@ -14,9 +14,9 @@
  *
  * SINGLE CORE, SINGLE CONTEXT ONLY. The vendored predictor keeps its tables in
  * namespace-scope globals rather than in the predictor object, so every instance
- * would share them. initialize_branch_predictor() throws if a second core, or a
- * second hardware context on the same core, tries to use it rather than silently
- * producing wrong results.
+ * would share them. It therefore declares smt_capability::global_state, and the
+ * environment refuses a second core or a second hardware context at
+ * configuration time rather than silently producing wrong results.
  */
 
 #ifndef BRANCH_CBP6_TAGESCL192_H
@@ -31,6 +31,8 @@ class cbp6_tagescl192 : champsim::modules::branch_predictor
 {
 public:
   using branch_predictor::branch_predictor;
+
+  static constexpr champsim::modules::smt_capability capability = champsim::modules::smt_capability::global_state;
 
   void initialize_branch_predictor();
   bool predict_branch(champsim::address ip, champsim::address predicted_target, bool always_taken, uint8_t branch_type, champsim::address_space_id asid);
